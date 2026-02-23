@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 codecompass-core = { workspace = true }
+codecompass-indexer = { workspace = true }
 codecompass-state = { workspace = true }
 tantivy = { workspace = true }
 serde = { workspace = true }

@@ -330,6 +330,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "codecompass-core",
+ "codecompass-indexer",
  "codecompass-state",
  "rusqlite",
  "serde",

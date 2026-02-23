@@ -131,6 +131,10 @@ enum Commands {
         /// Path to the project root (default: current directory)
         #[arg(long)]
         workspace: Option<String>,
+
+        /// Skip Tantivy index prewarming on startup
+        #[arg(long)]
+        no_prewarm: bool,
     },
 }
 
@@ -181,9 +185,12 @@ fn main() -> anyhow::Result<()> {
             let path = resolve_path(workspace)?;
             commands::index::run(&path, force, None, config_file)?;
         }
-        Commands::ServeMcp { workspace } => {
+        Commands::ServeMcp {
+            workspace,
+            no_prewarm,
+        } => {
             let path = resolve_path(workspace)?;
-            commands::serve_mcp::run(&path, config_file)?;
+            commands::serve_mcp::run(&path, config_file, no_prewarm, cli.verbose)?;
         }
     }
 

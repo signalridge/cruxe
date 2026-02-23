@@ -234,6 +234,7 @@ pub fn run(
                 updated_at: now_iso8601(),
                 content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
             };
+            let mtime_ns = file_mtime_ns(&file.path);
 
             // Delete old SQLite records for this file
             symbols::delete_symbols_for_file(
@@ -249,7 +250,7 @@ pub fn run(
             batch.add_file(&index_set.files, &file_record)?;
 
             // Write to SQLite (symbols + manifest)
-            batch.write_sqlite(&conn, &symbols_for_file, &file_record)?;
+            batch.write_sqlite(&conn, &symbols_for_file, &file_record, mtime_ns)?;
 
             symbol_count += symbols_for_file.len() as u64;
             indexed_count += 1;
@@ -349,4 +350,12 @@ fn rand_u64() -> u64 {
     std::thread::current().id().hash(&mut hasher);
     std::process::id().hash(&mut hasher);
     hasher.finish()
+}
+
+fn file_mtime_ns(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64)
 }

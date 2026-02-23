@@ -92,6 +92,36 @@ pub fn update_project(conn: &Connection, project: &Project) -> Result<(), StateE
     Ok(())
 }
 
+/// List all registered projects.
+pub fn list_projects(conn: &Connection) -> Result<Vec<Project>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT project_id, repo_root, display_name, default_ref, vcs_mode, schema_version, parser_version, created_at, updated_at
+             FROM projects
+             ORDER BY repo_root",
+        )
+        .map_err(StateError::sqlite)?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Project {
+                project_id: row.get(0)?,
+                repo_root: row.get(1)?,
+                display_name: row.get(2)?,
+                default_ref: row.get(3)?,
+                vcs_mode: row.get::<_, i32>(4)? != 0,
+                schema_version: row.get(5)?,
+                parser_version: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })
+        .map_err(StateError::sqlite)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +279,24 @@ mod tests {
 
         let found = get_by_id(&conn, &project.project_id).unwrap().unwrap();
         assert!(!found.vcs_mode);
+    }
+
+    #[test]
+    fn test_list_projects() {
+        let conn = setup_test_db();
+        let mut p1 = sample_project();
+        p1.project_id = "proj_1".to_string();
+        p1.repo_root = "/tmp/a".to_string();
+        let mut p2 = sample_project();
+        p2.project_id = "proj_2".to_string();
+        p2.repo_root = "/tmp/b".to_string();
+
+        create_project(&conn, &p1).unwrap();
+        create_project(&conn, &p2).unwrap();
+
+        let projects = list_projects(&conn).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].repo_root, "/tmp/a");
+        assert_eq!(projects[1].repo_root, "/tmp/b");
     }
 }
