@@ -817,6 +817,7 @@ fn t054_search_error_intent() {
         None,
         None,
         10,
+        false,
     )
     .expect("search_code should succeed");
 
@@ -933,6 +934,7 @@ fn t055_search_path_intent() {
         None,
         None,
         10,
+        false,
     )
     .expect("search_code should succeed");
 
@@ -1057,6 +1059,7 @@ fn t056_search_snippet_results_include_symbol_metadata_when_available() {
         None,
         Some("rust"),
         50,
+        false,
     )
     .expect("search_code should succeed");
 

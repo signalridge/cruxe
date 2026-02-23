@@ -1,3 +1,5 @@
+pub mod get_file_outline;
+pub mod health_check;
 pub mod index_repo;
 pub mod index_status;
 pub mod locate_symbol;
@@ -22,6 +24,8 @@ pub fn list_tools() -> Vec<ToolDefinition> {
         sync_repo::definition(),
         search_code::definition(),
         locate_symbol::definition(),
+        get_file_outline::definition(),
+        health_check::definition(),
         index_status::definition(),
     ]
 }

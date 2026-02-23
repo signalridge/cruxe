@@ -1,5 +1,5 @@
 use codecompass_core::error::StateError;
-use codecompass_core::types::{QueryIntent, RefScope, SymbolRecord};
+use codecompass_core::types::{QueryIntent, RankingReasons, RefScope, SymbolRecord};
 use codecompass_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -11,23 +11,33 @@ use tracing::debug;
 
 use crate::intent::classify_intent;
 use crate::planner::build_plan_with_ref;
-use crate::ranking::rerank;
+use crate::ranking::{rerank, rerank_with_reasons};
 
 /// A search result from search_code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub result_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_stable_id: Option<String>,
     pub result_type: String,
     pub path: String,
     pub line_start: u32,
     pub line_end: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub qualified_name: Option<String>,
     pub language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     pub score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
 }
 
@@ -54,6 +64,8 @@ pub struct SearchResponse {
     pub suggested_next_actions: Vec<SuggestedAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<SearchDebugInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ranking_reasons: Option<Vec<RankingReasons>>,
 }
 
 /// Optional debug payload for search_code.
@@ -77,6 +89,7 @@ pub fn search_code(
     r#ref: Option<&str>,
     language: Option<&str>,
     limit: usize,
+    debug_ranking: bool,
 ) -> Result<SearchResponse, StateError> {
     let mut debug = tracing::enabled!(tracing::Level::DEBUG).then_some(SearchDebugInfo::default());
 
@@ -147,9 +160,16 @@ pub fn search_code(
     let total = all_results.len();
 
     // Apply rule-based reranking boosts on top of RRF scores
-    rerank(&mut all_results, query);
-
-    all_results.truncate(limit);
+    let ranking_reasons = if debug_ranking {
+        let reasons = rerank_with_reasons(&mut all_results, query);
+        // Truncate reasons to match final result limit
+        all_results.truncate(limit);
+        Some(reasons.into_iter().take(limit).collect::<Vec<_>>())
+    } else {
+        rerank(&mut all_results, query);
+        all_results.truncate(limit);
+        None
+    };
 
     // Build suggested next actions
     let suggested = build_suggested_actions(&all_results, query, search_ref);
@@ -168,6 +188,7 @@ pub fn search_code(
         total_candidates: total,
         suggested_next_actions: suggested,
         debug,
+        ranking_reasons,
     })
 }
 
@@ -381,10 +402,19 @@ fn search_index(
             name: symbol_name,
             qualified_name,
             language,
+            signature: get_text("signature"),
+            visibility: get_text("visibility"),
             score,
             snippet: get_text("content").map(|c| {
                 if c.len() > 200 {
-                    format!("{}...", &c[..200])
+                    // Truncate at a char boundary to avoid panic on multi-byte UTF-8.
+                    let end = c
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 200)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...", &c[..end])
                 } else {
                     c
                 }

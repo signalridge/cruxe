@@ -27,6 +27,16 @@ pub fn definition() -> ToolDefinition {
                 "limit": {
                     "type": "integer",
                     "description": "Max results (default: 10)"
+                },
+                "detail_level": {
+                    "type": "string",
+                    "description": "Response verbosity: \"location\", \"signature\" (default), \"context\"",
+                    "enum": ["location", "signature", "context"]
+                },
+                "freshness_policy": {
+                    "type": "string",
+                    "description": "Freshness behavior: \"strict\", \"balanced\" (default), \"best_effort\"",
+                    "enum": ["strict", "balanced", "best_effort"]
                 }
             },
             "required": ["name"]

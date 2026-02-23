@@ -56,6 +56,7 @@ pub fn run(
         Some(&resolved_ref),
         language,
         limit,
+        false,
     )
     .map_err(|e| anyhow::anyhow!("Search failed: {}", e))?;
 

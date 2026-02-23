@@ -3,6 +3,9 @@ use codecompass_core::error::StateError;
 use std::io::ErrorKind;
 use std::path::Path;
 use tantivy::Index;
+use tantivy::Term;
+use tantivy::collector::TopDocs;
+use tantivy::query::TermQuery;
 use tantivy::schema::*;
 use tracing::info;
 
@@ -318,6 +321,76 @@ impl IndexSet {
             files: open_existing_index(&base.join(FILES_INDEX), REQUIRED_FILE_FIELDS, FILES_INDEX)?,
         })
     }
+}
+
+/// Result of a Tantivy health check for a single index.
+#[derive(Debug, serde::Serialize)]
+pub struct TantivyIndexHealth {
+    pub name: &'static str,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+/// Check health of all three Tantivy indices by attempting to open a reader.
+pub fn check_tantivy_health(index_set: &IndexSet) -> Vec<TantivyIndexHealth> {
+    let checks = [
+        (SYMBOLS_INDEX, &index_set.symbols),
+        (SNIPPETS_INDEX, &index_set.snippets),
+        (FILES_INDEX, &index_set.files),
+    ];
+
+    checks
+        .into_iter()
+        .map(|(name, index)| match index.reader() {
+            Ok(_) => TantivyIndexHealth {
+                name,
+                ok: true,
+                error: None,
+            },
+            Err(e) => TantivyIndexHealth {
+                name,
+                ok: false,
+                error: Some(e.to_string()),
+            },
+        })
+        .collect()
+}
+
+/// Prewarm Tantivy indices by opening readers and touching segment metadata.
+pub fn prewarm_indices(index_set: &IndexSet) -> Result<(), StateError> {
+    for (name, index) in [
+        (SYMBOLS_INDEX, &index_set.symbols),
+        (SNIPPETS_INDEX, &index_set.snippets),
+        (FILES_INDEX, &index_set.files),
+    ] {
+        let reader = index.reader().map_err(|e| {
+            StateError::Tantivy(format!("Failed to open reader for {}: {}", name, e))
+        })?;
+        let searcher = reader.searcher();
+        // Touch segment metadata to warm OS page cache
+        let _total: u32 = searcher
+            .segment_readers()
+            .iter()
+            .map(|s| s.num_docs())
+            .sum();
+
+        // Warm hot term lookup path for symbols index.
+        if name == SYMBOLS_INDEX {
+            let schema = index.schema();
+            if let Ok(symbol_exact_field) = schema.get_field("symbol_exact") {
+                for term in ["main", "init", "error"] {
+                    let query = TermQuery::new(
+                        Term::from_field_text(symbol_exact_field, term),
+                        IndexRecordOption::Basic,
+                    );
+                    let _ = searcher
+                        .search(&query, &TopDocs::with_limit(1))
+                        .map_err(StateError::tantivy)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
