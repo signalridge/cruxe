@@ -18,8 +18,11 @@ pub struct LocateResult {
     pub kind: String,
     pub name: String,
     pub qualified_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     pub language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     pub score: f32,
 }
 
@@ -118,6 +121,11 @@ pub fn locate_symbol(
                 .unwrap_or(0)
         };
 
+        let opt_text = |field_name: &str| -> Option<String> {
+            let s = get_text(field_name);
+            if s.is_empty() { None } else { Some(s) }
+        };
+
         results.push(LocateResult {
             symbol_id: get_text("symbol_id"),
             symbol_stable_id: get_text("symbol_stable_id"),
@@ -127,11 +135,9 @@ pub fn locate_symbol(
             kind: get_text("kind"),
             name: get_text("symbol_exact"),
             qualified_name: get_text("qualified_name"),
-            signature: {
-                let s = get_text("signature");
-                if s.is_empty() { None } else { Some(s) }
-            },
+            signature: opt_text("signature"),
             language: get_text("language"),
+            visibility: opt_text("visibility"),
             score,
         });
     }

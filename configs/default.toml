@@ -19,7 +19,13 @@ cache_size = -64000  # 64MB
 [search]
 # Default ref for search queries
 default_ref = "main"
+# Default freshness policy: "strict", "balanced", "best_effort"
+freshness_policy = "balanced"
 
 [logging]
 # Default log level: error, warn, info, debug, trace
 level = "info"
+
+[debug]
+# Enable ranking reasons in search responses
+ranking_reasons = false

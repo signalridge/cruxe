@@ -1,5 +1,7 @@
 use codecompass_core::constants;
-use codecompass_core::types::{FreshnessStatus, IndexingStatus, ResultCompleteness, SchemaStatus};
+use codecompass_core::types::{
+    FreshnessStatus, IndexingStatus, RankingReasons, ResultCompleteness, SchemaStatus,
+};
 use serde::{Deserialize, Serialize};
 
 /// Protocol v1 response metadata included in every tool response.
@@ -11,6 +13,8 @@ pub struct ProtocolMetadata {
     pub result_completeness: ResultCompleteness,
     pub r#ref: String,
     pub schema_status: SchemaStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ranking_reasons: Option<Vec<RankingReasons>>,
 }
 
 impl ProtocolMetadata {
@@ -23,6 +27,7 @@ impl ProtocolMetadata {
             result_completeness: ResultCompleteness::Complete,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::Compatible,
+            ranking_reasons: None,
         }
     }
 
@@ -35,6 +40,7 @@ impl ProtocolMetadata {
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::NotIndexed,
+            ranking_reasons: None,
         }
     }
 
@@ -47,6 +53,7 @@ impl ProtocolMetadata {
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::Compatible,
+            ranking_reasons: None,
         }
     }
 
@@ -59,6 +66,7 @@ impl ProtocolMetadata {
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::ReindexRequired,
+            ranking_reasons: None,
         }
     }
 
@@ -71,6 +79,7 @@ impl ProtocolMetadata {
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::CorruptManifest,
+            ranking_reasons: None,
         }
     }
 

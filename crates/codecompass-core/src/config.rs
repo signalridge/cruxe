@@ -13,6 +13,8 @@ pub struct Config {
     pub search: SearchConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub debug: DebugConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,14 @@ pub struct StorageConfig {
 pub struct SearchConfig {
     #[serde(default = "default_ref")]
     pub default_ref: String,
+    #[serde(default = "default_freshness_policy")]
+    pub freshness_policy: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DebugConfig {
+    #[serde(default)]
+    pub ranking_reasons: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +83,9 @@ fn default_cache_size() -> i32 {
 fn default_ref() -> String {
     "main".into()
 }
+fn default_freshness_policy() -> String {
+    "balanced".into()
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -101,6 +114,7 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             default_ref: default_ref(),
+            freshness_policy: default_freshness_policy(),
         }
     }
 }
@@ -239,6 +253,12 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(v) = std::env::var("CODECOMPASS_LOGGING_LEVEL") {
         config.logging.level = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_FRESHNESS_POLICY") {
+        config.search.freshness_policy = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_DEBUG_RANKING_REASONS") {
+        config.debug.ranking_reasons = v == "true" || v == "1";
     }
 }
 

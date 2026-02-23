@@ -215,6 +215,7 @@ impl BatchWriter {
         conn: &Connection,
         symbols: &[SymbolRecord],
         file_record: &FileRecord,
+        mtime_ns: Option<i64>,
     ) -> Result<(), StateError> {
         for sym in symbols {
             codecompass_state::symbols::insert_symbol(conn, sym)?;
@@ -228,7 +229,7 @@ impl BatchWriter {
                 path: file_record.path.clone(),
                 content_hash: file_record.content_hash.clone(),
                 size_bytes: file_record.size_bytes,
-                mtime_ns: None,
+                mtime_ns,
                 language: Some(file_record.language.clone()),
                 indexed_at: now_iso8601(),
             },

@@ -104,6 +104,102 @@ pub fn symbol_count(conn: &Connection, repo: &str, r#ref: &str) -> Result<u64, S
     Ok(count as u64)
 }
 
+/// A lightweight symbol record for file outlines (avoids full SymbolRecord overhead).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OutlineSymbol {
+    pub symbol_id: String,
+    pub name: String,
+    pub qualified_name: String,
+    pub kind: String,
+    pub language: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_symbol_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<OutlineSymbol>,
+}
+
+/// Query all symbols for a given file, ordered by line_start.
+/// If `top_only` is true, only returns top-level symbols (parent_symbol_id IS NULL).
+pub fn get_file_outline_query(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    path: &str,
+    top_only: bool,
+) -> Result<Vec<OutlineSymbol>, StateError> {
+    let sql = if top_only {
+        "SELECT symbol_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+         FROM symbol_relations
+         WHERE repo = ?1 AND \"ref\" = ?2 AND path = ?3 AND parent_symbol_id IS NULL
+         ORDER BY line_start"
+    } else {
+        "SELECT symbol_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+         FROM symbol_relations
+         WHERE repo = ?1 AND \"ref\" = ?2 AND path = ?3
+         ORDER BY line_start"
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(StateError::sqlite)?;
+    let symbols = stmt
+        .query_map(params![repo, r#ref, path], |row| {
+            Ok(OutlineSymbol {
+                symbol_id: row.get(0)?,
+                name: row.get(1)?,
+                qualified_name: row.get(2)?,
+                kind: row.get(3)?,
+                language: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                signature: row.get(7)?,
+                parent_symbol_id: row.get(8)?,
+                visibility: row.get(9)?,
+                children: Vec::new(),
+            })
+        })
+        .map_err(StateError::sqlite)?;
+
+    symbols
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
+/// Build a nested symbol tree from a flat list using parent_symbol_id chains.
+pub fn build_symbol_tree(flat: Vec<OutlineSymbol>) -> Vec<OutlineSymbol> {
+    use std::collections::HashMap;
+
+    // Group symbols by their parent_symbol_id
+    let mut children_map: HashMap<Option<String>, Vec<OutlineSymbol>> = HashMap::new();
+    for sym in flat {
+        children_map
+            .entry(sym.parent_symbol_id.clone())
+            .or_default()
+            .push(sym);
+    }
+
+    // Recursively assemble the tree starting from root symbols (parent_symbol_id = None)
+    fn assemble(
+        parent_id: Option<&str>,
+        children_map: &mut HashMap<Option<String>, Vec<OutlineSymbol>>,
+    ) -> Vec<OutlineSymbol> {
+        let key = parent_id.map(String::from);
+        let Some(mut symbols) = children_map.remove(&key) else {
+            return Vec::new();
+        };
+        for sym in &mut symbols {
+            sym.children = assemble(Some(&sym.symbol_id), children_map);
+        }
+        symbols
+    }
+
+    assemble(None, &mut children_map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,6 +45,20 @@ fn apply_pragmas(
     Ok(())
 }
 
+/// Run SQLite quick_check to verify database integrity.
+/// Returns Ok(true) if healthy, Ok(false) with error detail otherwise.
+pub fn check_sqlite_health(conn: &Connection) -> Result<(bool, Option<String>), StateError> {
+    let result: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(StateError::sqlite)?;
+
+    if result == "ok" {
+        Ok((true, None))
+    } else {
+        Ok((false, Some(result)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

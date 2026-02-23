@@ -126,6 +126,46 @@ pub struct FileRecord {
     pub content_head: Option<String>,
 }
 
+/// Detail level for response verbosity control.
+/// Controls how many fields are included in search/locate results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetailLevel {
+    /// Minimal: path, line_start, line_end, kind, name (~50 tokens)
+    Location,
+    /// Default: adds qualified_name, signature, language, visibility (~100 tokens)
+    #[default]
+    Signature,
+    /// Full: adds body_preview, parent, related_symbols (~300-500 tokens)
+    Context,
+}
+
+/// Freshness policy for pre-query staleness checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshnessPolicy {
+    /// Block queries when index is stale.
+    Strict,
+    /// Return results with stale indicator; trigger async sync.
+    #[default]
+    Balanced,
+    /// Always return results immediately; no sync triggered.
+    BestEffort,
+}
+
+/// Per-result ranking explanation for debug mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankingReasons {
+    pub result_index: usize,
+    pub exact_match_boost: f64,
+    pub qualified_name_boost: f64,
+    pub path_affinity: f64,
+    pub definition_boost: f64,
+    pub kind_match: f64,
+    pub bm25_score: f64,
+    pub final_score: f64,
+}
+
 /// Query intent classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -338,6 +378,44 @@ mod tests {
             "foo",
         );
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_detail_level_serde_roundtrip() {
+        for (variant, expected_str) in [
+            (DetailLevel::Location, "\"location\""),
+            (DetailLevel::Signature, "\"signature\""),
+            (DetailLevel::Context, "\"context\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let parsed: DetailLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn test_detail_level_default() {
+        assert_eq!(DetailLevel::default(), DetailLevel::Signature);
+    }
+
+    #[test]
+    fn test_freshness_policy_serde_roundtrip() {
+        for (variant, expected_str) in [
+            (FreshnessPolicy::Strict, "\"strict\""),
+            (FreshnessPolicy::Balanced, "\"balanced\""),
+            (FreshnessPolicy::BestEffort, "\"best_effort\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let parsed: FreshnessPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn test_freshness_policy_default() {
+        assert_eq!(FreshnessPolicy::default(), FreshnessPolicy::Balanced);
     }
 
     #[test]
