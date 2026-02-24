@@ -15,6 +15,8 @@ pub(super) struct ToolCallParams<'a> {
     pub server_start: &'a Instant,
 }
 
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
 pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
     // Handle health_check before destructuring since it needs the full params struct
     if params.tool_name == "health_check" {
@@ -46,6 +48,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10) as usize;
             let detail_level = parse_detail_level(arguments);
+            let compact = parse_compact(arguments);
             let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
             let base_metadata = build_metadata(
                 &effective_ref,
@@ -65,6 +68,13 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                     base_metadata,
                 );
             }
+
+            let ranking_explain_level = match resolve_ranking_explain_level(arguments, config) {
+                Ok(level) => level,
+                Err(message) => {
+                    return tool_error_response(id, "invalid_input", message, None, base_metadata);
+                }
+            };
 
             let Some(index_set) = index_set else {
                 return tool_compatibility_error(ToolCompatibilityParams {
@@ -117,13 +127,19 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 limit,
             ) {
                 Ok(results) => {
+                    let total_candidates = results.len();
+                    let (results, suppressed_duplicate_count) = dedup_locate_results(results);
+                    if suppressed_duplicate_count > 0 {
+                        metadata.suppressed_duplicate_count = Some(suppressed_duplicate_count);
+                    }
+
                     let mut result_values: Vec<Value> = results
                         .iter()
                         .filter_map(|r| serde_json::to_value(r).ok())
                         .collect();
 
                     // Enrich with context data if needed
-                    if detail_level == DetailLevel::Context {
+                    if detail_level == DetailLevel::Context && !compact {
                         detail::enrich_body_previews(&mut result_values);
                         if let Some(c) = conn {
                             detail::enrich_results_with_relations(
@@ -136,19 +152,34 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                     }
 
                     // Apply detail level filtering
-                    let filtered = detail::serialize_results_at_level(&result_values, detail_level);
-
-                    // Include ranking reasons in metadata when debug mode is enabled.
-                    if config.debug.ranking_reasons {
-                        metadata.ranking_reasons =
-                            Some(ranking::locate_ranking_reasons(&results, name));
+                    let filtered =
+                        detail::serialize_results_at_level(&result_values, detail_level, compact);
+                    let (filtered, safety_limit_applied) =
+                        enforce_payload_safety_limit(filtered, config.search.max_response_bytes);
+                    if safety_limit_applied {
+                        metadata.result_completeness =
+                            codecompass_core::types::ResultCompleteness::Truncated;
+                        metadata.safety_limit_applied = Some(true);
                     }
 
-                    let response = json!({
+                    if ranking_explain_level != codecompass_core::types::RankingExplainLevel::Off {
+                        let reasons = ranking::locate_ranking_reasons(&results, name);
+                        metadata.ranking_reasons = ranking_reasons_payload(
+                            reasons.into_iter().take(filtered.len()).collect(),
+                            ranking_explain_level,
+                        );
+                    }
+
+                    let mut response = json!({
                         "results": filtered,
-                        "total_candidates": results.len(),
+                        "total_candidates": total_candidates,
                         "metadata": metadata,
                     });
+                    if safety_limit_applied {
+                        response["suggested_next_actions"] = json!(
+                            deterministic_locate_suggested_actions(name, &effective_ref, limit)
+                        );
+                    }
 
                     tool_text_response(id, response)
                 }
@@ -170,6 +201,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10) as usize;
             let detail_level = parse_detail_level(arguments);
+            let compact = parse_compact(arguments);
             let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
             let base_metadata = build_metadata(
                 &effective_ref,
@@ -189,6 +221,13 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                     base_metadata,
                 );
             }
+
+            let ranking_explain_level = match resolve_ranking_explain_level(arguments, config) {
+                Ok(level) => level,
+                Err(message) => {
+                    return tool_error_response(id, "invalid_input", message, None, base_metadata);
+                }
+            };
 
             let Some(index_set) = index_set else {
                 return tool_compatibility_error(ToolCompatibilityParams {
@@ -232,7 +271,8 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             }
             let mut metadata = freshness.metadata;
 
-            let debug_ranking = config.debug.ranking_reasons;
+            let debug_ranking =
+                ranking_explain_level != codecompass_core::types::RankingExplainLevel::Off;
             match search::search_code(
                 index_set,
                 conn,
@@ -243,14 +283,20 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 debug_ranking,
             ) {
                 Ok(response) => {
-                    let mut result_values: Vec<Value> = response
-                        .results
+                    let mut response = response;
+                    let (results, suppressed_duplicate_count) =
+                        dedup_search_results(std::mem::take(&mut response.results));
+                    if suppressed_duplicate_count > 0 {
+                        metadata.suppressed_duplicate_count = Some(suppressed_duplicate_count);
+                    }
+
+                    let mut result_values: Vec<Value> = results
                         .iter()
                         .filter_map(|r| serde_json::to_value(r).ok())
                         .collect();
 
                     // Enrich with context data if needed
-                    if detail_level == DetailLevel::Context {
+                    if detail_level == DetailLevel::Context && !compact {
                         detail::enrich_body_previews(&mut result_values);
                         if let Some(c) = conn {
                             detail::enrich_results_with_relations(
@@ -263,17 +309,39 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                     }
 
                     // Apply detail level filtering
-                    let filtered = detail::serialize_results_at_level(&result_values, detail_level);
+                    let filtered =
+                        detail::serialize_results_at_level(&result_values, detail_level, compact);
+                    let (filtered, safety_limit_applied) =
+                        enforce_payload_safety_limit(filtered, config.search.max_response_bytes);
+                    if safety_limit_applied {
+                        metadata.result_completeness =
+                            codecompass_core::types::ResultCompleteness::Truncated;
+                        metadata.safety_limit_applied = Some(true);
+                    }
 
                     if let Some(reasons) = &response.ranking_reasons {
-                        metadata.ranking_reasons = Some(reasons.clone());
+                        metadata.ranking_reasons = ranking_reasons_payload(
+                            reasons.iter().take(filtered.len()).cloned().collect(),
+                            ranking_explain_level,
+                        );
                     }
+
+                    let suggested_next_actions = if safety_limit_applied {
+                        deterministic_suggested_actions(
+                            &response.suggested_next_actions,
+                            query,
+                            &effective_ref,
+                            limit,
+                        )
+                    } else {
+                        response.suggested_next_actions.clone()
+                    };
 
                     let mut result = json!({
                         "results": filtered,
                         "query_intent": &response.query_intent,
                         "total_candidates": response.total_candidates,
-                        "suggested_next_actions": &response.suggested_next_actions,
+                        "suggested_next_actions": suggested_next_actions,
                         "metadata": metadata,
                     });
                     if let Some(debug_payload) = &response.debug
@@ -674,7 +742,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 Ok(response) => {
                     if response.truncated {
                         metadata.result_completeness =
-                            codecompass_core::types::ResultCompleteness::Partial;
+                            codecompass_core::types::ResultCompleteness::Truncated;
                     }
                     let mut merged_metadata = response.metadata;
                     if let Some(obj) = merged_metadata.as_object_mut() {
@@ -1527,6 +1595,183 @@ fn parse_detail_level(arguments: &Value) -> DetailLevel {
         .unwrap_or(DetailLevel::Signature)
 }
 
+fn parse_compact(arguments: &Value) -> bool {
+    arguments
+        .get("compact")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn resolve_ranking_explain_level(
+    arguments: &Value,
+    config: &Config,
+) -> Result<codecompass_core::types::RankingExplainLevel, String> {
+    if let Some(raw) = arguments
+        .get("ranking_explain_level")
+        .and_then(|v| v.as_str())
+    {
+        return parse_ranking_explain_level(raw).ok_or_else(|| {
+            "Parameter `ranking_explain_level` must be `off`, `basic`, or `full`.".to_string()
+        });
+    }
+
+    let level = parse_ranking_explain_level(&config.search.ranking_explain_level)
+        .unwrap_or(codecompass_core::types::RankingExplainLevel::Off);
+    // Config::load_with_file already promotes legacy `debug.ranking_reasons` into
+    // `search.ranking_explain_level`. Keep this runtime fallback for compatibility
+    // with direct/manual Config construction paths (e.g., focused tests).
+    if level == codecompass_core::types::RankingExplainLevel::Off && config.debug.ranking_reasons {
+        return Ok(codecompass_core::types::RankingExplainLevel::Full);
+    }
+    Ok(level)
+}
+
+fn parse_ranking_explain_level(raw: &str) -> Option<codecompass_core::types::RankingExplainLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(codecompass_core::types::RankingExplainLevel::Off),
+        "basic" => Some(codecompass_core::types::RankingExplainLevel::Basic),
+        "full" => Some(codecompass_core::types::RankingExplainLevel::Full),
+        _ => None,
+    }
+}
+
+fn ranking_reasons_payload(
+    reasons: Vec<codecompass_core::types::RankingReasons>,
+    level: codecompass_core::types::RankingExplainLevel,
+) -> Option<Value> {
+    match level {
+        codecompass_core::types::RankingExplainLevel::Off => None,
+        codecompass_core::types::RankingExplainLevel::Full => serde_json::to_value(reasons).ok(),
+        codecompass_core::types::RankingExplainLevel::Basic => {
+            serde_json::to_value(ranking::to_basic_ranking_reasons(&reasons)).ok()
+        }
+    }
+}
+
+fn dedup_search_results(results: Vec<search::SearchResult>) -> (Vec<search::SearchResult>, usize) {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(results.len());
+    let mut suppressed = 0usize;
+    for result in results {
+        let key =
+            if let Some(stable_id) = result.symbol_stable_id.as_ref().filter(|s| !s.is_empty()) {
+                format!("stable:{}", stable_id)
+            } else {
+                format!(
+                    "{}:{}:{}:{}:{}",
+                    result.result_type,
+                    result.path,
+                    result.line_start,
+                    result.line_end,
+                    result.name.as_deref().unwrap_or("")
+                )
+            };
+        if seen.insert(key) {
+            deduped.push(result);
+        } else {
+            suppressed += 1;
+        }
+    }
+    (deduped, suppressed)
+}
+
+fn dedup_locate_results(results: Vec<locate::LocateResult>) -> (Vec<locate::LocateResult>, usize) {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(results.len());
+    let mut suppressed = 0usize;
+    for result in results {
+        let key = if result.symbol_stable_id.is_empty() {
+            format!(
+                "{}:{}:{}:{}",
+                result.path, result.line_start, result.line_end, result.name
+            )
+        } else {
+            format!("stable:{}", result.symbol_stable_id)
+        };
+        if seen.insert(key) {
+            deduped.push(result);
+        } else {
+            suppressed += 1;
+        }
+    }
+    (deduped, suppressed)
+}
+
+fn enforce_payload_safety_limit(results: Vec<Value>, max_bytes: usize) -> (Vec<Value>, bool) {
+    let max_bytes = if max_bytes == 0 {
+        DEFAULT_MAX_RESPONSE_BYTES
+    } else {
+        max_bytes
+    };
+
+    let mut output = Vec::new();
+    let mut used = 2usize; // '[' + ']'
+    let mut truncated = false;
+    for item in results {
+        let item_size = serde_json::to_vec(&item).map(|v| v.len()).unwrap_or(0);
+        let separator = usize::from(!output.is_empty());
+        if used + separator + item_size > max_bytes {
+            truncated = true;
+            break;
+        }
+        used += separator + item_size;
+        output.push(item);
+    }
+
+    if output.is_empty() && truncated {
+        // Under extremely small byte limits, even the first item may not fit.
+        // Returning [] with `truncated=true` keeps behavior deterministic while
+        // signaling callers to follow `suggested_next_actions`.
+        return (Vec::new(), true);
+    }
+    (output, truncated)
+}
+
+fn deterministic_suggested_actions(
+    existing: &[search::SuggestedAction],
+    query: &str,
+    effective_ref: &str,
+    limit: usize,
+) -> Vec<search::SuggestedAction> {
+    if !existing.is_empty() {
+        return existing.to_vec();
+    }
+    vec![search::SuggestedAction {
+        tool: "search_code".to_string(),
+        name: None,
+        query: Some(query.to_string()),
+        r#ref: Some(effective_ref.to_string()),
+        limit: Some(limit.max(1) / 2 + 1),
+    }]
+}
+
+fn deterministic_locate_suggested_actions(
+    name: &str,
+    effective_ref: &str,
+    limit: usize,
+) -> Vec<search::SuggestedAction> {
+    vec![
+        search::SuggestedAction {
+            tool: "locate_symbol".to_string(),
+            name: Some(name.to_string()),
+            query: None,
+            r#ref: Some(effective_ref.to_string()),
+            limit: Some((limit / 2).max(1)),
+        },
+        search::SuggestedAction {
+            tool: "search_code".to_string(),
+            name: None,
+            query: Some(name.to_string()),
+            r#ref: Some(effective_ref.to_string()),
+            limit: Some(5),
+        },
+    ]
+}
+
 fn rand_u64() -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1535,4 +1780,123 @@ fn rand_u64() -> u64 {
     std::thread::current().id().hash(&mut hasher);
     std::process::id().hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dedup_search_results_by_stable_id() {
+        let base = search::SearchResult {
+            result_id: "r1".to_string(),
+            symbol_id: Some("sym1".to_string()),
+            symbol_stable_id: Some("stable1".to_string()),
+            result_type: "symbol".to_string(),
+            path: "src/lib.rs".to_string(),
+            line_start: 10,
+            line_end: 20,
+            kind: Some("fn".to_string()),
+            name: Some("foo".to_string()),
+            qualified_name: Some("foo".to_string()),
+            language: "rust".to_string(),
+            signature: None,
+            visibility: None,
+            score: 1.0,
+            snippet: None,
+        };
+        let mut second = base.clone();
+        second.result_id = "r2".to_string();
+        let third = search::SearchResult {
+            result_id: "r3".to_string(),
+            symbol_id: None,
+            symbol_stable_id: None,
+            result_type: "file".to_string(),
+            path: "src/other.rs".to_string(),
+            line_start: 1,
+            line_end: 1,
+            kind: None,
+            name: None,
+            qualified_name: None,
+            language: "rust".to_string(),
+            signature: None,
+            visibility: None,
+            score: 0.5,
+            snippet: None,
+        };
+
+        let (deduped, suppressed) = dedup_search_results(vec![base, second, third]);
+        assert_eq!(suppressed, 1);
+        assert_eq!(deduped.len(), 2);
+    }
+
+    #[test]
+    fn dedup_locate_results_by_stable_id() {
+        let a = locate::LocateResult {
+            symbol_id: "s1".to_string(),
+            symbol_stable_id: "stable".to_string(),
+            path: "src/lib.rs".to_string(),
+            line_start: 10,
+            line_end: 20,
+            kind: "fn".to_string(),
+            name: "foo".to_string(),
+            qualified_name: "foo".to_string(),
+            signature: None,
+            language: "rust".to_string(),
+            visibility: None,
+            score: 1.0,
+        };
+        let mut b = a.clone();
+        b.symbol_id = "s2".to_string();
+        let (deduped, suppressed) = dedup_locate_results(vec![a, b]);
+        assert_eq!(suppressed, 1);
+        assert_eq!(deduped.len(), 1);
+    }
+
+    #[test]
+    fn safety_limit_truncates_results() {
+        let results = vec![
+            json!({"name": "a", "payload": "x".repeat(80)}),
+            json!({"name": "b", "payload": "y".repeat(80)}),
+            json!({"name": "c", "payload": "z".repeat(80)}),
+        ];
+        let (trimmed, truncated) = enforce_payload_safety_limit(results, 120);
+        assert!(truncated);
+        assert!(trimmed.len() < 3);
+    }
+
+    #[test]
+    fn ranking_payload_basic_uses_compact_fields() {
+        let reasons = vec![codecompass_core::types::RankingReasons {
+            result_index: 0,
+            exact_match_boost: 5.0,
+            qualified_name_boost: 2.0,
+            path_affinity: 1.0,
+            definition_boost: 1.0,
+            kind_match: 0.0,
+            bm25_score: 10.0,
+            final_score: 19.0,
+        }];
+
+        let payload =
+            ranking_reasons_payload(reasons, codecompass_core::types::RankingExplainLevel::Basic)
+                .unwrap();
+        let first = payload.as_array().unwrap().first().unwrap();
+        assert!(first.get("exact_match").is_some());
+        assert!(first.get("path_boost").is_some());
+        assert!(first.get("semantic_similarity").is_some());
+        assert!(first.get("qualified_name_boost").is_none());
+    }
+
+    #[test]
+    fn deterministic_locate_actions_are_stable() {
+        let actions = deterministic_locate_suggested_actions("validate_token", "main", 10);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].tool, "locate_symbol");
+        assert_eq!(actions[0].name.as_deref(), Some("validate_token"));
+        assert_eq!(actions[0].limit, Some(5));
+        assert_eq!(actions[1].tool, "search_code");
+        assert_eq!(actions[1].query.as_deref(), Some("validate_token"));
+        assert_eq!(actions[1].limit, Some(5));
+    }
 }

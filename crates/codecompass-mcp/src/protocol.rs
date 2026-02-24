@@ -1,8 +1,7 @@
 use codecompass_core::constants;
-use codecompass_core::types::{
-    FreshnessStatus, IndexingStatus, RankingReasons, ResultCompleteness, SchemaStatus,
-};
+use codecompass_core::types::{FreshnessStatus, IndexingStatus, ResultCompleteness, SchemaStatus};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Protocol v1 response metadata included in every tool response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,7 +13,11 @@ pub struct ProtocolMetadata {
     pub r#ref: String,
     pub schema_status: SchemaStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ranking_reasons: Option<Vec<RankingReasons>>,
+    pub ranking_reasons: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppressed_duplicate_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_limit_applied: Option<bool>,
 }
 
 impl ProtocolMetadata {
@@ -23,11 +26,13 @@ impl ProtocolMetadata {
         Self {
             codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
             freshness_status: FreshnessStatus::Fresh,
-            indexing_status: IndexingStatus::Idle,
+            indexing_status: IndexingStatus::Ready,
             result_completeness: ResultCompleteness::Complete,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::Compatible,
             ranking_reasons: None,
+            suppressed_duplicate_count: None,
+            safety_limit_applied: None,
         }
     }
 
@@ -36,11 +41,13 @@ impl ProtocolMetadata {
         Self {
             codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
             freshness_status: FreshnessStatus::Stale,
-            indexing_status: IndexingStatus::Idle,
+            indexing_status: IndexingStatus::NotIndexed,
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::NotIndexed,
             ranking_reasons: None,
+            suppressed_duplicate_count: None,
+            safety_limit_applied: None,
         }
     }
 
@@ -54,6 +61,8 @@ impl ProtocolMetadata {
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::Compatible,
             ranking_reasons: None,
+            suppressed_duplicate_count: None,
+            safety_limit_applied: None,
         }
     }
 
@@ -62,11 +71,13 @@ impl ProtocolMetadata {
         Self {
             codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
             freshness_status: FreshnessStatus::Stale,
-            indexing_status: IndexingStatus::Idle,
+            indexing_status: IndexingStatus::Failed,
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::ReindexRequired,
             ranking_reasons: None,
+            suppressed_duplicate_count: None,
+            safety_limit_applied: None,
         }
     }
 
@@ -75,11 +86,13 @@ impl ProtocolMetadata {
         Self {
             codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
             freshness_status: FreshnessStatus::Stale,
-            indexing_status: IndexingStatus::Idle,
+            indexing_status: IndexingStatus::Failed,
             result_completeness: ResultCompleteness::Partial,
             r#ref: r#ref.to_string(),
             schema_status: SchemaStatus::CorruptManifest,
             ranking_reasons: None,
+            suppressed_duplicate_count: None,
+            safety_limit_applied: None,
         }
     }
 

@@ -43,6 +43,10 @@ pub struct SearchConfig {
     pub default_ref: String,
     #[serde(default = "default_freshness_policy")]
     pub freshness_policy: String,
+    #[serde(default = "default_ranking_explain_level")]
+    pub ranking_explain_level: String,
+    #[serde(default = "default_max_response_bytes")]
+    pub max_response_bytes: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,6 +90,12 @@ fn default_ref() -> String {
 fn default_freshness_policy() -> String {
     "balanced".into()
 }
+fn default_ranking_explain_level() -> String {
+    "off".into()
+}
+fn default_max_response_bytes() -> usize {
+    64 * 1024
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -115,6 +125,8 @@ impl Default for SearchConfig {
         Self {
             default_ref: default_ref(),
             freshness_policy: default_freshness_policy(),
+            ranking_explain_level: default_ranking_explain_level(),
+            max_response_bytes: default_max_response_bytes(),
         }
     }
 }
@@ -172,6 +184,9 @@ impl Config {
             merge_toml_values(&mut merged, &raw);
         }
 
+        // Compatibility: older docs/configs may use [query] instead of [search].
+        promote_query_section(&mut merged);
+
         // Deserialize the merged value into Config (fills remaining fields with defaults)
         let config_str =
             toml::to_string(&merged).map_err(|e| ConfigError::ParseError(e.to_string()))?;
@@ -181,6 +196,17 @@ impl Config {
         // Layer 0 (highest priority): Environment variable overrides
         // Convention: CODECOMPASS_<SECTION>_<KEY> in UPPER_SNAKE_CASE
         apply_env_overrides(&mut config);
+
+        config.search.ranking_explain_level =
+            normalize_ranking_explain_level(&config.search.ranking_explain_level);
+        if config.search.max_response_bytes == 0 {
+            config.search.max_response_bytes = default_max_response_bytes();
+        }
+
+        // Legacy compatibility fallback.
+        if config.search.ranking_explain_level == "off" && config.debug.ranking_reasons {
+            config.search.ranking_explain_level = "full".to_string();
+        }
 
         // Expand ~ in data_dir
         config.storage.data_dir = expand_tilde(&config.storage.data_dir);
@@ -257,8 +283,56 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_FRESHNESS_POLICY") {
         config.search.freshness_policy = v;
     }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_RANKING_EXPLAIN_LEVEL") {
+        config.search.ranking_explain_level = v;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_QUERY_RANKING_EXPLAIN_LEVEL") {
+        config.search.ranking_explain_level = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_MAX_RESPONSE_BYTES")
+        && let Ok(n) = v.parse()
+    {
+        config.search.max_response_bytes = n;
+    }
     if let Ok(v) = std::env::var("CODECOMPASS_DEBUG_RANKING_REASONS") {
         config.debug.ranking_reasons = v == "true" || v == "1";
+    }
+}
+
+fn promote_query_section(merged: &mut toml::Value) {
+    let Some(root) = merged.as_table_mut() else {
+        return;
+    };
+
+    let Some(query_table) = root.get("query").and_then(|v| v.as_table()).cloned() else {
+        return;
+    };
+
+    let search_value = root
+        .entry("search")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let Some(search_table) = search_value.as_table_mut() else {
+        return;
+    };
+
+    for key in [
+        "default_ref",
+        "freshness_policy",
+        "ranking_explain_level",
+        "max_response_bytes",
+    ] {
+        if !search_table.contains_key(key)
+            && let Some(value) = query_table.get(key)
+        {
+            search_table.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+fn normalize_ranking_explain_level(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "basic" => "basic".to_string(),
+        "full" => "full".to_string(),
+        _ => "off".to_string(),
     }
 }
 
@@ -269,4 +343,54 @@ fn expand_tilde(path: &str) -> String {
         return path.replacen('~', &home.to_string_lossy(), 1);
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_ranking_explain_level_values() {
+        assert_eq!(normalize_ranking_explain_level("off"), "off");
+        assert_eq!(normalize_ranking_explain_level("BASIC"), "basic");
+        assert_eq!(normalize_ranking_explain_level("full"), "full");
+        assert_eq!(normalize_ranking_explain_level("unknown"), "off");
+    }
+
+    #[test]
+    fn promote_query_section_copies_missing_fields() {
+        let mut merged: toml::Value = toml::from_str(
+            r#"
+            [query]
+            freshness_policy = "strict"
+            ranking_explain_level = "basic"
+            max_response_bytes = 2048
+            "#,
+        )
+        .unwrap();
+
+        promote_query_section(&mut merged);
+        let search = merged.get("search").and_then(|v| v.as_table()).unwrap();
+        assert_eq!(
+            search
+                .get("freshness_policy")
+                .and_then(|v| v.as_str())
+                .unwrap(),
+            "strict"
+        );
+        assert_eq!(
+            search
+                .get("ranking_explain_level")
+                .and_then(|v| v.as_str())
+                .unwrap(),
+            "basic"
+        );
+        assert_eq!(
+            search
+                .get("max_response_bytes")
+                .and_then(|v| v.as_integer())
+                .unwrap(),
+            2048
+        );
+    }
 }

@@ -21,11 +21,15 @@ cache_size = -64000  # 64MB
 default_ref = "main"
 # Default freshness policy: "strict", "balanced", "best_effort"
 freshness_policy = "balanced"
+# Ranking explainability payload level: "off", "basic", "full"
+ranking_explain_level = "off"
+# Hard payload safety budget for query tool responses (bytes)
+max_response_bytes = 65536
 
 [logging]
 # Default log level: error, warn, info, debug, trace
 level = "info"
 
 [debug]
-# Enable ranking reasons in search responses
+# Legacy compatibility only. Prefer [search].ranking_explain_level.
 ranking_reasons = false

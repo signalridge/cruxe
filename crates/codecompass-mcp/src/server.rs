@@ -51,12 +51,8 @@ pub fn run_server(
     workspace: &Path,
     config_file: Option<&Path>,
     no_prewarm: bool,
-    enable_ranking_reasons: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = Config::load_with_file(Some(workspace), config_file)?;
-    if enable_ranking_reasons {
-        config.debug.ranking_reasons = true;
-    }
+    let config = Config::load_with_file(Some(workspace), config_file)?;
     let project_id = generate_project_id(&workspace.to_string_lossy());
     let data_dir = config.project_data_dir(&project_id);
     let db_path = data_dir.join(constants::STATE_DB_FILE);
