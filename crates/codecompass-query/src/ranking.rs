@@ -1,6 +1,6 @@
 use crate::locate::LocateResult;
 use crate::search::SearchResult;
-use codecompass_core::types::RankingReasons;
+use codecompass_core::types::{BasicRankingReasons, RankingReasons};
 
 /// Apply rule-based reranking boosts to search results.
 pub fn rerank(results: &mut [SearchResult], query: &str) {
@@ -147,6 +147,25 @@ pub fn locate_ranking_reasons(results: &[LocateResult], query: &str) -> Vec<Rank
                 bm25_score,
                 final_score,
             }
+        })
+        .collect()
+}
+
+/// Convert full ranking reasons to compact normalized factors used by
+/// `ranking_explain_level = "basic"`.
+pub fn to_basic_ranking_reasons(reasons: &[RankingReasons]) -> Vec<BasicRankingReasons> {
+    reasons
+        .iter()
+        .map(|r| BasicRankingReasons {
+            result_index: r.result_index,
+            exact_match: r.exact_match_boost,
+            path_boost: r.path_affinity,
+            definition_boost: r.definition_boost,
+            // 008 semantic retrieval is out of scope for this change. Use the
+            // existing qualified-name lexical signal as the semantic proxy in
+            // the basic explainability payload.
+            semantic_similarity: r.qualified_name_boost,
+            final_score: r.final_score,
         })
         .collect()
 }

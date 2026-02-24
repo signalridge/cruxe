@@ -164,6 +164,19 @@ pub enum FreshnessPolicy {
     BestEffort,
 }
 
+/// Ranking explainability payload level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RankingExplainLevel {
+    /// Omit ranking reasons from metadata.
+    #[default]
+    Off,
+    /// Include compact normalized factors for agent routing.
+    Basic,
+    /// Include full per-result scoring breakdown.
+    Full,
+}
+
 /// Per-result ranking explanation for debug mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankingReasons {
@@ -174,6 +187,17 @@ pub struct RankingReasons {
     pub definition_boost: f64,
     pub kind_match: f64,
     pub bm25_score: f64,
+    pub final_score: f64,
+}
+
+/// Compact ranking factors for basic explainability mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BasicRankingReasons {
+    pub result_index: usize,
+    pub exact_match: f64,
+    pub path_boost: f64,
+    pub definition_boost: f64,
+    pub semantic_similarity: f64,
     pub final_score: f64,
 }
 
@@ -223,9 +247,11 @@ pub enum FreshnessStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexingStatus {
-    Idle,
+    NotIndexed,
     Indexing,
-    PartialAvailable,
+    #[serde(alias = "idle", alias = "partial_available")]
+    Ready,
+    Failed,
 }
 
 /// Result completeness.
@@ -234,6 +260,7 @@ pub enum IndexingStatus {
 pub enum ResultCompleteness {
     Complete,
     Partial,
+    Truncated,
 }
 
 /// Schema compatibility status.
@@ -427,6 +454,43 @@ mod tests {
     #[test]
     fn test_freshness_policy_default() {
         assert_eq!(FreshnessPolicy::default(), FreshnessPolicy::Balanced);
+    }
+
+    #[test]
+    fn test_ranking_explain_level_serde_roundtrip() {
+        for (variant, expected_str) in [
+            (RankingExplainLevel::Off, "\"off\""),
+            (RankingExplainLevel::Basic, "\"basic\""),
+            (RankingExplainLevel::Full, "\"full\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let parsed: RankingExplainLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn test_indexing_status_legacy_aliases() {
+        let parsed_idle: IndexingStatus = serde_json::from_str("\"idle\"").unwrap();
+        assert_eq!(parsed_idle, IndexingStatus::Ready);
+
+        let parsed_partial: IndexingStatus = serde_json::from_str("\"partial_available\"").unwrap();
+        assert_eq!(parsed_partial, IndexingStatus::Ready);
+    }
+
+    #[test]
+    fn test_result_completeness_roundtrip() {
+        for (variant, expected_str) in [
+            (ResultCompleteness::Complete, "\"complete\""),
+            (ResultCompleteness::Partial, "\"partial\""),
+            (ResultCompleteness::Truncated, "\"truncated\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let parsed: ResultCompleteness = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
     }
 
     #[test]

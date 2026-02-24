@@ -1134,7 +1134,7 @@ for multi-workspace support (see [Section 10.7](#107-multi-workspace-auto-discov
 - `indexing_status`: `not_indexed | indexing | ready | failed`.
 - `result_completeness`: `complete | partial | truncated`.
 - compatibility guidance for pre-migration runtimes:
-  - `idle` -> `not_indexed`
+  - `idle` -> `ready`
   - `partial_available` -> `ready`
 - `ranking_reasons` (`ranking_explain_level != off`): array of deterministic scoring factors.
 - `source_layer`: `base | overlay` for VCS mode.

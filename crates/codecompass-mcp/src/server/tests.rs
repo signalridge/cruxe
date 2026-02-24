@@ -2175,6 +2175,353 @@ fn t123_search_code_ranking_reasons_disabled() {
     );
 }
 
+/// T124: search_code with ranking_explain_level=basic returns compact factors
+#[test]
+fn t124_search_code_ranking_reasons_basic_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "ranking_explain_level": "basic"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").unwrap();
+    let reasons = meta
+        .get("ranking_reasons")
+        .expect("ranking_reasons should be present for basic mode")
+        .as_array()
+        .unwrap();
+    assert!(!reasons.is_empty(), "expected non-empty ranking_reasons");
+    let first = reasons.first().unwrap();
+    assert!(first.get("exact_match").is_some());
+    assert!(first.get("path_boost").is_some());
+    assert!(first.get("definition_boost").is_some());
+    assert!(first.get("semantic_similarity").is_some());
+    assert!(first.get("final_score").is_some());
+    assert!(
+        first.get("exact_match_boost").is_none(),
+        "basic mode must omit full explainability fields"
+    );
+}
+
+/// T125: compact=true keeps identity fields and omits heavy context fields
+#[test]
+fn t125_search_code_compact_context_omits_heavy_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let base_request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "detail_level": "context"
+            }
+        }),
+    );
+    let base_response = handle_request_with_ctx(
+        &base_request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+        },
+    );
+    assert!(base_response.error.is_none(), "expected baseline success");
+    let base_payload = extract_payload_from_response(&base_response);
+    let base_results = base_payload.get("results").unwrap().as_array().unwrap();
+    assert!(!base_results.is_empty(), "expected baseline results");
+
+    let has_heavy_field = base_results.iter().any(|item| {
+        item.get("snippet").is_some()
+            || item.get("body_preview").is_some()
+            || item.get("parent").is_some()
+            || item.get("related_symbols").is_some()
+    });
+    assert!(
+        has_heavy_field,
+        "baseline context response should contain at least one heavy field"
+    );
+
+    let compact_request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "detail_level": "context",
+                "compact": true
+            }
+        }),
+    );
+    let compact_response = handle_request_with_ctx(
+        &compact_request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+        },
+    );
+    assert!(compact_response.error.is_none(), "expected compact success");
+    let compact_payload = extract_payload_from_response(&compact_response);
+    let compact_results = compact_payload.get("results").unwrap().as_array().unwrap();
+    assert!(!compact_results.is_empty(), "expected compact results");
+
+    for item in compact_results {
+        assert!(
+            item.get("result_id").is_some(),
+            "compact mode must preserve stable handles"
+        );
+        assert!(
+            item.get("path").is_some(),
+            "compact mode must preserve location"
+        );
+        assert!(
+            item.get("score").is_some(),
+            "compact mode must preserve score"
+        );
+        assert!(
+            item.get("snippet").is_none()
+                && item.get("body_preview").is_none()
+                && item.get("parent").is_none()
+                && item.get("related_symbols").is_none(),
+            "compact mode must omit heavy optional fields"
+        );
+    }
+}
+
+/// T126: payload safety limit truncates gracefully with metadata marker
+#[test]
+fn t126_search_code_payload_safety_limit_truncates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let mut config = Config::default();
+    config.search.max_response_bytes = 64;
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "detail_level": "context"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let metadata = payload.get("metadata").unwrap();
+    assert_eq!(
+        metadata
+            .get("result_completeness")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "truncated"
+    );
+    assert_eq!(metadata.get("safety_limit_applied"), Some(&json!(true)));
+
+    let actions = payload
+        .get("suggested_next_actions")
+        .and_then(|v| v.as_array())
+        .expect("suggested_next_actions should exist");
+    assert!(
+        !actions.is_empty(),
+        "truncation should provide follow-up suggestions"
+    );
+}
+
+/// T127: search_code reports dedup metadata and preserves pre-dedup candidate count
+#[test]
+fn t127_search_code_reports_suppressed_duplicate_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let db_path = tmp.path().join("data/state.db");
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate_token",
+                "limit": 20
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+
+    let results_len = payload
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(std::vec::Vec::len)
+        .unwrap_or(0);
+    let total_candidates = payload
+        .get("total_candidates")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    assert!(
+        total_candidates >= results_len,
+        "total_candidates should be pre-dedup/pre-truncation count"
+    );
+
+    let metadata = payload.get("metadata").unwrap();
+    let suppressed = metadata
+        .get("suppressed_duplicate_count")
+        .and_then(|v| v.as_u64())
+        .expect("expected dedup metadata for duplicate-heavy query");
+    assert!(suppressed > 0, "suppressed_duplicate_count should be > 0");
+}
+
+/// T128: locate_symbol safety truncation returns deterministic follow-up actions
+#[test]
+fn t128_locate_symbol_payload_safety_limit_has_followups() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let mut config = Config::default();
+    config.search.max_response_bytes = 64;
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "locate_symbol",
+            "arguments": {
+                "name": "validate_token",
+                "detail_level": "context",
+                "limit": 10
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let metadata = payload.get("metadata").unwrap();
+    assert_eq!(
+        metadata
+            .get("result_completeness")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "truncated"
+    );
+    assert_eq!(metadata.get("safety_limit_applied"), Some(&json!(true)));
+
+    let actions = payload
+        .get("suggested_next_actions")
+        .and_then(|v| v.as_array())
+        .expect("locate_symbol truncation should provide suggested_next_actions");
+    assert!(
+        actions.len() >= 2,
+        "locate_symbol truncation should provide deterministic follow-ups"
+    );
+    assert_eq!(
+        actions[0].get("tool").and_then(|v| v.as_str()),
+        Some("locate_symbol")
+    );
+}
+
 // ------------------------------------------------------------------
 // T134: tools/list schema verification for get_file_outline + health_check
 // ------------------------------------------------------------------
@@ -2247,6 +2594,10 @@ fn t134_tools_list_schema_verification() {
             .is_some(),
         "get_symbol_hierarchy direction should define enum values"
     );
+    assert!(
+        hierarchy_props.get("compact").is_none(),
+        "003 tools must not expose compact parameter in this phase"
+    );
     let hierarchy_required = hierarchy_schema
         .get("required")
         .unwrap()
@@ -2262,6 +2613,10 @@ fn t134_tools_list_schema_verification() {
     let related_props = related_schema.get("properties").unwrap();
     assert!(related_props.get("scope").is_some());
     assert!(related_props.get("limit").is_some());
+    assert!(
+        related_props.get("compact").is_none(),
+        "003 tools must not expose compact parameter in this phase"
+    );
     let related_required = related_schema.get("required").unwrap().as_array().unwrap();
     assert!(related_required.contains(&json!("symbol_name")));
 
@@ -2274,6 +2629,10 @@ fn t134_tools_list_schema_verification() {
     assert!(context_props.get("query").is_some());
     assert!(context_props.get("max_tokens").is_some());
     assert!(context_props.get("strategy").is_some());
+    assert!(
+        context_props.get("compact").is_none(),
+        "003 tools must not expose compact parameter in this phase"
+    );
     let context_required = context_schema.get("required").unwrap().as_array().unwrap();
     assert!(context_required.contains(&json!("query")));
 }

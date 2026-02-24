@@ -47,7 +47,7 @@ Implementation migration note:
 
 - some pre-migration runtimes may still emit legacy metadata values.
 - clients should map legacy values as:
-  - `idle` -> `not_indexed`
+  - `idle` -> `ready`
   - `partial_available` -> `ready`
 - migration target remains canonical values only in runtime responses.
 

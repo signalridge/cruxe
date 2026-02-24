@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
             no_prewarm,
         } => {
             let path = resolve_path(workspace)?;
-            commands::serve_mcp::run(&path, config_file, no_prewarm, cli.verbose)?;
+            commands::serve_mcp::run(&path, config_file, no_prewarm)?;
         }
     }
 

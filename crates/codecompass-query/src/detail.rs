@@ -33,16 +33,17 @@ const SIGNATURE_FIELDS: &[&str] = &[
     "visibility",
     "score",
 ];
+const COMPACT_OMIT_FIELDS: &[&str] = &["snippet", "body_preview", "parent", "related_symbols"];
 
 /// Serialize a result at the specified detail level.
 /// Filters out fields not appropriate for the given level.
 /// At `Context` level, all fields pass through (including enrichment fields).
-pub fn serialize_result_at_level(result: &Value, level: DetailLevel) -> Value {
+pub fn serialize_result_at_level(result: &Value, level: DetailLevel, compact: bool) -> Value {
     let Some(obj) = result.as_object() else {
         return result.clone();
     };
 
-    match level {
+    let mut output = match level {
         DetailLevel::Location => {
             let mut filtered = serde_json::Map::new();
             for &key in LOCATION_FIELDS {
@@ -65,14 +66,26 @@ pub fn serialize_result_at_level(result: &Value, level: DetailLevel) -> Value {
             // At context level, pass through all fields (including enrichment)
             result.clone()
         }
+    };
+
+    if compact && let Some(out_obj) = output.as_object_mut() {
+        for key in COMPACT_OMIT_FIELDS {
+            out_obj.remove(*key);
+        }
     }
+
+    output
 }
 
 /// Serialize a list of results at the specified detail level.
-pub fn serialize_results_at_level(results: &[Value], level: DetailLevel) -> Vec<Value> {
+pub fn serialize_results_at_level(
+    results: &[Value],
+    level: DetailLevel,
+    compact: bool,
+) -> Vec<Value> {
     results
         .iter()
-        .map(|r| serialize_result_at_level(r, level))
+        .map(|r| serialize_result_at_level(r, level, compact))
         .collect()
 }
 

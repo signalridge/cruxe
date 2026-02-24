@@ -138,6 +138,11 @@ includes a `ranking_reasons` field:
 - `off` (default): `ranking_reasons` is absent.
 - `basic`: return compact normalized factors for agent routing.
 - `full`: return complete debug scoring breakdown (example payload above).
+- legacy fallback: `debug.ranking_reasons = true` maps to `full`, `false` maps to `off`.
+
+For `full`, each entry includes:
+`result_index`, `exact_match_boost`, `qualified_name_boost`, `path_affinity`,
+`definition_boost`, `kind_match`, `bm25_score`, `final_score`.
 
 ### Freshness Policy Behavior
 
