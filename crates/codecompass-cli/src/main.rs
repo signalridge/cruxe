@@ -120,13 +120,14 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Start MCP server (stdio JSON-RPC transport)
+    /// Start MCP server (stdio or HTTP JSON-RPC transport)
     ///
     /// Exposes tools (locate_symbol, search_code, index_status, index_repo,
     /// sync_repo) to AI coding assistants via the Model Context Protocol.
     ///
     /// Examples:
     ///   codecompass serve-mcp --workspace .
+    ///   codecompass serve-mcp --transport http --port 9100
     ///   codecompass serve-mcp --auto-workspace --allowed-root /home/user/projects
     ServeMcp {
         /// Path to the default project root (default: current directory)
@@ -136,6 +137,18 @@ enum Commands {
         /// Skip Tantivy index prewarming on startup
         #[arg(long)]
         no_prewarm: bool,
+
+        /// Transport mode: "stdio" (default) or "http"
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+
+        /// HTTP server port (only used with --transport http)
+        #[arg(long, default_value = "9100")]
+        port: u16,
+
+        /// HTTP server bind address (only used with --transport http)
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
 
         /// Enable auto-discovery of workspaces passed via the `workspace` tool parameter.
         /// Requires at least one --allowed-root.
@@ -203,6 +216,9 @@ fn main() -> anyhow::Result<()> {
         Commands::ServeMcp {
             workspace,
             no_prewarm,
+            transport,
+            port,
+            bind,
             auto_workspace,
             allowed_roots,
             max_auto_workspaces,
@@ -211,11 +227,23 @@ fn main() -> anyhow::Result<()> {
             let ws_config = codecompass_core::types::WorkspaceConfig {
                 auto_workspace,
                 allowed_roots: codecompass_core::types::AllowedRoots::new(
-                    allowed_roots.into_iter().map(std::path::PathBuf::from).collect(),
+                    allowed_roots
+                        .into_iter()
+                        .map(std::path::PathBuf::from)
+                        .collect(),
                 ),
                 max_auto_workspaces,
             };
-            commands::serve_mcp::run(&path, config_file, no_prewarm, ws_config)?;
+            match transport.as_str() {
+                "http" => {
+                    commands::serve_mcp::run_http(
+                        &path, config_file, no_prewarm, ws_config, &bind, port,
+                    )?;
+                }
+                _ => {
+                    commands::serve_mcp::run(&path, config_file, no_prewarm, ws_config)?;
+                }
+            }
         }
     }
 

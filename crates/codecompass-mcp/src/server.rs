@@ -37,7 +37,7 @@ pub const PREWARM_FAILED: u8 = 3;
 pub const PREWARM_SKIPPED: u8 = 4;
 
 /// Convert prewarm status byte to string label.
-fn prewarm_status_label(status: u8) -> &'static str {
+pub fn prewarm_status_label(status: u8) -> &'static str {
     match status {
         PREWARM_PENDING => "pending",
         PREWARM_IN_PROGRESS => "warming",
@@ -607,6 +607,64 @@ fn resolve_tool_ref(
         return project.default_ref;
     }
     constants::REF_LIVE.to_string()
+}
+
+// ---- Public API for HTTP transport (T223) ----
+
+/// Public wrapper for `resolve_tool_ref` used by the HTTP transport.
+pub fn resolve_tool_ref_public(
+    requested_ref: Option<&str>,
+    workspace: &Path,
+    conn: Option<&rusqlite::Connection>,
+    project_id: &str,
+) -> String {
+    resolve_tool_ref(requested_ref, workspace, conn, project_id)
+}
+
+/// Public wrapper for `workspace_error_to_response` used by the HTTP transport.
+pub fn workspace_error_to_response_public(
+    id: Option<Value>,
+    err: &WorkspaceError,
+) -> JsonRpcResponse {
+    workspace_error_to_response(id, err)
+}
+
+/// Parameters for calling tool dispatch from the HTTP transport.
+pub struct PublicToolCallParams<'a> {
+    pub id: Option<Value>,
+    pub tool_name: &'a str,
+    pub arguments: &'a Value,
+    pub config: &'a Config,
+    pub index_set: Option<&'a IndexSet>,
+    pub schema_status: SchemaStatus,
+    pub compatibility_reason: Option<&'a str>,
+    pub conn: Option<&'a rusqlite::Connection>,
+    pub workspace: &'a Path,
+    pub project_id: &'a str,
+    pub prewarm_status: &'a AtomicU8,
+    pub server_start: &'a Instant,
+    pub notifier: Arc<dyn crate::notifications::ProgressNotifier>,
+    pub progress_token: Option<String>,
+}
+
+/// Public wrapper for tool dispatch used by the HTTP transport.
+pub fn handle_tool_call_public(params: PublicToolCallParams<'_>) -> JsonRpcResponse {
+    handle_tool_call(ToolCallParams {
+        id: params.id,
+        tool_name: params.tool_name,
+        arguments: params.arguments,
+        config: params.config,
+        index_set: params.index_set,
+        schema_status: params.schema_status,
+        compatibility_reason: params.compatibility_reason,
+        conn: params.conn,
+        workspace: params.workspace,
+        project_id: params.project_id,
+        prewarm_status: params.prewarm_status,
+        server_start: params.server_start,
+        notifier: params.notifier,
+        progress_token: params.progress_token,
+    })
 }
 
 mod tool_calls;
