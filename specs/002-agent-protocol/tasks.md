@@ -17,8 +17,8 @@
 - [X] T082 [P] [US1] Add `DetailLevel` enum (`Location`, `Signature`, `Context`) to `crates/codecompass-core/src/types.rs` with serde rename to lowercase strings, default `Signature`
 - [X] T083 [P] [US6] Add `FreshnessPolicy` enum (`Strict`, `Balanced`, `BestEffort`) to `crates/codecompass-core/src/types.rs` with serde rename to lowercase strings, default `Balanced`
 - [X] T084 [P] [US5] Add `RankingReasons` struct to `crates/codecompass-core/src/types.rs` with fields: `result_index: usize`, `exact_match_boost: f64`, `qualified_name_boost: f64`, `path_affinity: f64`, `definition_boost: f64`, `kind_match: f64`, `bm25_score: f64`, `final_score: f64`
-- [X] T085 [P] Add `freshness_policy` and `ranking_reasons` (debug flag) to config schema in `crates/codecompass-core/src/config.rs`
-- [X] T086 Add `freshness_policy = "balanced"` and `[debug] ranking_reasons = false` to `configs/default.toml`
+- [X] T085 [P] Add `freshness_policy` and ranking explainability controls to config schema in `crates/codecompass-core/src/config.rs`
+- [X] T086 Add `freshness_policy = "balanced"` and default explainability setting (`ranking_explain_level = "off"`; legacy debug flag compatibility optional) to `configs/default.toml`
 - [X] T087 [P] Write unit tests for `DetailLevel` and `FreshnessPolicy` serde round-trip in `crates/codecompass-core/src/types.rs`
 
 **Checkpoint**: New types compile, config loads new fields, unit tests pass
@@ -35,12 +35,12 @@
 
 ### Implementation for User Story 1
 
-- [X] T088 [US1] Implement `serialize_result_at_level(result, detail_level)` function in `crates/codecompass-query/src/detail.rs` that filters result fields based on `DetailLevel` enum: `Location` emits only path/line_start/line_end/kind/name; `Signature` adds qualified_name/signature/language/visibility; `Context` adds body_preview/parent/related_symbols
+- [X] T088 [US1] Implement `serialize_result_at_level(result, detail_level, compact)` function in `crates/codecompass-query/src/detail.rs` that filters result fields based on `DetailLevel` enum and optional compact mode: `Location` emits only path/line_start/line_end/kind/name; `Signature` adds qualified_name/signature/language/visibility; `Context` adds body_preview/parent/related_symbols unless `compact=true`
 - [X] T089 [US1] Add `body_preview` generation logic in `crates/codecompass-query/src/detail.rs`: read first N lines of symbol body from Tantivy `content` field, truncate to configurable limit (default 10 lines)
 - [X] T090 [US1] Add `parent` context resolution in `crates/codecompass-query/src/detail.rs`: look up `parent_symbol_id` in SQLite `symbol_relations` to get parent kind/name/path/line
 - [X] T091 [US1] Add `related_symbols` resolution in `crates/codecompass-query/src/detail.rs`: query `symbol_relations` for symbols in the same file referenced by imports or same parent, limit to 5
-- [X] T092 [US1] Wire `detail_level` parameter into `search_code` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
-- [X] T093 [US1] Wire `detail_level` parameter into `locate_symbol` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
+- [X] T092 [US1] Wire `detail_level` and `compact` parameters into `search_code` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
+- [X] T093 [US1] Wire `detail_level` and `compact` parameters into `locate_symbol` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
 - [X] T094 [US1] Update Protocol v1 response types: added `DetailLevel` to tool input schemas, updated result serialization with conditional field inclusion via detail level filtering
 - [X] T095 [US1] Write integration test: call `locate_symbol` with `detail_level: "location"`, verify response contains location fields plus identity fields and no signature/context fields
 - [X] T096 [P] [US1] Write integration test: call `locate_symbol` with `detail_level: "signature"` (default), verify response contains signature-level fields plus identity fields
@@ -107,20 +107,25 @@
 
 **Purpose**: Add debug ranking explanations to search responses
 
-**Goal**: Developers can see why results are ranked the way they are
+**Goal**: Developers can see why results are ranked the way they are with controllable payload depth
 
-**Independent Test**: Enable debug mode, search, verify ranking_reasons in response
+**Independent Test**: Set `ranking_explain_level: "full"`, search, verify `ranking_reasons` in response
 
 ### Implementation for User Story 5
 
 - [X] T118 [US5] Extend reranker in `crates/codecompass-query/src/ranking.rs` to collect `RankingReasons` per result during scoring: capture individual boost values (exact_match_boost, qualified_name_boost, path_affinity, definition_boost, kind_match) and raw bm25_score before combining into final_score
 - [X] T119 [US5] Add `debug_mode: bool` parameter to search/locate pipeline entry points in `crates/codecompass-query/src/search.rs` and `crates/codecompass-query/src/locate.rs`: when true, return `Vec<RankingReasons>` alongside results
-- [X] T120 [US5] Wire debug mode through MCP layer in `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`: read from config `debug.ranking_reasons` flag, include `ranking_reasons` in Protocol v1 metadata when enabled
+- [X] T120 [US5] Wire ranking explainability through MCP layer in `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`: include `ranking_reasons` in Protocol v1 metadata when explainability is enabled
 - [X] T121 [US5] Update Protocol v1 metadata type in `crates/codecompass-mcp/src/protocol.rs`: add optional `ranking_reasons: Option<Vec<RankingReasons>>` field with `skip_serializing_if = "Option::is_none"`
-- [X] T122 [US5] Write integration test: enable debug mode, call `search_code`, verify each result has `ranking_reasons` with all 7 fields populated
-- [X] T123 [P] [US5] Write integration test: disable debug mode (default), call `search_code`, verify `ranking_reasons` is absent from response metadata
+- [X] T122 [US5] Write integration test: enable full explainability, call `search_code`, verify each result has `ranking_reasons` with all 7 fields populated
+- [X] T123 [P] [US5] Write integration test: explainability off by default, call `search_code`, verify `ranking_reasons` is absent from response metadata
+- [ ] T451 [US5] Add `ranking_explain_level` parameter (`off`/`basic`/`full`) to `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`, with default `off`
+- [ ] T452 [US5] Implement compact explainability serialization in `crates/codecompass-query/src/ranking.rs`: `basic` mode emits normalized factors only, `full` keeps full debug payload
+- [ ] T453 [P] [US5] Add benchmark + integration coverage for explainability levels: verify `basic` payload is smaller than `full` and p95 overhead stays within target
+- [ ] T462 [US1] Implement near-duplicate suppression in query response assembly for `search_code` and `locate_symbol` (FR-105b): dedup by symbol/file-region before final top-k, include `suppressed_duplicate_count` in metadata
+- [ ] T463 [US1] Implement hard payload safety limits (FR-105c): enforce max response budget with `result_completeness: \"truncated\"` and deterministic `suggested_next_actions` instead of hard failures
 
-**Checkpoint**: Debug mode includes per-result ranking explanations
+**Checkpoint**: Explainability levels include per-result ranking explanations when requested
 
 ---
 
@@ -212,7 +217,7 @@
 2. Phase 2 -> `detail_level` works (Constitution V fulfilled)
 3. Phase 3 -> `get_file_outline` available (agent workflow improvement)
 4. Phase 4 -> `health_check` + prewarm (operational readiness)
-5. Phase 5 -> `ranking_reasons` in debug mode (Constitution VII fulfilled)
+5. Phase 5 -> `ranking_reasons` with explainability-level controls (Constitution VII fulfilled)
 6. Phase 6 -> Stale-aware queries (freshness policy)
 
 ## Notes
@@ -221,6 +226,6 @@
 - [USn] label maps task to specific user story
 - Commit after each task or logical group
 - Stop at any checkpoint to validate independently
-- Total: 58 tasks, 7 phases
+- Total: 63 tasks, 7 phases
 - No new crate dependencies required
 - No new storage schemas — all queries against existing 001-core-mvp tables

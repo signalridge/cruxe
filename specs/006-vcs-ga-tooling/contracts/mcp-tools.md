@@ -15,8 +15,8 @@ In addition to the base Protocol v1 metadata, VCS-mode responses include:
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
-    "indexing_status": "idle | indexing | partial_available",
-    "result_completeness": "complete | partial",
+    "indexing_status": "not_indexed | indexing | ready | failed",
+    "result_completeness": "complete | partial | truncated",
     "ref": "feat/auth",
     "schema_status": "compatible | not_indexed | reindex_required | corrupt_manifest"
   }
@@ -131,7 +131,7 @@ symbols with before/after signatures. No equivalent exists in any open-source co
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "feat/oauth2"
   }
@@ -247,7 +247,7 @@ graph lookups. Returns each reference with file location and edge type.
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main"
   }
@@ -328,7 +328,7 @@ contribution of each ranking factor, enabling debugging and transparency.
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main"
   }
@@ -409,7 +409,7 @@ List all indexed refs (branches/tags) for a project. VCS mode only.
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main"
   }
@@ -479,7 +479,7 @@ subsequent queries in the current session.
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "feat/auth"
   }

@@ -8,7 +8,8 @@
 ## Summary
 
 Add multi-workspace auto-discovery (with security-constrained opt-in), index
-progress notifications via MCP protocol, and HTTP transport mode to the existing
+progress notifications via MCP protocol, restart-safe interrupted-job reporting,
+workspace warmset prewarming, and HTTP transport mode to the existing
 CodeCompass MCP server. This extends the single-workspace stdio server from
 001-core-mvp into a multi-project, multi-transport system suitable for shared
 development environments.
@@ -21,7 +22,7 @@ development environments.
 **Storage Changes**: `index_jobs.progress_token` column addition; `known_workspaces` table activation
 **Testing**: cargo test + fixture repos with multi-workspace scenarios
 **Constraints**: No authentication in HTTP v1 (local-only), `--auto-workspace` off by default
-**Performance Goals**: `/health` p95 < 50ms, workspace routing overhead < 5ms per request
+**Performance Goals**: `/health` p95 < 50ms, workspace routing overhead < 5ms per request, `index_status` polling p95 < 50ms
 
 ## Constitution Check
 
@@ -70,13 +71,14 @@ crates/
 │   └── src/
 │       ├── schema.rs             # + progress_token column migration for index_jobs
 │       ├── workspace.rs          # NEW: known_workspaces CRUD, eviction logic
-│       └── jobs.rs               # + progress_token field, progress data getters
+│       └── jobs.rs               # + progress_token field, interrupted reconciliation, progress data getters
 ├── codecompass-mcp/
 │   └── src/
 │       ├── server.rs             # + workspace routing middleware, notification support
 │       ├── http.rs               # NEW: axum HTTP transport, /health endpoint
 │       ├── notifications.rs      # NEW: progress notification emitter
 │       ├── workspace_router.rs   # NEW: workspace resolution, validation, on-demand index
+│       ├── warmset.rs            # NEW: bounded recent-workspace prewarm selection
 │       └── tools/
 │           ├── mod.rs            # + workspace param in all tool handlers
 │           ├── index_repo.rs     # + workspace param, progress token plumbing
@@ -129,6 +131,16 @@ boundaries. `workspace_router.rs` and `http.rs` are new modules within
 4. **HTTP transport reuses the same tool dispatch**: The HTTP handler deserializes
    JSON-RPC from HTTP POST body, dispatches through the same tool handler pipeline
    used by stdio, and serializes the response. No separate tool implementations.
+
+5. **Workspace auto-injection is middleware-owned**: When server startup sets a
+   workspace context, omitted `workspace` fields are auto-filled at dispatch time.
+   This keeps per-tool schemas simple while preserving explicit override behavior.
+
+6. **Metadata enums are normalized in this phase**: Responses emitted by this
+   pipeline use canonical `indexing_status` and `result_completeness` values
+   shared with cross-spec contracts.
+7. **Interrupted recovery is status-first**: interrupted jobs are reconciled on
+   startup and surfaced via status APIs before background reprocessing kicks in.
 
 ## Complexity Tracking
 

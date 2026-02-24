@@ -26,6 +26,15 @@ Apply these in parallel with feature development to reduce rework:
 3. Enforce startup compatibility checks and explicit reindex gate.
 4. Keep MCP handshake non-blocking; run prewarm asynchronously.
 5. Deliver semantic Track A (`rerank_only`) before Track B (`hybrid`).
+6. Normalize metadata enums (`indexing_status`, `result_completeness`) across all contracts.
+7. Enforce `workspace` parameter parity on all query/path tools and future additions.
+8. Enforce `compact` + token-budget contract tests for MCP response payloads.
+9. Enforce dedup + hard-limit graceful degrade before expanding semantic fan-out.
+10. Ship watch daemon lifecycle ergonomics before enabling large multi-workspace defaults.
+11. Ship `ranking_explain_level` gating before enabling broad debug explainability by default.
+12. Calibrate and enforce `query_intent_confidence` before semantic auto-escalation policies.
+13. Add restart-safe `interrupted_recovery_report` before recommending unattended daemon usage.
+14. Stabilize benchmark-kit reproducibility before semantic profile default promotion.
 
 ## Why This Order Is Optimized
 
@@ -33,6 +42,7 @@ Apply these in parallel with feature development to reduce rework:
 2. **VCS risk split**: 005 isolates correctness-critical path; 006 adds tooling after core is stable.
 3. **Feature layering**: call graph and semantic retrieval build on stable VCS semantics.
 4. **Distribution last**: packaging and guides after core capability set is stable.
+5. **Performance discipline**: P0 hardening (boost/compact/dedup/limits) must stabilize before P2 semantic expansion.
 
 ## Global Critical Path
 
@@ -45,13 +55,13 @@ Apply these in parallel with feature development to reduce rework:
 | Spec | Tasks | Phases | Task Range | Depends On | Suggested Focus |
 |------|-------|--------|-----------|------------|-----------------|
 | 001-core-mvp | 81 | 8 | T001-T081 | -- | Bootstrap + indexing + search baseline |
-| 002-agent-protocol | 58 | 7 | T082-T139 | 001 | Agent payload and protocol optimization |
+| 002-agent-protocol | 63 | 7 | T082-T139 (+ T451-T453, T462-T463) | 001 | Agent payload and protocol optimization |
 | 003-structure-nav | 56 | 7 | T140-T195 | 002 | Structure graph and context tooling |
-| 004-workspace-transport | 44 | 5 | T196-T239 | 003 | Multi-workspace and transport |
+| 004-workspace-transport | 47 | 5 | T196-T239 (+ T454-T456) | 003 | Multi-workspace and transport |
 | 005-vcs-core | 56 | 6 | T240-T295 | 004 | Overlay correctness core |
 | 006-vcs-ga-tooling | 29 | 6 | T296-T324 | 005 | GA tooling, ref helpers, portability |
 | 007-call-graph | 39 | 6 | T325-T363 | 006 | Call graph and symbol diff tooling |
-| 008-semantic-hybrid | 48 | 8 | T364-T411 | 007 | Hybrid retrieval and rerank |
+| 008-semantic-hybrid | 53 | 8 | T364-T411 (+ T457-T461) | 007 | Hybrid retrieval and rerank |
 | 009-distribution | 39 | 6 | T412-T450 | 008 | Release/distribution/onboarding |
 
 ## Milestone Gates

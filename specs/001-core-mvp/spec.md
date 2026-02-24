@@ -213,7 +213,9 @@ verify results reflect branch-specific file contents.
   `sync_repo`, `search_code`, `locate_symbol`, and `index_status` tools.
 - **FR-013**: System MUST include Protocol v1 metadata in all search responses:
   `codecompass_protocol_version`, `freshness_status`, `indexing_status`,
-  `result_completeness`, `ref`.
+  `result_completeness`, `ref`; canonical enums:
+  - `indexing_status`: `not_indexed | indexing | ready | failed`
+  - `result_completeness`: `complete | partial | truncated`
 - **FR-014**: System MUST support `ref` field in all index schemas, using branch name
   in VCS mode and `"live"` in single-version mode.
 - **FR-015**: System MUST allow search queries during active indexing, returning partial

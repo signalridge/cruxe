@@ -1,4 +1,4 @@
-# Research: LanceDB + Embedding Model Decisions
+# Research: Embedded Vector Backend + Local Model Decisions
 
 **Spec**: 008-semantic-hybrid | **Date**: 2026-02-23
 
@@ -16,28 +16,27 @@
 
 | Option | Embedding | Rust Support | ANN Algorithm | License |
 |--------|-----------|-------------|---------------|---------|
-| LanceDB | Yes (embedded) | Rust-native | IVF-PQ, HNSW | Apache 2.0 |
+| Local segment/table (default) | Yes (embedded) | Rust-native | backend-defined | project-native |
+| LanceDB adapter (optional) | Yes (embedded) | Rust-native | IVF-PQ, HNSW | Apache 2.0 |
 | Qdrant (embedded mode) | Yes (embedded) | Rust-native | HNSW | Apache 2.0 |
 | SQLite + sqlite-vss | Yes (extension) | Via rusqlite | IVF | MIT |
 | faiss (via FFI) | C++ library | FFI bindings | IVF, HNSW, PQ | MIT |
 
-### Decision: LanceDB
+### Decision: Default local embedded store + optional adapters
 
 **Rationale**:
-- Rust-native: no FFI complexity, consistent with codebase language
-- Columnar format (Lance): efficient for metadata + vector storage together
-- Supports incremental updates (important for `sync_repo`)
-- Actively maintained with good documentation
-- Apache 2.0 license is compatible
-- Small binary footprint compared to alternatives
+- Keeps zero-external-service baseline and minimizes dependency lock-in
+- Preserves strict control over schema/model-version migration policy
+- Allows optional adapter enablement (for example LanceDB) without making it mandatory
+- Supports incremental update semantics needed by `sync_repo`
 
 **Trade-offs**:
-- Newer project than faiss (less battle-tested at extreme scale)
-- Not as widely adopted as Qdrant in production (but we need embedded, not client-server)
+- More in-house implementation responsibility for ANN/runtime tuning
+- Adapter layer adds interface complexity, but keeps rollout flexibility
 
 ### Rejected Alternatives
 
-- **Qdrant embedded**: Good option but heavier runtime footprint; LanceDB is lighter for our use case
+- **Qdrant embedded**: Good option but heavier runtime footprint for default path
 - **sqlite-vss**: Extension-based approach is fragile for distribution; limited ANN algorithms
 - **faiss**: C++ FFI adds build complexity and cross-platform risk
 
@@ -55,20 +54,22 @@
 
 ### Options Evaluated
 
-| Model | Dimensions | Code-Aware | Local | Size |
-|-------|-----------|------------|-------|------|
-| all-MiniLM-L6-v2 | 384 | Partial | Yes (ONNX) | ~80MB |
-| CodeBERT (microsoft/codebert-base) | 768 | Yes | Yes (ONNX) | ~500MB |
-| Voyage Code 2 | 1024 | Yes | No (API) | N/A |
-| Nomic Embed Code | 768 | Yes | Yes (ONNX) | ~270MB |
+| Model Family | Dimensions | Code-Aware | Local | Profile Fit |
+|--------------|-----------|------------|-------|-------------|
+| `NomicEmbedTextV15Q` | 768 | Good | Yes (fastembed) | `fast_local` |
+| `BGESmallENV15Q` | 384 | Good | Yes (fastembed) | `fast_local` |
+| `BGEBaseENV15Q` | 768 | Better | Yes (fastembed) | `code_quality` |
+| `JinaEmbeddingsV2BaseCode` | 768 | Strong | Yes (fastembed) | `code_quality` |
+| `BGELargeENV15` / `GTELargeENV15` | 1024 | Stronger | Yes (fastembed) | `high_quality` |
+| Voyage Code 2 | 1024 | Strong | No (API) | `external` |
 
 ### Decision: Two default profiles, `fast_local` first
 
 **Profiles**:
 
-- `fast_local` (default): `all-MiniLM-L6-v2`, 384 dim, low resource footprint
-- `code_quality` (optional): code-aware model (e.g., Nomic Embed Code / CodeBERT class),
-  higher quality and higher resource cost
+- `fast_local` (default): quantized local models (`NomicEmbedTextV15Q` or `BGESmallENV15Q`)
+- `code_quality` (optional): code-aware local models (`BGEBaseENV15Q`, `JinaEmbeddingsV2BaseCode`)
+- `high_quality` (optional): larger local models (`BGELargeENV15`, `GTELargeENV15`, `SnowflakeArcticEmbedL`)
 
 **Rationale**:
 - Keeps default installation/runtime lightweight
@@ -78,21 +79,21 @@
 **Configuration approach**:
 ```toml
 [semantic]
-enabled = false
+mode = "off"
 ratio = 0.3
 
 [semantic.embedding]
-profile = "fast_local"    # "fast_local" | "code_quality" | "external"
+profile = "fast_local"    # "fast_local" | "code_quality" | "high_quality" | "external"
 provider = "local"        # "local" | "openai" | "voyage"
-model = "all-MiniLM-L6-v2"
-model_version = "onnx-1"
-dimensions = 384
+model = "NomicEmbedTextV15Q"
+model_version = "fastembed-1"
+dimensions = 768
 # api_key read from CODECOMPASS_EMBEDDING_API_KEY env var
 ```
 
 **Trade-offs**:
-- `fast_local` has lower semantic quality than code-specialized models
-- `code_quality` profile increases index size and latency
+- `fast_local` has lower semantic quality than larger code-specialized models
+- `code_quality`/`high_quality` profiles increase index size and latency
 - Profile split keeps defaults practical while preserving quality headroom
 
 ---

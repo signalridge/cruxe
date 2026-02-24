@@ -14,8 +14,8 @@ Included in every tool response:
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
-    "indexing_status": "idle | indexing | partial_available",
-    "result_completeness": "complete | partial",
+    "indexing_status": "not_indexed | indexing | ready | failed",
+    "result_completeness": "complete | partial | truncated",
     "ref": "main",
     "schema_status": "compatible | not_indexed | reindex_required | corrupt_manifest"
   }

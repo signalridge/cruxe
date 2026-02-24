@@ -6,10 +6,11 @@
 
 ## Summary
 
-Enhance the MCP protocol layer with agent-aware response design (`detail_level`),
-file outline tool (`get_file_outline`), operational health reporting
-(`health_check`), Tantivy index prewarming, debug ranking explanations, and
-stale-aware query behavior refinement. These changes are additive to the
+Enhance the MCP protocol layer with agent-aware response design (`detail_level`,
+`compact`), file outline tool (`get_file_outline`), operational health reporting
+(`health_check`), Tantivy index prewarming, debug ranking explanations with
+`ranking_explain_level`, and stale-aware query behavior refinement. These
+changes are additive to the
 001-core-mvp codebase and introduce no new storage schemas or external
 dependencies. The `detail_level` parameter and `ranking_reasons` field fulfill
 Constitution principles V and VII respectively.
@@ -62,8 +63,8 @@ crates/
 │   └── src/
 │       ├── ranking.rs        # Add ranking_reasons collection to reranker
 │       ├── freshness.rs      # NEW: pre-query freshness check + policy logic
-│       ├── search.rs         # Add detail_level and freshness_policy params
-│       └── locate.rs         # Add detail_level param
+│       ├── search.rs         # Add detail_level/compact/freshness_policy params
+│       └── locate.rs         # Add detail_level/compact params
 ├── codecompass-state/
 │   └── src/
 │       ├── symbols.rs        # Add get_file_outline query (SQLite)
@@ -72,8 +73,8 @@ crates/
 │   └── src/
 │       ├── tools/
 │       │   ├── mod.rs        # Register get_file_outline, health_check
-│       │   ├── search_code.rs    # Wire detail_level, freshness_policy, ranking_reasons
-│       │   ├── locate_symbol.rs  # Wire detail_level, ranking_reasons
+│       │   ├── search_code.rs    # Wire detail_level, compact, freshness_policy, ranking_reasons
+│       │   ├── locate_symbol.rs  # Wire detail_level, compact, ranking_reasons
 │       │   ├── get_file_outline.rs  # NEW: file outline tool handler
 │       │   └── health_check.rs      # NEW: health check tool handler
 │       ├── protocol.rs       # Add RankingReasons to metadata, DetailLevel to input schemas
@@ -84,7 +85,7 @@ crates/
             └── serve_mcp.rs  # Add --no-prewarm flag
 
 configs/
-└── default.toml              # Add freshness_policy default, debug flag
+└── default.toml              # Add freshness policy and ranking explainability defaults
 ```
 
 **Structure Decision**: No new crates. All changes fit within existing crate
@@ -98,8 +99,8 @@ architecture.
 
 | Decision | Rationale |
 |----------|-----------|
-| `detail_level` as serialization filter | Keeps query/ranking logic unchanged; serialization-only reduces risk |
+| `detail_level` + `compact` as serialization filters | Keeps query/ranking logic unchanged; serialization-only reduces risk |
 | `get_file_outline` as pure SQLite query | Avoids Tantivy involvement; leverages existing `symbol_relations` table |
-| Prewarm as blocking-then-ready | Ensures first query gets warm performance; `--no-prewarm` for opt-out |
+| Prewarm as async-after-handshake | Preserves MCP readiness while warming indices in background; `--no-prewarm` for opt-out |
 | Freshness policy as enum | Three clear levels avoid ambiguous intermediate states |
-| `ranking_reasons` gated by debug flag | Zero overhead in production; opt-in for troubleshooting |
+| `ranking_reasons` gated by `ranking_explain_level` | `off` keeps zero-overhead default, `basic`/`full` enable explainability as needed |

@@ -17,7 +17,9 @@ An AI coding agent working across multiple projects in the same session sends a
 CodeCompass resolves the workspace, routes the query to the correct project index,
 and returns results scoped to that workspace. If the workspace has not been indexed
 yet and `--auto-workspace` is enabled, CodeCompass triggers on-demand indexing and
-returns partial results with appropriate status metadata.
+returns partial results with appropriate status metadata. When MCP server startup
+pins a workspace context, the server auto-injects that workspace for requests that
+omit `workspace`.
 
 **Why this priority**: AI agents routinely work across multiple repositories in a
 single session. Without multi-workspace support, users must restart the MCP server
@@ -57,6 +59,12 @@ a subsequent query returns indexed results.
    `get_symbol_hierarchy`, `find_related_symbols`, `get_code_context`), **When**
    `tools/list` is called, **Then** every tool schema includes `workspace` as an
    optional string parameter.
+9. **Given** `serve-mcp --workspace /home/dev/project-a`, **When** `search_code`
+   is called without a `workspace` field, **Then** server middleware auto-injects
+   `/home/dev/project-a` and executes scoped search successfully.
+10. **Given** warmset prewarm is enabled, **When** server starts with 5 known
+   workspaces, **Then** only the most recently used bounded subset (for example
+   top 3) is prewarmed and exposed in health metadata.
 
 ---
 
@@ -152,6 +160,9 @@ an MCP `tools/list` request via HTTP POST and verify the response.
 - What happens when an index job fails mid-progress?
   The progress notification emits `kind: "end"` with an error message. `index_status`
   shows the job in `failed` state.
+- What happens when the process restarts while indexing is running?
+  Unfinished jobs are marked `interrupted`; `index_status` and `health_check`
+  include an `interrupted_recovery_report` until a successful follow-up sync/index.
 - What happens when `workspace` is a relative path?
   It is resolved to an absolute path via `realpath` before any validation or routing.
 - What happens when the HTTP server receives a request with no Content-Type header?
@@ -161,8 +172,8 @@ an MCP `tools/list` request via HTTP POST and verify the response.
 
 ### Functional Requirements
 
-- **FR-300**: All existing MCP tools MUST accept an optional `workspace` string parameter
-  specifying the target workspace path.
+- **FR-300**: All query/path MCP tools (existing and future additions) MUST accept an
+  optional `workspace` string parameter specifying the target workspace path.
 - **FR-301**: When `workspace` is omitted, the system MUST use the default registered
   project (from `codecompass init` or `--workspace` flag on startup).
 - **FR-302**: When `workspace` points to an indexed project, the system MUST route
@@ -210,6 +221,15 @@ an MCP `tools/list` request via HTTP POST and verify the response.
   use case).
 - **FR-323**: All `workspace` path inputs MUST be validated via `realpath` against
   the allowed roots allowlist before any filesystem or index operation.
+- **FR-324**: MCP server middleware MUST support workspace auto-injection from
+  startup context when request payload omits `workspace`.
+- **FR-325**: All tool responses in this spec MUST use canonical metadata enums:
+  `indexing_status` = `not_indexed | indexing | ready | failed`,
+  `result_completeness` = `complete | partial | truncated`.
+- **FR-326**: System MUST maintain a bounded workspace warmset derived from
+  `known_workspaces.last_used_at` and prewarm only warmset members during startup.
+- **FR-327**: `index_status` and `health_check` MUST expose
+  `interrupted_recovery_report` when interrupted jobs are detected after restart.
 
 ### Key Entities
 
@@ -237,3 +257,9 @@ an MCP `tools/list` request via HTTP POST and verify the response.
   stdio transport responses for the same inputs.
 - **SC-305**: Path traversal and symlink escape attempts are blocked with zero
   false negatives in the security test suite.
+- **SC-306**: Contract tests fail build when any query/path tool omits the
+  `workspace` parameter in `tools/list` schema output.
+- **SC-307**: Warmset-enabled startup reduces first-query p95 latency for recent
+  workspaces to < 400ms without increasing total startup time by more than 15%.
+- **SC-308**: After restart with interrupted jobs, `interrupted_recovery_report`
+  is visible within 1s and cleared automatically after successful remediation.

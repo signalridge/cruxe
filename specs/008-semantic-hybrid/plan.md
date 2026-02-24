@@ -18,15 +18,17 @@ This plan optimizes the original design in five areas:
 3. **Privacy guardrails**: external providers blocked unless explicitly allowed.
 4. **Confidence robustness**: low-confidence detection uses composite signals.
 5. **Model lifecycle**: explicit embedding model versioning and re-embed policy.
+6. **Intent observability**: emit `query_intent_confidence` + escalation hints for agents.
+7. **Profile guidance**: optional advisor recommends profile tiers without mutating config.
 
 ## Technical Context
 
 **Language/Version**: Rust (latest stable, 2024 edition)  
 **New Dependencies**:
 - Track A: `reqwest` (external rerank API, optional path)
-- Track B only: `lancedb` (embedded vector DB), `ort` (ONNX Runtime, local embeddings)
+- Track B only: `fastembed` (local embedding/rerank runtime), optional pluggable vector backend adapter (`lancedb` feature-gated if needed)
 
-**Storage**: Track A uses existing Tantivy + SQLite; Track B adds LanceDB  
+**Storage**: Track A uses existing Tantivy + SQLite; Track B adds embedded vector persistence via local vector segment/table (adapter-pluggable)  
 **Testing**: cargo test + fixture repos + stratified NL benchmark suite  
 **Performance Goals**:
 - hybrid path latency overhead < 200ms p95 (warm)
@@ -111,8 +113,8 @@ crates/
 │       └── types.rs                 # UPDATE: hybrid/confidence/provenance metadata types
 ├── codecompass-state/
 │   └── src/
-│       ├── vector_index.rs          # NEW (Track B): LanceDB CRUD keyed by stable symbol identity
-│       └── embedding.rs             # NEW (Track B): embedding provider abstraction + profile support
+│       ├── vector_index.rs          # NEW (Track B): embedded vector CRUD keyed by stable symbol identity
+│       └── embedding.rs             # NEW (Track B): fastembed-first provider abstraction + profile support
 ├── codecompass-indexer/
 │   └── src/
 │       ├── embed_writer.rs          # NEW (Track B): embedding generation/storage pipeline
@@ -139,15 +141,16 @@ mode = "off" # off | rerank_only | hybrid
 ratio = 0.3
 lexical_short_circuit_threshold = 0.85
 confidence_threshold = 0.5
+profile_advisor_mode = "off" # off | suggest
 external_provider_enabled = false
 allow_code_payload_to_external = false
 
 [semantic.embedding]
-profile = "fast_local" # fast_local | code_quality | external
+profile = "fast_local" # fast_local | code_quality | high_quality | external
 provider = "local"     # local | voyage | openai
-model = "all-MiniLM-L6-v2"
-model_version = "onnx-1"
-dimensions = 384
+model = "NomicEmbedTextV15Q"
+model_version = "fastembed-1"
+dimensions = 768
 batch_size = 32
 
 [semantic.rerank]
@@ -160,12 +163,12 @@ timeout_ms = 5000
 1. **Stage A (safe baseline)**: `semantic_mode = rerank_only`, rerank provider `none` or local-only.
 2. **Stage B (quality uplift)**: enable external rerank under explicit privacy flags.
 3. **Stage C (optional hybrid)**: enable `semantic_mode = hybrid` and embedded vector path.
-4. **Stage D (profile expansion)**: add `code_quality` embedding profile if benchmark proves gain.
+4. **Stage D (profile expansion)**: add `code_quality` / `high_quality` local profiles only when repo-bucket benchmarks prove gain.
 
 ## Complexity Tracking
 
-- **LanceDB**: accepted as embedded vector store with lowest operational overhead.
-- **ORT**: accepted for offline/local embedding path.
+- **fastembed**: accepted as primary Rust-native local embedding/rerank runtime.
+- **Vector backend adapter**: keep default embedded local segment/table, optional LanceDB adapter behind feature flag when needed.
 - **reqwest**: optional external path only; behind privacy and provider flags.
 
 Primary complexity risk is lifecycle drift (model upgrades + vector compatibility). Mitigated by:

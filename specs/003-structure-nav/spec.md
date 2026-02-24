@@ -177,6 +177,10 @@ the response does not exceed 500.
 - What happens when `symbol_edges` has stale edges after partial re-indexing?
   Edges are replaced per-file during indexing (all edges with matching
   `from_symbol_id` for the re-indexed file are deleted and re-created).
+- Why do these tools not expose `compact` in this phase?
+  `003` tools are token-budget-driven by design (`max_tokens` + strategy shaping),
+  while `compact` remains focused on `search_code`/`locate_symbol` from `002`.
+  Future phases may add `compact` here if benchmark evidence shows agent benefit.
 
 ## Requirements
 
@@ -210,13 +214,18 @@ the response does not exceed 500.
   `metadata` fields in every response.
 - **FR-211**: All new MCP tools MUST include Protocol v1 metadata in responses
   (`codecompass_protocol_version`, `freshness_status`, `indexing_status`,
-  `result_completeness`, `ref`).
+  `result_completeness`, `ref`) and use canonical enums:
+  `indexing_status` = `not_indexed | indexing | ready | failed`,
+  `result_completeness` = `complete | partial | truncated`.
 - **FR-212**: All new MCP tools MUST accept an optional `ref` parameter for
   ref-scoped queries, defaulting to current HEAD or `"live"`.
 - **FR-213**: `get_code_context` default `max_tokens` MUST be 4000 when the
   parameter is not provided.
 - **FR-214**: Graph traversal in `get_symbol_hierarchy` and `find_related_symbols`
   MUST implement cycle detection to handle circular references safely.
+- **FR-215**: `get_symbol_hierarchy`, `find_related_symbols`, and `get_code_context`
+  in `003` rely on token-budget controls rather than a dedicated `compact` flag;
+  any `compact` extension for these tools is explicitly deferred.
 
 ### Key Entities
 

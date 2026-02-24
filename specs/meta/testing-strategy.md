@@ -23,10 +23,15 @@ migrated_from: plan/verify/testing-strategy.md
 |---------|--------------|----------|
 | Query intent classification | 001-core-mvp | `symbol` / `path` / `error` / `natural_language` |
 | Ranking rules | 001-core-mvp | deterministic lexical and rule boosts |
+| Structural path boost | 002-agent-protocol | penalties/bonuses by path pattern and multiplicative behavior |
+| Compact serialization | 002-agent-protocol | `detail_level` + `compact` interaction and field guarantees |
+| Explainability levels | 002-agent-protocol | `ranking_explain_level` (`off`/`basic`/`full`) payload gating |
 | Parser extraction | 001-core-mvp | language-specific symbol extraction |
 | Tokenizers | 001-core-mvp | `code_camel`, `code_snake`, `code_dotted`, `code_path` |
 | Symbol graph traversal | 003-structure-nav | hierarchy and related-symbol traversal |
 | Token budget estimation | 003-structure-nav | context sizing and truncation behavior |
+| Result dedup and hard limits | 002-agent-protocol | duplicate suppression, truncation metadata, graceful degrade |
+| Intent confidence calibration | 008-semantic-hybrid | `query_intent_confidence` thresholds and escalation triggers |
 | VCS merge semantics | 005-vcs-core | merge keys, tombstones, overlay precedence |
 | Tooling determinism | 006-vcs-ga-tooling | stable `explain_ranking` outputs |
 
@@ -37,9 +42,13 @@ migrated_from: plan/verify/testing-strategy.md
 | Index pipeline end-to-end | 001-core-mvp | scan -> parse -> write -> query |
 | MCP contract conformance | 001-core-mvp and later tool specs | schema/shape validation |
 | `detail_level` serialization | 002-agent-protocol | response shape by verbosity |
+| Metadata enum conformance | meta + all contracts | `indexing_status` and `result_completeness` canonical values |
 | Diff/ref tooling behavior | 006-vcs-ga-tooling | `diff_context`, `find_references`, `switch_ref` |
 | Call graph extraction/query | 007-call-graph | call edges and traversal correctness |
 | Hybrid fallback behavior | 008-semantic-hybrid | provider failure -> local fallback |
+| Watch daemon lifecycle | 004-workspace-transport | `watch --background/--status/--stop` and readiness behavior |
+| Interrupted job recovery status | 004-workspace-transport | restart leaves clear `interrupted_recovery_report` in `index_status`/`health_check` |
+| Profile advisor output | 008-semantic-hybrid | recommendation consistency by repo-size/language buckets |
 
 ### 3. End-to-End Tests
 
@@ -49,7 +58,9 @@ migrated_from: plan/verify/testing-strategy.md
 | Branch overlay correctness | 005-vcs-core | no cross-ref leakage |
 | GA tooling workflows | 006-vcs-ga-tooling | branch diff/ref workflows |
 | Multi-workspace routing | 004-workspace-transport | workspace-scoped result isolation |
+| Workspace warmset behavior | 004-workspace-transport | recent workspaces prewarmed, cold workspace fallback correctness |
 | Context budget truncation | 003-structure-nav | `max_tokens` never exceeded |
+| Agent compact flow | 002-agent-protocol | same query in compact/non-compact preserves ordering and follow-up handles |
 
 ### 4. Relevance & Performance Benchmarks
 
@@ -59,6 +70,13 @@ migrated_from: plan/verify/testing-strategy.md
 | path | `src/auth/handler.rs` | top-1 recall |
 | error | `connection refused` | top-3 precision |
 | natural_language | `how does auth work` | top-5 relevance + MRR uplift |
+
+Additional benchmark assertions:
+
+- structural boost reduces test/mock/generated over-ranking on mixed-intent suites,
+- dedup improves top-k diversity without harming top-1 precision,
+- semantic evaluation is reported per repo-size bucket (`<10k`, `10k-50k`, `>50k` files),
+- benchmark kit re-runs on the same fixture/query pack should keep ranking metrics stable within configured drift tolerance.
 
 For phase `008-semantic-hybrid`, the natural-language benchmark set should contain
 at least 100 labeled queries, stratified across Rust/TypeScript/Python/Go

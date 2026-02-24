@@ -31,10 +31,10 @@
 
 **Purpose**: Centralized workspace resolution middleware for all MCP tool calls
 
-- [ ] T204 [US1] Implement `crates/codecompass-mcp/src/workspace_router.rs`: `WorkspaceRouter` struct holding `WorkspaceConfig`, state DB handle, and indexer handle. Core method: `resolve_workspace(workspace_param: Option<String>) -> Result<ProjectContext>` that handles: (1) None -> default project, (2) known workspace -> load project, (3) unknown + auto-workspace enabled -> validate path, register, trigger on-demand index, (4) unknown + auto-workspace disabled -> error
+- [ ] T204 [US1] Implement `crates/codecompass-mcp/src/workspace_router.rs`: `WorkspaceRouter` struct holding `WorkspaceConfig`, state DB handle, and indexer handle. Core method: `resolve_workspace(workspace_param: Option<String>) -> Result<ProjectContext>` that handles: (1) None -> default or auto-injected startup workspace, (2) known workspace -> load project, (3) unknown + auto-workspace enabled -> validate path, register, trigger on-demand index, (4) unknown + auto-workspace disabled -> error
 - [ ] T205 [US1] Implement on-demand indexing trigger in `workspace_router.rs`: when auto-discovering a new workspace, call `register_workspace(auto_discovered=1)`, create project entry, spawn async indexing task, return `ProjectContext` with `indexing_status: "indexing"`
 - [ ] T206 [US1] Implement startup validation in `workspace_router.rs`: if `auto_workspace` is true and `allowed_roots` is empty, return `AllowedRootRequired` error at server startup (not at first request)
-- [ ] T207 [US1] Add `workspace: Option<String>` parameter to all 10 MCP tool input schemas in `crates/codecompass-mcp/src/tools/`: `index_repo`, `sync_repo`, `search_code`, `locate_symbol`, `index_status`, `get_file_outline`, `health_check`, `get_symbol_hierarchy`, `find_related_symbols`, `get_code_context`
+- [ ] T207 [US1] Add `workspace: Option<String>` parameter to all 10 MCP tool input schemas in `crates/codecompass-mcp/src/tools/`: `index_repo`, `sync_repo`, `search_code`, `locate_symbol`, `index_status`, `get_file_outline`, `health_check`, `get_symbol_hierarchy`, `find_related_symbols`, `get_code_context`; add a contract test guard that fails when future query/path tools omit `workspace`
 - [ ] T208 [US1] Wire `WorkspaceRouter::resolve_workspace()` into the MCP server dispatch loop in `crates/codecompass-mcp/src/server.rs`: extract `workspace` param from tool call input, resolve to `ProjectContext`, pass context to tool handler
 - [ ] T209 [US1] Write integration test: start MCP server with two pre-registered workspaces, call `locate_symbol` with each workspace, verify results come from the correct project index
 - [ ] T210 [US1] Write integration test: start MCP server with `--auto-workspace --allowed-root /tmp`, call `search_code` with unknown workspace under `/tmp`, verify workspace is registered and indexing starts
@@ -92,8 +92,11 @@
 - [ ] T235 [P] [US3] Write security test: verify HTTP server defaults to `127.0.0.1` bind, not `0.0.0.0`
 - [ ] T236 [US1] Implement workspace eviction: when `max_auto_workspaces` limit is reached, evict the LRU auto-discovered workspace (by `last_used_at`), clean up its index data, log the eviction
 - [ ] T237 [P] Add `--help` text for new CLI flags: `--transport`, `--port`, `--bind`, `--auto-workspace`, `--allowed-root` with usage examples
-- [ ] T238 Update `tools/list` response to include `workspace` parameter in all tool schemas, and ensure HTTP error mapping uses canonical machine-readable `error.code` values from `specs/meta/protocol-error-codes.md` (including malformed JSON-RPC and workspace/compatibility failures)
+- [ ] T238 Update `tools/list` response to include `workspace` parameter in all tool schemas, ensure HTTP error mapping uses canonical machine-readable `error.code` values from `specs/meta/protocol-error-codes.md` (including malformed JSON-RPC and workspace/compatibility failures), and normalize metadata enums (`indexing_status`, `result_completeness`) in all updated tool contracts
 - [ ] T239 [P] Write E2E test: start server with `--auto-workspace --allowed-root /tmp`, auto-discover 3 workspaces, query each, verify `known_workspaces` table has 3 entries with correct `last_used_at` updates
+- [ ] T454 [US1] Implement warmset prewarm selection in `crates/codecompass-cli/src/commands/serve_mcp.rs` and `crates/codecompass-state/src/workspace.rs`: load most-recently-used workspaces up to configurable bound and prewarm only those indices
+- [ ] T455 [US2] Implement interrupted job reconciliation in `crates/codecompass-state/src/jobs.rs`: mark leftover running jobs as `interrupted` on startup and surface `interrupted_recovery_report` via `crates/codecompass-mcp/src/tools/index_status.rs` and `crates/codecompass-mcp/src/tools/health_check.rs`
+- [ ] T456 [P] [US2] Add integration tests for restart recovery + warmset behavior: verify interrupted report visibility and warmset-first latency improvements on recent workspaces
 
 **Checkpoint**: Security hardened, CLI documented, E2E scenarios pass
 
@@ -145,4 +148,4 @@
 - [USn] label maps task to specific user story
 - Commit after each task or logical group
 - Stop at any checkpoint to validate independently
-- Total: 44 tasks, 5 phases
+- Total: 47 tasks, 5 phases

@@ -14,7 +14,9 @@ New optional parameters added to the existing `search_code` tool:
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `detail_level` | string | no | Response verbosity: `"location"`, `"signature"` (default), `"context"`. |
+| `compact` | bool | no | Token-thrifty serialization flag. Keeps identity/location/score fields and omits large context blocks by default. |
 | `freshness_policy` | string | no | Override freshness behavior: `"strict"`, `"balanced"` (default), `"best_effort"`. |
+| `ranking_explain_level` | string | no | Explainability payload level: `"off"` (default), `"basic"`, `"full"`. |
 
 ### `locate_symbol` — Added Parameters
 
@@ -23,7 +25,9 @@ New optional parameters added to the existing `locate_symbol` tool:
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `detail_level` | string | no | Response verbosity: `"location"`, `"signature"` (default), `"context"`. |
+| `compact` | bool | no | Token-thrifty serialization flag. Works with any `detail_level`. |
 | `freshness_policy` | string | no | Override freshness behavior: `"strict"`, `"balanced"` (default), `"best_effort"`. |
+| `ranking_explain_level` | string | no | Explainability payload level: `"off"` (default), `"basic"`, `"full"`. |
 
 ### Detail Level Response Shapes
 
@@ -85,10 +89,14 @@ New optional parameters added to the existing `locate_symbol` tool:
 Fields that are unavailable (e.g., no parent, no related symbols) are omitted
 from the response, not set to null.
 
-### Ranking Reasons (Debug Mode Only)
+`compact: true` applies after `detail_level` shaping and removes large optional
+payloads (for example body previews) while preserving deterministic follow-up
+handles.
 
-When `--verbose` or `debug: true` is configured, the response metadata includes
-a `ranking_reasons` field:
+### Ranking Reasons (`ranking_explain_level`)
+
+When `ranking_explain_level` is set to `basic` or `full`, the response metadata
+includes a `ranking_reasons` field:
 
 ```json
 {
@@ -96,7 +104,7 @@ a `ranking_reasons` field:
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main",
     "ranking_reasons": [
@@ -125,7 +133,11 @@ a `ranking_reasons` field:
 }
 ```
 
-When debug mode is disabled, `ranking_reasons` is absent from the response.
+`ranking_explain_level` behavior:
+
+- `off` (default): `ranking_reasons` is absent.
+- `basic`: return compact normalized factors for agent routing.
+- `full`: return complete debug scoring breakdown (example payload above).
 
 ### Freshness Policy Behavior
 
@@ -276,6 +288,12 @@ Return project-level operational status for all registered projects.
     "missing": []
   },
   "active_job": null,
+  "interrupted_recovery_report": null,
+  "workspace_warmset": {
+    "enabled": true,
+    "capacity": 3,
+    "members": ["/path/to/repo"]
+  },
   "prewarm_status": "complete",
   "startup_checks": {
     "index": {
@@ -338,6 +356,14 @@ If `startup_checks.index.status` is:
 }
 ```
 
+### Recovery/Warmset Extensions
+
+`004-workspace-transport` extends health surfaces with:
+
+- `interrupted_recovery_report`: present when startup reconciliation finds
+  interrupted jobs (otherwise null/omitted).
+- `workspace_warmset`: bounded recent-workspace set chosen for startup prewarm.
+
 ### Errors
 
 | Code | Meaning |
@@ -359,7 +385,11 @@ Config file additions (`config.toml`):
 # Default freshness policy: "strict", "balanced", "best_effort"
 freshness_policy = "balanced"
 
-[debug]
-# Enable ranking reasons in search responses
-ranking_reasons = false
+# Ranking explainability payload level: "off", "basic", "full"
+ranking_explain_level = "off"
 ```
+
+Compatibility note:
+
+- legacy `debug.ranking_reasons` may still be accepted by pre-migration builds.
+- when both are present, `ranking_explain_level` is authoritative.

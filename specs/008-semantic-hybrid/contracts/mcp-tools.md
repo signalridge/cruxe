@@ -17,8 +17,8 @@ Included in every search response when semantic search is available:
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
-    "indexing_status": "idle | indexing | partial_available",
-    "result_completeness": "complete | partial",
+    "indexing_status": "not_indexed | indexing | ready | failed",
+    "result_completeness": "complete | partial | truncated",
     "ref": "main",
     "semantic_mode": "off | rerank_only | hybrid",
     "semantic_enabled": true,
@@ -26,7 +26,7 @@ Included in every search response when semantic search is available:
     "semantic_triggered": true,
     "semantic_skipped_reason": null,
     "external_provider_blocked": false,
-    "embedding_model_version": "onnx-1",
+    "embedding_model_version": "fastembed-1",
     "rerank_provider": "cohere | voyage | local | none",
     "rerank_fallback": false,
     "low_confidence": false,
@@ -34,7 +34,9 @@ Included in every search response when semantic search is available:
     "confidence_threshold": 0.5,
     "top_score": 0.82,
     "score_margin": 0.11,
-    "channel_agreement": 0.67
+    "channel_agreement": 0.67,
+    "query_intent_confidence": 0.91,
+    "intent_escalation_hint": null
   }
 }
 ```
@@ -89,7 +91,7 @@ Now supports optional semantic/hybrid search for natural language queries.
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main",
     "semantic_mode": "hybrid",
@@ -98,7 +100,7 @@ Now supports optional semantic/hybrid search for natural language queries.
     "semantic_triggered": true,
     "semantic_skipped_reason": null,
     "external_provider_blocked": false,
-    "embedding_model_version": "onnx-1",
+    "embedding_model_version": "fastembed-1",
     "rerank_provider": "cohere",
     "rerank_fallback": false,
     "low_confidence": false,
@@ -106,7 +108,9 @@ Now supports optional semantic/hybrid search for natural language queries.
     "confidence_threshold": 0.4,
     "top_score": 0.82,
     "score_margin": 0.11,
-    "channel_agreement": 0.67
+    "channel_agreement": 0.67,
+    "query_intent_confidence": 0.91,
+    "intent_escalation_hint": null
   }
 }
 ```
@@ -131,6 +135,8 @@ Now supports optional semantic/hybrid search for natural language queries.
 | `metadata.top_score` | float | Top result score used in composite confidence evaluation. |
 | `metadata.score_margin` | float | Difference between top1 and top2 scores used in composite confidence evaluation. |
 | `metadata.channel_agreement` | float | Agreement signal between lexical and semantic channels (0.0-1.0). |
+| `metadata.query_intent_confidence` | float | Confidence of intent classification (0.0-1.0). |
+| `metadata.intent_escalation_hint` | string/null | Agent hint when intent confidence is low (for example retry intent as symbol/path/NL). |
 
 ### Semantic Search Behavior by Intent
 
@@ -182,25 +188,30 @@ lexical_short_circuit_threshold = 0.85
 # Confidence threshold for low-confidence detection
 confidence_threshold = 0.5
 
+# Profile advisor mode:
+# - off: do not emit profile recommendation
+# - suggest: emit recommendation in diagnostics/status output
+profile_advisor_mode = "off"
+
 # Global policy gates for outbound provider calls (secure-by-default)
 external_provider_enabled = false
 allow_code_payload_to_external = false
 
 [semantic.embedding]
-# Embedding profile: "fast_local", "code_quality", or "external"
+# Embedding profile: "fast_local", "code_quality", "high_quality", or "external"
 profile = "fast_local"
 
 # Embedding provider: "local", "voyage", or "openai"
 provider = "local"
 
-# Model name (for local: ONNX model name, for API: model identifier)
-model = "all-MiniLM-L6-v2"
+# Model name (for local: fastembed model ID, for API: model identifier)
+model = "NomicEmbedTextV15Q"
 
 # Embedding model version (used for vector compatibility partitioning)
-model_version = "onnx-1"
+model_version = "fastembed-1"
 
 # Embedding dimensions (must match model output)
-dimensions = 384
+dimensions = 768
 
 # Batch size for embedding generation during indexing
 batch_size = 32

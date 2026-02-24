@@ -81,6 +81,22 @@ These are cross-spec priorities to reduce implementation risk and agent/runtime 
 | H6 | Fail-soft rerank + strict external privacy gates | 008 |
 | H7 | Deterministic `suggested_next_actions` in low-confidence/truncated responses | 001, 003, 007, 008 |
 
+## Competitive Hardening Stream (claude-context + grepai refresh)
+
+These items are now canonically embedded in this roadmap and linked specs.
+
+| Stream | Window | Scope | Primary Specs |
+|---|---|---|---|
+| P0 | 1-2 weeks | Workspace parameter parity, structural path boost, normalized status/completeness metadata, compact mode, dedup, hard safety limits | 002, 004, meta |
+| P1 | 1-2 months | Watch daemon lifecycle (`start/status/stop`), workspace auto-injection and root guardrails, search intent hardening, trace tool baseline, ranking explainability | 004, 007, meta |
+| P2 | 2-4 months | Semantic mode split rollout (`off/rerank_only/hybrid`), local embedding provider presets, local rerank path, semantic cache and benchmark gates | 008, meta |
+
+Execution rule:
+
+1. finish P0 before enabling broader semantic rollout,
+2. deliver P1 watcher + workspace ergonomics before GA-scale multi-repo usage,
+3. keep P2 opt-in until benchmark gates pass on all repo-size buckets.
+
 ## Verification Plans
 
 | Plan | File | Scope |
@@ -98,8 +114,22 @@ These are cross-spec priorities to reduce implementation risk and agent/runtime 
 | Overlay eviction policy | [design.md §9.1](design.md#91-branch-aware-indexing-strategy-default-no-full-reindex) | Lifecycle optimization |
 | Segment force-merge | [design.md §9.1](design.md#91-branch-aware-indexing-strategy-default-no-full-reindex) | Index maintenance |
 | `codecompass migrate-index` | [design.md §15](design.md#15-schema-versioning-and-migration-plan) | Schema migration command |
-| Local file watcher | [design.md §9.7](design.md#97-index-update-timing-and-trigger-policy-authoritative) | Event-driven sync |
+| Local watch daemon lifecycle | [design.md §9.7](design.md#97-index-update-timing-and-trigger-policy-authoritative) | `watch` + `--background/--status/--stop` ergonomics |
 | Periodic reconcile trigger | [design.md §9.7](design.md#97-index-update-timing-and-trigger-policy-authoritative) | Low-frequency consistency pass |
+| Compact output contract | [design.md §10.3](design.md#103-agent-aware-detail-levels-token-budget-optimization) | Token-thrifty agent responses |
+| Result dedup + truncation metadata | [design.md §10.2](design.md#102-search-response-metadata-contract-protocol-v1) | Reduce duplicate-heavy payloads safely |
+| Structural path boost defaults | [design.md §7.1.2](design.md#712-structural-path-boost-default-on) | Better top-k precision in code tasks |
+| Local embedding model presets | [design.md §7.2](design.md#72-v2-optional-hybrid-semantic) | Rust-friendly semantic quality tiers |
+| `ranking_explain_level` (`off`/`basic`/`full`) | [design.md §10.3](design.md#103-agent-aware-detail-levels-token-budget-optimization) | Explainability depth control without always emitting full debug payload |
+| `query_intent_confidence` metadata | [design.md §7.4](design.md#74-augment-inspired-search-behaviors-to-adopt-local-first) | Let agents decide whether to trigger semantic/rerank escalation |
+| `interrupted_recovery_report` in status tools | [design.md §10.10](design.md#1010-index-progress-notifications) | Crash/restart visibility for interrupted indexing jobs |
+| Workspace warmset prewarm | [design.md §10.7](design.md#107-multi-workspace-auto-discovery) | Reduce first-query latency for recently active workspaces |
+| Semantic model profile advisor | [design.md §7.2](design.md#72-v2-optional-hybrid-semantic) | Auto-recommend `fast_local` / `code_quality` / `high_quality` by repo traits |
+| Reproducible benchmark kit | [benchmark-targets.md](benchmark-targets.md) | Stable fixture + query packs for competitor and regression comparison |
+| "Why not found" diagnostics | [design.md §10.2](design.md#102-search-response-metadata-contract-protocol-v1) | Agent-facing retrieval debugging |
+| Confidence-aware truncation policy | [design.md §10.2](design.md#102-search-response-metadata-contract-protocol-v1) | Prevent low-value payload spill |
+| Session-aware context memory | 003/008 extension | Reuse recently helpful snippets/symbols |
+| Token budget contract tests | [testing-strategy.md](testing-strategy.md) | CI guard for MCP payload inflation |
 | Docker image for CI | 009 extension | Optional distribution channel |
 | npm wrapper | 009 extension | Optional install channel |
 

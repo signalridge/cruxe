@@ -32,6 +32,17 @@ Starting in v0.3.0, all MCP tools accept an optional `workspace` parameter.
    e. Trigger on-demand bootstrap indexing.
    f. Return tool response with `indexing_status: "indexing"`, `result_completeness: "partial"`.
 
+When server startup pins a workspace context, middleware auto-injects that
+workspace for requests that omit `workspace`, while still allowing explicit
+per-request override.
+
+### Canonical Metadata Enums
+
+All response examples in this contract use:
+
+- `indexing_status`: `not_indexed | indexing | ready | failed`
+- `result_completeness`: `complete | partial | truncated`
+
 ### Workspace Errors
 
 | Code | Meaning |
@@ -170,6 +181,12 @@ Response (during active indexing):
     "estimated_completion_pct": 32,
     "started_at": "2026-02-23T10:29:15Z"
   },
+  "interrupted_recovery_report": {
+    "detected": true,
+    "interrupted_jobs": 1,
+    "last_interrupted_at": "2026-02-23T10:11:00Z",
+    "recommended_action": "run sync_repo or index_repo for the affected workspace"
+  },
   "metadata": { ... }
 }
 ```
@@ -181,6 +198,14 @@ Response (during active indexing):
 | `active_job.files_indexed` | int | Files fully indexed so far. |
 | `active_job.symbols_extracted` | int | Symbols extracted so far. |
 | `active_job.estimated_completion_pct` | int | Estimated completion (0-100). |
+| `interrupted_recovery_report` | object | Present when startup reconciliation found interrupted jobs; omitted otherwise. |
+
+### `health_check` Extension (v0.3.0)
+
+`health_check` keeps its schema from `002-agent-protocol` and adds:
+
+- `interrupted_recovery_report` (same shape as `index_status`)
+- optional `workspace_warmset` status block for startup prewarm visibility
 
 ---
 
@@ -252,7 +277,12 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
     }
   ],
   "version": "0.3.0",
-  "uptime_seconds": 3600
+  "uptime_seconds": 3600,
+  "workspace_warmset": {
+    "enabled": true,
+    "capacity": 3,
+    "members": ["/Users/dev/backend", "/Users/dev/frontend"]
+  }
 }
 ```
 
@@ -272,6 +302,7 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
 | `projects[].symbol_count` | int | Number of indexed symbols. |
 | `version` | string | CodeCompass version. |
 | `uptime_seconds` | int | Seconds since server started. |
+| `workspace_warmset` | object | Warmset status for startup prewarm optimization (capacity is configurable; examples use `3`). |
 
 ### Status Logic
 

@@ -22,19 +22,19 @@
 
 ---
 
-## Phase 2: Vector Store (LanceDB Integration, `semantic_mode = hybrid` only)
+## Phase 2: Vector Store (Embedded Local Backend, `semantic_mode = hybrid` only)
 
 **Purpose**: Embedded vector storage for code snippet embeddings
 
-- [ ] T368 [US1] Add `lancedb` dependency to `crates/codecompass-state/Cargo.toml` (hybrid mode only)
-- [ ] T369 [US1] Implement LanceDB index management in `crates/codecompass-state/src/vector_index.rs`: create index (lazy, on first use), insert vectors with stable metadata key (`project_id`, `ref`, `symbol_stable_id`, `snippet_hash`, `embedding_model_version`), query nearest neighbors (cosine similarity) with model-version filter, delete vectors by `symbol_stable_id`+ref, schema versioning (hybrid mode only)
-- [ ] T370 [US1] Implement embedding model abstraction in `crates/codecompass-state/src/embedding.rs`: `EmbeddingProvider` trait with model id/version/dimension handshake, local ONNX implementation using `ort` crate, external API implementation (Voyage/OpenAI), model profile selection (`fast_local`/`code_quality`), model download + caching in `~/.codecompass/models/` (hybrid mode only)
-- [ ] T371 [US1] Implement local ONNX embedding in `crates/codecompass-state/src/embedding.rs`: load all-MiniLM-L6-v2 ONNX model, tokenize input, run inference, return 384-dim vectors (hybrid mode only)
+- [ ] T368 [US1] Add `fastembed` dependency to `crates/codecompass-state/Cargo.toml`; keep optional `lancedb` adapter feature-gated for advanced deployments (hybrid mode only)
+- [ ] T369 [US1] Implement embedded vector index management in `crates/codecompass-state/src/vector_index.rs`: create store (lazy, on first use), insert vectors with stable metadata key (`project_id`, `ref`, `symbol_stable_id`, `snippet_hash`, `embedding_model_version`), query nearest neighbors with model-version filter, delete vectors by `symbol_stable_id`+ref, schema versioning (hybrid mode only)
+- [ ] T370 [US1] Implement embedding abstraction in `crates/codecompass-state/src/embedding.rs`: `EmbeddingProvider` trait with model id/version/dimension handshake, local `fastembed` implementation, external API adapters (Voyage/OpenAI), model profile selection (`fast_local`/`code_quality`/`high_quality`) (hybrid mode only)
+- [ ] T371 [US1] Implement local profile presets in `crates/codecompass-state/src/embedding.rs`: map config profiles to concrete models (`NomicEmbedTextV15Q`, `BGESmallENV15Q`, `BGEBaseENV15Q`, `JinaEmbeddingsV2BaseCode`, optional high-quality models) and validate dimensions at startup (hybrid mode only)
 - [ ] T372 [P] [US1] Implement external embedding API client in `crates/codecompass-state/src/embedding.rs`: support Voyage Code 2 and OpenAI embedding endpoints, read API key from `CODECOMPASS_EMBEDDING_API_KEY` env var, enforce `external_provider_enabled && allow_code_payload_to_external` gates before outbound requests (hybrid mode only)
-- [ ] T373 [US1] Write unit tests for vector index: insert/query/delete by stable symbol key, verify model-version partitioning, verify schema versioning (hybrid mode only)
-- [ ] T374 [P] [US1] Write unit tests for embedding model: verify output dimensions match config, verify batch processing, verify model download/caching (hybrid mode only)
+- [ ] T373 [US1] Write unit tests for vector index: insert/query/delete by stable symbol key, verify model-version partitioning, verify schema versioning, verify graceful fallback when optional adapter is unavailable (hybrid mode only)
+- [ ] T374 [P] [US1] Write unit tests for embedding profiles: verify output dimensions match config, verify profile->model mapping, verify batch processing and cache behavior (hybrid mode only)
 
-**Checkpoint**: LanceDB index can store and query code embeddings
+**Checkpoint**: Embedded vector index can store and query code embeddings
 
 ---
 
@@ -42,10 +42,10 @@
 
 **Purpose**: Generate and store embeddings during the indexing pipeline
 
-- [ ] T375 [US1] Implement embedding writer in `crates/codecompass-indexer/src/embed_writer.rs`: accept code snippets with `symbol_stable_id`, generate embeddings via `EmbeddingProvider`, batch-write to LanceDB with model version metadata, skip unless `semantic_mode = hybrid`
+- [ ] T375 [US1] Implement embedding writer in `crates/codecompass-indexer/src/embed_writer.rs`: accept code snippets with `symbol_stable_id`, generate embeddings via `EmbeddingProvider`, batch-write to embedded vector index with model version metadata, skip unless `semantic_mode = hybrid`
 - [ ] T376 [US1] Integrate embedding writer into indexing pipeline in `crates/codecompass-indexer/src/writer.rs`: after snippet extraction, call embed_writer for each snippet when semantic is enabled
 - [ ] T377 [US1] Update incremental sync in `crates/codecompass-indexer/src/writer.rs`: when a file changes, delete old embeddings by stable symbol key for that ref+model version before re-generating
-- [ ] T378 [US1] Write integration test: enable semantic search, index a fixture repo, verify LanceDB contains embeddings for all indexed snippets with correct metadata
+- [ ] T378 [US1] Write integration test: enable semantic search, index a fixture repo, verify embedded vector store contains embeddings for all indexed snippets with correct metadata
 - [ ] T379 [P] [US1] Write performance benchmark: index a 1,000-file fixture repo with and without semantic enabled, verify embedding overhead < 30%
 
 **Checkpoint**: Indexing pipeline produces embeddings when semantic search is enabled
@@ -56,8 +56,8 @@
 
 **Purpose**: Combine lexical and semantic search results
 
-- [ ] T380 [US1] Implement hybrid search blending in `crates/codecompass-query/src/hybrid.rs`: accept lexical results (from Tantivy) and semantic results (from LanceDB), compute weighted RRF scores using runtime `semantic_ratio_used` (capped by config), merge and deduplicate by `symbol_stable_id` (fallback to path+line only when symbol id absent)
-- [ ] T381 [US1] Implement semantic query in `crates/codecompass-query/src/hybrid.rs`: embed the query text using `EmbeddingProvider`, query LanceDB for nearest neighbors scoped to current ref and embedding model version, return ranked results with cosine similarity scores
+- [ ] T380 [US1] Implement hybrid search blending in `crates/codecompass-query/src/hybrid.rs`: accept lexical results (from Tantivy) and semantic results (from embedded vector store), compute weighted RRF scores using runtime `semantic_ratio_used` (capped by config), merge and deduplicate by `symbol_stable_id` (fallback to path+line only when symbol id absent), and cap per-branch fan-out
+- [ ] T381 [US1] Implement semantic query in `crates/codecompass-query/src/hybrid.rs`: embed the query text using `EmbeddingProvider`, query vector store for nearest neighbors scoped to current ref and embedding model version, return ranked results with cosine similarity scores
 - [ ] T382 [US1] Integrate hybrid search into `crates/codecompass-query/src/search.rs`: when `semantic_mode = hybrid` and intent is `natural_language`, apply lexical short-circuit policy (`lexical_short_circuit_threshold`) before running semantic branch; use adaptive `semantic_ratio_used` up to configured cap; for other intents, use lexical only
 - [ ] T383 [US1] Update `search_code` response to include semantic metadata in `crates/codecompass-query/src/search.rs`: `semantic_enabled`, `semantic_ratio_used`, `semantic_triggered`, `semantic_skipped_reason`, `result_provenance` (lexical/semantic/hybrid per result), `embedding_model_version`
 - [ ] T384 [US1] Write integration test: enable semantic search, index fixture repo, search for conceptual query (no keyword overlap), verify semantic match appears in results
@@ -95,6 +95,8 @@
 - [ ] T398 [US4] Update `search_code` MCP tool to include confidence metadata in `crates/codecompass-mcp/src/tools/search_code.rs`: add `low_confidence`, `suggested_action`, `confidence_threshold`, `top_score`, `score_margin`, `channel_agreement` to response
 - [ ] T399 [US4] Write unit test: verify low_confidence=true when top score < threshold, false when above
 - [ ] T400 [P] [US4] Write unit test: verify suggested_action content for each query intent type
+- [ ] T457 [US4] Extend intent classifier output in `crates/codecompass-query/src/intent.rs` and `crates/codecompass-query/src/search.rs` to emit `query_intent_confidence` + `intent_escalation_hint` metadata for low-confidence classifications
+- [ ] T458 [P] [US4] Add integration tests for intent-confidence metadata: verify low confidence emits escalation hints and high confidence suppresses them
 
 **Checkpoint**: Search responses include inline confidence guidance
 
@@ -118,12 +120,15 @@
 **Purpose**: End-to-end validation, performance benchmarking, documentation
 
 - [ ] T405 Run full test suite (`cargo test --workspace`) and fix any failures
-- [ ] T406 [P] Benchmark hybrid search latency: measure p95 for natural language queries with semantic enabled vs disabled, verify overhead < 200ms
-- [ ] T407 [P] Benchmark LanceDB index size: verify < 2x Tantivy index size for the same corpus
+- [ ] T406 [P] Benchmark hybrid search latency: measure p95 for natural language queries with semantic enabled vs disabled across repo-size buckets (`<10k`, `10k-50k`, `>50k` files), verify overhead < 200ms
+- [ ] T407 [P] Benchmark embedded vector index size: verify < 2x Tantivy index size for the same corpus
 - [ ] T408 [P] Create benchmark query set: >= 100 natural language queries with known relevant results, stratified by language (Rust/TypeScript/Python/Go, >= 20 each) for MRR measurement
-- [ ] T409 Run MRR benchmark: measure hybrid search MRR vs lexical-only MRR on stratified benchmark, target >= 15% improvement without regressing symbol-intent precision
+- [ ] T409 Run MRR benchmark: measure hybrid search MRR vs lexical-only MRR on stratified benchmark and report per repo-size bucket, target >= 15% improvement without regressing symbol-intent precision
 - [ ] T410 Run `cargo clippy --workspace -- -D warnings` and fix all lints
 - [ ] T411 Run `cargo fmt --check --all` and fix formatting
+- [ ] T459 Add reproducible benchmark-kit harness in `benchmarks/semantic/`: pin fixture commits + query pack version, produce deterministic reports for reruns
+- [ ] T460 [P] Implement semantic profile advisor in `crates/codecompass-query/src/semantic_advisor.rs`: recommend `fast_local`/`code_quality`/`high_quality` based on repo-size bucket, language mix, and target latency budget
+- [ ] T461 [P] Add advisor determinism tests + docs: same snapshot must yield same recommendation across repeated runs
 
 ---
 
@@ -161,7 +166,7 @@
 
 ## Notes
 
-- Total: 48 tasks, 8 phases
+- Total: 53 tasks, 8 phases
 - Semantic path defaults to OFF - existing behavior preserved
 - Rerank-only track avoids vector indexing complexity and should be delivered first unless benchmark evidence requires hybrid
-- LanceDB model download happens lazily on first use, not during install
+- Local model materialization happens lazily on first semantic use, not during install

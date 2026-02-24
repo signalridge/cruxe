@@ -5,7 +5,7 @@
 **Status**: Draft
 **Phase**: 3 | **Version**: v1.2.0
 **Depends On**: 007-call-graph
-**Input**: User description: "Hybrid search toggle using embedded LanceDB, feature flags for semantic search, external rerank provider abstraction, confidence threshold and low-confidence guidance"
+**Input**: User description: "Hybrid search toggle with local-first embedding backend, feature flags for semantic search, external rerank provider abstraction, confidence threshold and low-confidence guidance"
 
 ## Design Optimization Decisions (2026-02 Revision)
 
@@ -17,6 +17,8 @@
 - Require explicit privacy gates before sending code payloads to external providers.
 - Use **composite confidence** (top score + score margin + channel agreement) instead of
   single-threshold top-score checks.
+- Prioritize Rust-friendly local inference (`fastembed`) with tiered model profiles
+  before any external embedding dependency.
 - Add a **two-track rollout**:
   - Track A (minimal): lexical-first + optional external/local rerank + confidence guidance.
   - Track B (optional): vector hybrid (embedded vector index + embeddings) only when Track A quality is insufficient.
@@ -28,7 +30,7 @@
 A developer or AI agent issues a natural language query like "where is authentication
 handled" via `search_code`. The system detects `natural_language` intent and, if
 semantic search is enabled, blends lexical results (Tantivy) with vector similarity
-results (LanceDB) using a configurable ratio cap. The blended results surface code
+results (embedded vector store) using a configurable ratio cap. The blended results surface code
 that is conceptually relevant even when exact keywords do not match. Symbol-intent
 queries continue to use lexical search only.
 
@@ -56,6 +58,9 @@ the semantic match appears in results even though no keyword overlap exists.
 5. **Given** semantic search is enabled, **When** lexical top results are already
    above `lexical_short_circuit_threshold`, **Then** semantic search is skipped for
    that query and metadata includes `semantic_triggered: false` with a skip reason.
+6. **Given** query intent classification confidence is low, **When** `search_code`
+   returns results, **Then** metadata includes `query_intent_confidence` and
+   `intent_escalation_hint` so the agent can decide whether to reroute the query.
 
 ---
 
@@ -77,7 +82,7 @@ the override takes effect.
 **Acceptance Scenarios**:
 
 1. **Given** `semantic_mode: off` in `config.toml` (the default), **When** the
-   system starts, **Then** no LanceDB index is created and no embeddings are generated.
+   system starts, **Then** no vector index is created and no embeddings are generated.
 2. **Given** `semantic_mode: hybrid` and `semantic_ratio: 0.3` in `config.toml`,
    **When** a natural language search is executed without per-request override, **Then**
    the blend uses up to 30% semantic weight (runtime may reduce it based on lexical confidence).
@@ -89,6 +94,10 @@ the override takes effect.
 5. **Given** `external_provider_enabled: false` (default), **When** semantic embedding
    provider or rerank provider is configured as external, **Then** the query runs in
    local-only mode and no code payload is sent outbound.
+6. **Given** semantic profile advisor mode is enabled, **When** `index_status` or
+   semantic diagnostics are requested, **Then** the response includes a recommended
+   profile (`fast_local` / `code_quality` / `high_quality`) with reason codes
+   (repo size, language mix, latency budget).
 
 ---
 
@@ -150,8 +159,8 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
 
 ### Edge Cases
 
-- What happens when LanceDB index does not exist but semantic search is enabled?
-  The system creates the LanceDB index on first semantic query (lazy initialization),
+- What happens when vector index does not exist but semantic search is enabled?
+  The system creates the embedded vector index on first semantic query (lazy initialization),
   logging a warning that initial query may be slow.
 - What happens when the embedding model is unavailable?
   Semantic search is silently disabled for that query; results are purely lexical
@@ -161,9 +170,9 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
 - What happens when the rerank provider returns fewer results than sent?
   Missing results retain their original lexical scores; the reranked subset is
   interleaved with the original scores.
-- What happens when the LanceDB index is out of sync with the Tantivy index?
+- What happens when the vector index is out of sync with the Tantivy index?
   Embeddings are regenerated during `sync_repo` for changed files. If a document
-  exists in Tantivy but not in LanceDB, it is treated as lexical-only.
+  exists in Tantivy but not in vector store, it is treated as lexical-only.
 - What happens when the embedding model produces different dimensions than expected?
   Index creation fails with a clear error message specifying expected vs actual
   dimensions. The system falls back to lexical-only.
@@ -178,8 +187,8 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
 
 ### Functional Requirements
 
-- **FR-701**: System MUST support hybrid search blending lexical (Tantivy) and semantic
-  (LanceDB) results for `natural_language` query intent only.
+- **FR-701**: System MUST support hybrid search blending lexical (Tantivy) and
+  semantic (embedded vector store) results for `natural_language` query intent only.
 - **FR-702**: System MUST NOT use semantic search for `symbol`, `path`, or `error` query
   intents; these remain lexical-first.
 - **FR-703**: System MUST provide `semantic_mode` (`off` | `rerank_only` | `hybrid`,
@@ -189,9 +198,10 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
   tool input.
 - **FR-705**: System MUST support per-query-type `semantic_ratio` overrides in `config.toml`.
 - **FR-706**: System MUST provide an embedded vector-store abstraction with no mandatory
-  external service dependency. Default implementation is LanceDB when hybrid vector mode is enabled.
-- **FR-707**: System MUST generate vector embeddings using a configurable model (local small
-  model or external API), with model selection in `config.toml`.
+  external service dependency. Default implementation uses local persisted storage
+  (SQLite metadata + vector segment/table), with optional pluggable adapters.
+- **FR-707**: System MUST generate vector embeddings using a configurable model
+  provider (local first, external optional), with model selection in `config.toml`.
 - **FR-708**: System MUST provide a `Rerank` trait abstraction:
   `Rerank(ctx, query, docs) -> Vec<(doc, score)>`.
 - **FR-709**: System MUST implement at least one external rerank provider (Cohere Rerank v3
@@ -228,20 +238,35 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
   `off` (default), `rerank_only`, `hybrid`.
 - **FR-724**: Under `semantic_mode = rerank_only`, vector index and embedding generation
   MUST be skipped; search remains lexical-first with optional rerank provider.
+- **FR-725**: Local embedding profiles MUST map to concrete Rust-friendly model
+  presets:
+  - `fast_local`: `NomicEmbedTextV15Q` or `BGESmallENV15Q`
+  - `code_quality`: `BGEBaseENV15Q` or `JinaEmbeddingsV2BaseCode`
+  - `high_quality` (optional): `BGELargeENV15`, `GTELargeENV15`, `SnowflakeArcticEmbedL`
+- **FR-726**: Default semantic profile promotion MUST be benchmark-gated by repo
+  size bucket (`<10k`, `10k-50k`, `>50k` files) with latency, RSS, and MRR evidence.
+- **FR-727**: Search responses MUST include `query_intent_confidence` (0.0-1.0)
+  and optional `intent_escalation_hint` metadata when confidence is below threshold.
+- **FR-728**: System MUST provide a profile advisor mode that recommends semantic
+  profile tiers using repo-size bucket, language composition, and configured
+  latency/resource budget, without automatically mutating active config.
 
 ### Key Entities
 
-- **VectorIndex**: LanceDB-managed vector store containing code snippet embeddings,
-  keyed by stable symbol identity + snippet hash + ref, with strict embedding model
-  version partitioning.
+- **VectorIndex**: Embedded vector store containing code snippet embeddings, keyed
+  by stable symbol identity + snippet hash + ref, with strict embedding model
+  version partitioning (backend pluggable; local-first default).
 - **EmbeddingModel**: A configurable model that converts code snippets into vector
-  representations. Can be a local model (e.g., all-MiniLM-L6-v2) or external API.
+  representations. Can be a local model (for example `BGE*`, `Nomic*`, `Jina*`)
+  or external API.
 - **RerankProvider**: An abstraction over external reranking services, with a trait
   interface and fail-soft behavior.
 - **HybridResult**: A search result that combines lexical score, semantic score, and
   optionally reranked score, with provenance tracking.
 - **ConfidenceGuidance**: Inline metadata in search responses indicating result
   confidence level and suggested follow-up actions, derived from composite confidence signals.
+- **SemanticProfileAdvisor**: Diagnostic recommender that suggests an embedding
+  profile (`fast_local`, `code_quality`, `high_quality`) with explicit reason codes.
 
 ## Success Criteria
 
@@ -253,7 +278,13 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
 - **SC-702**: Semantic search adds < 200ms to search latency (p95) for warm index queries.
 - **SC-703**: External rerank provider timeout/fallback occurs transparently with zero
   user-visible errors in 100% of failure scenarios.
-- **SC-704**: LanceDB index size is < 2x the Tantivy index size for the same corpus.
+- **SC-704**: Embedded vector index size is < 2x the Tantivy index size for the same corpus.
 - **SC-705**: Embedding generation during indexing adds < 30% to total index time.
 - **SC-706**: With `external_provider_enabled: false` or
   `allow_code_payload_to_external: false`, outbound embedding/rerank HTTP calls are exactly zero.
+- **SC-707**: Benchmarks are reported for all repo-size buckets (`<10k`, `10k-50k`,
+  `>50k` files) before enabling non-`off` semantic defaults in any profile.
+- **SC-708**: For queries with `query_intent_confidence >= 0.8`, top-3 precision
+  is >= 85% on the stratified benchmark set.
+- **SC-709**: Profile advisor recommendations are reproducible (same repo snapshot
+  yields same recommendation) and deterministic across repeated runs.

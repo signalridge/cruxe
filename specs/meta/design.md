@@ -212,6 +212,37 @@ Elastic semantic code search, and Context-Engine-AI:
    Separating "what matched" (snippet content) from "where exactly" (symbol location)
    enables precise `file:line` responses from fuzzy text matches.
 
+### 2.7 Competitive re-exploration refresh (claude-context + grepai, 2026-02)
+
+Second-pass investigation of `zilliztech/claude-context` and
+`yoanbernabeu/grepai` confirms several patterns worth standardizing in
+CodeCompass now (not as optional backlog notes):
+
+1. **Background indexing + explicit status state machine is table-stakes**.
+   `claude-context` exposes clear indexing lifecycle states and allows search while
+   indexing with partial-result messaging. CodeCompass should keep non-blocking
+   indexing and standardize status semantics across all tools.
+
+2. **Watcher UX matters as much as retrieval quality**.
+   `grepai` makes freshness practical with one command surface (`watch`,
+   `--background`, `--status`, `--stop`) and debounced incremental updates.
+   CodeCompass should adopt the same lifecycle ergonomics in Rust-first form.
+
+3. **Structural path boost should be default-on for code agents**.
+   `grepai` path-based penalties/bonuses (tests/mocks/generated/docs down;
+   `src/lib/app` up) are simple and effective. CodeCompass should codify this as
+   deterministic ranking policy, not an experimental option.
+
+4. **Token-thrifty output modes are now mandatory**.
+   `grepai` compact/TOON patterns and `claude-context` partial-state messaging both
+   reduce agent retries and token burn. CodeCompass should pair `detail_level` with
+   `compact` serialization and explicit truncation metadata.
+
+5. **Semantic should remain optional and local-first**.
+   `claude-context` quality often depends on external vector infrastructure.
+   CodeCompass should preserve zero-external-service default and gate semantic
+   behind `off | rerank_only | hybrid`, with local model-first execution.
+
 ## 3. Product Vision
 
 Build a distributable code search and location tool that:
@@ -353,6 +384,7 @@ testdata/
 - git/VCS integration: `git2` (or evaluate `gix` in Phase 1)
 - file watching: `notify`
 - parser infrastructure: `tree-sitter` + language grammars
+- local embedding/rerank runtime (optional): `fastembed` (ONNX-backed, Rust-native)
 - token estimation: word-count heuristic (`ceil(word_count * 1.3)`) or optional `tiktoken-rs` (for context budget)
 - content hashing: `blake3` (fast, collision-resistant, used for `file_manifest.content_hash`)
 - gitignore/ignore patterns: `ignore` crate (handles `.gitignore` + `.codecompassignore` with same semantics)
@@ -399,21 +431,43 @@ that plagues chunk-based RAG approaches.
 
 For symbol-type queries (`locate_symbol`), skip the join — query `symbols` index directly.
 
+### 7.1.2 Structural path boost (default on)
+
+To reduce top-k noise for agent workflows, ranking applies deterministic path
+multipliers after first-stage retrieval:
+
+- penalties (`factor < 1.0`): `tests`, `test`, `__tests__`, `mocks`, `fixtures`,
+  `testdata`, `generated`, docs-heavy paths/files.
+- bonuses (`factor > 1.0`): `src`, `lib`, `app`, `internal`, `core`.
+- multiple rules multiply; final score remains explainable via `ranking_reasons`.
+- match semantics should be segment-aware glob/regex, not naive substring-only
+  matching, to avoid accidental penalties/bonuses (`contest` vs `test`).
+
+Rules are config-backed with safe defaults and can be tuned without changing
+index schema.
+
 ### 7.2 v2 optional: hybrid semantic
 
-- Add optional vector index (embedded LanceDB or Tantivy's planned vector support).
+- Add optional vector index with a pluggable local backend (`sqlite` metadata +
+  local vector segment/table by default; LanceDB adapter optional).
 - Enable hybrid search for natural language query types only.
 - Keep symbol queries lexical-first.
 - Treat `semantic_ratio` as a runtime cap; allow adaptive lowering when lexical confidence is high.
 - Add lexical short-circuit (`lexical_short_circuit_threshold`) to skip semantic branch on easy queries.
 - Key vector records by stable symbol identity (`symbol_stable_id`) + snippet hash + model version.
 - Enforce external provider privacy gates (`external_provider_enabled`, `allow_code_payload_to_external`) defaulting to false.
+- Start from `semantic_mode = rerank_only`, then enable `hybrid` only after benchmark gates pass.
 - Feature flags:
-  - `semantic_enabled`,
+  - `semantic_mode` (`off | rerank_only | hybrid`),
   - `semantic_ratio`,
   - per-query-type overrides.
-- If vector support is needed before Tantivy ships native vectors,
-  LanceDB (Rust native, embedded) is the recommended option to preserve single-binary.
+- Local embedding profiles should ship with Rust-friendly presets:
+  - `fast_local`: `NomicEmbedTextV15Q`, `BGESmallENV15Q`
+  - `code_quality`: `BGEBaseENV15Q`, `JinaEmbeddingsV2BaseCode`
+  - `high_quality`: `BGELargeENV15`, `GTELargeENV15`, `SnowflakeArcticEmbedL`
+- Add optional profile advisor (`profile_advisor_mode = suggest`) that inspects
+  repo size/language mix and returns a recommendation without silently changing
+  configured profile.
 
 ### 7.3 v2 optional: external rerank provider
 
@@ -433,6 +487,8 @@ Even without remote mode or embeddings, adopt these search behaviors:
 1. **Intent-aware search profile**
    - classify query into `symbol`, `path`, `error`, `natural_language`.
    - apply profile-specific field weights and filters.
+   - emit `query_intent_confidence` so agents can decide whether to escalate
+     to semantic/rerank or refine the query first.
 
 2. **Two-stage retrieval pipeline**
    - stage 1: fast parallel recall from `symbols`, `snippets`, `files`.
@@ -548,6 +604,29 @@ The following set is prioritized by expected impact for code-location quality.
     - force mmap pages into memory on `serve-mcp` startup.
     - reduce cold-start p95 latency.
     - see [Section 10.11](#1011-tantivy-index-prewarming) for detailed design.
+
+22. **Workspace parameter parity across tool surface**
+    - all query/path tools accept optional `workspace`, including future additions.
+    - middleware auto-injects startup workspace when request omits it.
+
+23. **Structural path boost defaults**
+    - apply deterministic path penalties/bonuses (`tests/mocks/generated/docs` down,
+      `src/lib/app/internal/core` up).
+    - see [Section 7.1.2](#712-structural-path-boost-default-on).
+
+24. **Compact output mode**
+    - `compact: true` for token-thrifty search/locate outputs while preserving
+      deterministic follow-up handles.
+    - see [Section 10.3](#103-agent-aware-detail-levels-token-budget-optimization).
+
+25. **Result dedup + hard-limit graceful degrade**
+    - suppress near-duplicate hits by symbol/file region.
+    - enforce payload limits with `result_completeness: "truncated"` metadata.
+    - see [Section 10.2](#102-search-response-metadata-contract-protocol-v1).
+
+26. **Watcher daemon lifecycle UX**
+    - expose `watch`, `watch --background`, `watch --status`, `watch --stop`.
+    - ensure full initial scan before switching to incremental updates.
 
 ### 8.2 Recommended algorithms
 
@@ -933,6 +1012,10 @@ Index update timing must be explicit and deterministic:
 
 2. **Event-driven trigger (preferred)**
    - watch only registered repository/worktree roots.
+   - daemon lifecycle must support `watch`, `watch --background`,
+     `watch --status`, `watch --stop`.
+   - first start performs full scan + symbol extraction before switching to
+     incremental event mode.
    - debounce per file path and batch updates (for example 500-1500ms).
    - changed files go to incremental job queue.
 
@@ -973,6 +1056,12 @@ Freshness policy levels:
 - retry policy:
   - transient backend errors: exponential backoff.
   - deterministic parser/schema errors: fail fast and mark project unhealthy.
+- startup recovery policy:
+  - jobs found in `running`/`validating` after process restart are marked failed
+    with `error_code = interrupted`.
+  - if no previously published snapshot exists for that scope, expose
+    `indexing_status: "not_indexed"`; otherwise keep last published data and mark
+    freshness stale.
 
 ### 9.9 Augment-inspired indexing lifecycle contract
 
@@ -1042,11 +1131,16 @@ for multi-workspace support (see [Section 10.7](#107-multi-workspace-auto-discov
 
 - `codecompass_protocol_version`: `"1.0"`.
 - `freshness_status`: `fresh | stale | syncing`.
-- `indexing_status`: `idle | indexing | partial_available`.
-- `result_completeness`: `complete | partial`.
-- `ranking_reasons` (debug mode): array of deterministic scoring factors.
+- `indexing_status`: `not_indexed | indexing | ready | failed`.
+- `result_completeness`: `complete | partial | truncated`.
+- compatibility guidance for pre-migration runtimes:
+  - `idle` -> `not_indexed`
+  - `partial_available` -> `ready`
+- `ranking_reasons` (`ranking_explain_level != off`): array of deterministic scoring factors.
 - `source_layer`: `base | overlay` for VCS mode.
 - `ref`: effective query ref (`main`, feature branch, or `live`).
+- `safety_limit_applied`: boolean, true when hard caps are enforced.
+- `suppressed_duplicate_count`: integer, number of deduplicated sibling hits omitted.
 - phase-3 semantic fields when applicable:
   - `semantic_triggered`,
   - `semantic_skipped_reason`,
@@ -1063,8 +1157,10 @@ This keeps agent behavior predictable and reduces unnecessary repeated tool call
 ### Response contract principles
 
 - always include `repo`, `path`, `line_start`, `line_end`,
-- include `ranking_reasons` in debug mode (single canonical debug field),
+- include `ranking_reasons` when `ranking_explain_level` is enabled,
 - return compact machine-readable JSON for agent orchestration.
+- deduplicate near-identical hits by symbol/file region before final top-k emission.
+- never hard-fail on size pressure; return `result_completeness: "truncated"` with actionable metadata.
 - keep a single canonical error-code registry across CLI/MCP transports to avoid drift.
 
 ### 10.3 Agent-aware detail levels (token budget optimization)
@@ -1120,6 +1216,23 @@ All search/locate tools accept an optional `detail_level` parameter:
 
 Default is `signature`. Agent systems (Claude Code, Cursor, etc.) can set a preference
 via MCP configuration or per-request.
+
+`search_code` and `locate_symbol` also accept optional `compact: true`:
+
+- `compact = true` keeps identity/location/score fields and removes large body
+  fragments by default.
+- `compact` is orthogonal to `detail_level`:
+  - `location + compact` for cheapest routing queries,
+  - `signature + compact` for default agent browsing,
+  - `context + compact` for constrained deep dives.
+
+Explainability payload depth is independently controlled by
+`ranking_explain_level`:
+
+- `off` (default): no ranking reasons in payload.
+- `basic`: compact normalized factors (`exact`, `path`, `definition`,
+  `semantic`, `final`) suitable for agent policy routing.
+- `full`: full debug payload for human tuning and offline audits.
 
 ### 10.4 Context budget-aware responses
 
@@ -1334,6 +1447,14 @@ MCP server startup:
 - If `--auto-workspace` is enabled, at least one `--allowed-root <path>` is required.
 - This mirrors Augment's `auggie --mcp --mcp-auto-workspace` pattern.
 
+Warmset policy (latency optimization):
+
+- maintain a bounded `workspace_warmset` from recent `known_workspaces.last_used_at`
+  (for example top 3-5 entries).
+- prewarm only warmset workspaces during startup to keep boot fast while reducing
+  first-query latency on active projects.
+- expose warmset hit/miss metadata in `health_check` for operator visibility.
+
 ### 10.8 Ignore file support (`.codecompassignore`)
 
 File filtering chain (applied in order, all additive):
@@ -1450,6 +1571,14 @@ Uses the MCP notification protocol (server -> client, no response expected):
 
 Progress tokens are also tracked in `index_jobs` table so `index_status` can
 return the same information via tool call (for clients that don't support notifications).
+
+Restart safety:
+
+- if process restarts while jobs are active, unfinished jobs are marked
+  `interrupted` during bootstrap reconciliation.
+- `index_status` and `health_check` should include
+  `interrupted_recovery_report` (recent interrupted jobs, affected workspaces,
+  recommended remediation) until a successful subsequent sync clears it.
 
 ### 10.11 Tantivy index prewarming
 
@@ -1617,7 +1746,8 @@ This positioning fills a practical gap:
 - Cons:
   - Less turnkey than Meilisearch for rapid prototyping.
   - No built-in HTTP API (but CodeCompass provides MCP, so not needed).
-  - Vector search support is experimental/planned (use LanceDB if needed earlier).
+  - Vector search support is experimental/planned (use the embedded vector layer
+    with optional adapter enablement when needed).
 
 #### Option B: Meilisearch (alternative for hosted/multi-tenant scenarios)
 
@@ -1647,12 +1777,12 @@ This positioning fills a practical gap:
 - Cons:
   - higher operational complexity and tuning overhead for small teams.
 
-#### Option E: Embedded vector (LanceDB)
+#### Option E: Embedded vector backend (local-first, adapter-pluggable)
 
 - Pros:
-  - Rust native, embedded, no external service.
+  - embedded, no external service, keeps single-binary workflow.
+  - backend adapter flexibility (default local segment/table, optional LanceDB).
   - Strong for semantic/hybrid search when needed in v2+.
-  - VibeRAG uses this successfully for code search.
 - Cons:
   - vector-first retrieval is weaker for symbol precision queries.
   - adds embedding model dependency (local or API).
@@ -1666,7 +1796,7 @@ This positioning fills a practical gap:
   - external service dependency (breaks single-binary goal),
   - weaker fit when code navigation precision is lexical/symbol first,
   - adds operational cost and network latency.
-- Decision: not recommended. If vector search is needed, use embedded LanceDB first.
+- Decision: not recommended. If vector search is needed, use local embedded backend first.
 
 ### 12.4 Decision recommendation
 
@@ -1675,7 +1805,7 @@ This positioning fills a practical gap:
 - Re-evaluate after benchmark:
   - if hosted/multi-tenant is needed, Meilisearch is the first alternative to evaluate.
   - if code-intelligence depth is lacking, add SCIP pipeline or evaluate Sourcegraph integration path.
-  - if NL semantic recall is insufficient with Tantivy alone, add LanceDB as embedded vector layer.
+  - if NL semantic recall is insufficient with Tantivy alone, enable the embedded vector layer (LanceDB adapter optional).
   - Qdrant/external vector services: only if true multi-tenant scale demands it.
 
 ## 13. Risk Register
@@ -1700,7 +1830,8 @@ This positioning fills a practical gap:
 
 7. Tantivy API stability and feature gaps
    -> Tantivy is mature (v0.22+) but not 1.0. Pin version, wrap behind abstraction trait.
-   -> If native vector support is delayed, use LanceDB as additive layer.
+   -> If native vector support is delayed, rely on the local vector layer and keep
+      adapter fallback optional.
 
 8. Symbol relation graph accuracy (call edges, import edges)
    -> Start with `parent_symbol_id` only (tree-sitter scope nesting, high confidence).

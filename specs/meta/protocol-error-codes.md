@@ -33,6 +33,24 @@ Rules:
 2. `message` is human-readable and concise.
 3. `data` is optional, structured, and remediation-oriented.
 
+## Canonical Metadata Enums
+
+All MCP/HTTP contracts must use these exact response metadata enums:
+
+- `indexing_status`: `not_indexed | indexing | ready | failed`
+- `result_completeness`: `complete | partial | truncated`
+
+Any legacy values (for example `idle`, `partial_available`) are deprecated and
+must not appear in new contracts.
+
+Implementation migration note:
+
+- some pre-migration runtimes may still emit legacy metadata values.
+- clients should map legacy values as:
+  - `idle` -> `not_indexed`
+  - `partial_available` -> `ready`
+- migration target remains canonical values only in runtime responses.
+
 ## Core Registry
 
 | Code | Category | Meaning | Typical Remediation |
@@ -45,6 +63,7 @@ Rules:
 | `workspace_not_allowed` | Workspace | Workspace outside allowed roots | Use allowed root or adjust allowlist |
 | `workspace_limit_exceeded` | Workspace | Auto-discovered workspace cap reached | Retry after eviction/cleanup |
 | `index_in_progress` | Indexing | Index job already running for project | Wait for completion / poll `index_status` |
+| `index_not_ready` | Indexing | Query requested against a `not_indexed` or `failed` index state | Run `index_repo` or inspect failure details |
 | `sync_in_progress` | Indexing | Sync job active for same `(project, ref)` | Wait and retry |
 | `index_stale` | Freshness | Strict freshness policy blocks stale index query | Run `sync_repo` |
 | `index_incompatible` | Compatibility | Schema mismatch or corrupt manifest | Run `codecompass index --force` |
@@ -62,6 +81,10 @@ Rules:
 
 - Non-fatal conditions (for example value clamping) SHOULD be surfaced in
   `metadata.warnings[]`, not as protocol `error.code`.
+- Size/dedup degradations SHOULD use metadata, not hard errors:
+  - `result_completeness: "truncated"`
+  - `safety_limit_applied: true`
+  - `suppressed_duplicate_count: <n>`
 - Only hard failures use the error envelope and MUST use a registry code.
 
 ## Evolution Rules
