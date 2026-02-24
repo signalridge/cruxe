@@ -95,8 +95,8 @@
 - [ ] T398 [US4] Update `search_code` MCP tool to include confidence metadata in `crates/codecompass-mcp/src/tools/search_code.rs`: add `low_confidence`, `suggested_action`, `confidence_threshold`, `top_score`, `score_margin`, `channel_agreement` to response
 - [ ] T399 [US4] Write unit test: verify low_confidence=true when top score < threshold, false when above
 - [ ] T400 [P] [US4] Write unit test: verify suggested_action content for each query intent type
-- [ ] T400a [US4] Extend intent classifier output in `crates/codecompass-query/src/intent.rs` and `crates/codecompass-query/src/search.rs` to emit `query_intent_confidence` + `intent_escalation_hint` metadata for low-confidence classifications
-- [ ] T400b [P] [US4] Add integration tests for intent-confidence metadata: verify low confidence emits escalation hints and high confidence suppresses them
+- [ ] T457 [US4] Extend intent classifier output in `crates/codecompass-query/src/intent.rs` and `crates/codecompass-query/src/search.rs` to emit `query_intent_confidence` + `intent_escalation_hint` metadata for low-confidence classifications
+- [ ] T458 [P] [US4] Add integration tests for intent-confidence metadata: verify low confidence emits escalation hints and high confidence suppresses them
 
 **Checkpoint**: Search responses include inline confidence guidance
 
@@ -126,9 +126,9 @@
 - [ ] T409 Run MRR benchmark: measure hybrid search MRR vs lexical-only MRR on stratified benchmark and report per repo-size bucket, target >= 15% improvement without regressing symbol-intent precision
 - [ ] T410 Run `cargo clippy --workspace -- -D warnings` and fix all lints
 - [ ] T411 Run `cargo fmt --check --all` and fix formatting
-- [ ] T411a Add reproducible benchmark-kit harness in `benchmarks/semantic/`: pin fixture commits + query pack version, produce deterministic reports for reruns
-- [ ] T411b [P] Implement semantic profile advisor in `crates/codecompass-query/src/semantic_advisor.rs`: recommend `fast_local`/`code_quality`/`high_quality` based on repo-size bucket, language mix, and target latency budget
-- [ ] T411c [P] Add advisor determinism tests + docs: same snapshot must yield same recommendation across repeated runs
+- [ ] T459 Add reproducible benchmark-kit harness in `benchmarks/semantic/`: pin fixture commits + query pack version, produce deterministic reports for reruns
+- [ ] T460 [P] Implement semantic profile advisor in `crates/codecompass-query/src/semantic_advisor.rs`: recommend `fast_local`/`code_quality`/`high_quality` based on repo-size bucket, language mix, and target latency budget
+- [ ] T461 [P] Add advisor determinism tests + docs: same snapshot must yield same recommendation across repeated runs
 
 ---
 

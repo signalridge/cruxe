@@ -79,13 +79,13 @@ specs/
 | Spec | Tasks | Phases | Task ID Range |
 |------|-------|--------|---------------|
 | 001-core-mvp | 81 | 8 | T001-T081 |
-| 002-agent-protocol | 61 | 7 | T082-T139 (+ T123a-c) |
+| 002-agent-protocol | 61 | 7 | T082-T139 (+ T451-T453) |
 | 003-structure-nav | 56 | 7 | T140-T195 |
-| 004-workspace-transport | 47 | 5 | T196-T239 (+ T239a-c) |
+| 004-workspace-transport | 47 | 5 | T196-T239 (+ T454-T456) |
 | 005-vcs-core | 56 | 6 | T240-T295 |
 | 006-vcs-ga-tooling | 29 | 6 | T296-T324 |
 | 007-call-graph | 39 | 6 | T325-T363 |
-| 008-semantic-hybrid | 53 | 8 | T364-T411 (+ T400a-b, T411a-c) |
+| 008-semantic-hybrid | 53 | 8 | T364-T411 (+ T457-T461) |
 | 009-distribution | 39 | 6 | T412-T450 |
 | **Total** | **461** | **59** | |
 

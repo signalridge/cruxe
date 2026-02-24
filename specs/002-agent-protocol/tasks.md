@@ -119,9 +119,9 @@
 - [X] T121 [US5] Update Protocol v1 metadata type in `crates/codecompass-mcp/src/protocol.rs`: add optional `ranking_reasons: Option<Vec<RankingReasons>>` field with `skip_serializing_if = "Option::is_none"`
 - [X] T122 [US5] Write integration test: enable full explainability, call `search_code`, verify each result has `ranking_reasons` with all 7 fields populated
 - [X] T123 [P] [US5] Write integration test: explainability off by default, call `search_code`, verify `ranking_reasons` is absent from response metadata
-- [ ] T123a [US5] Add `ranking_explain_level` parameter (`off`/`basic`/`full`) to `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`, with default `off`
-- [ ] T123b [US5] Implement compact explainability serialization in `crates/codecompass-query/src/ranking.rs`: `basic` mode emits normalized factors only, `full` keeps full debug payload
-- [ ] T123c [P] [US5] Add benchmark + integration coverage for explainability levels: verify `basic` payload is smaller than `full` and p95 overhead stays within target
+- [ ] T451 [US5] Add `ranking_explain_level` parameter (`off`/`basic`/`full`) to `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`, with default `off`
+- [ ] T452 [US5] Implement compact explainability serialization in `crates/codecompass-query/src/ranking.rs`: `basic` mode emits normalized factors only, `full` keeps full debug payload
+- [ ] T453 [P] [US5] Add benchmark + integration coverage for explainability levels: verify `basic` payload is smaller than `full` and p95 overhead stays within target
 
 **Checkpoint**: Explainability levels include per-result ranking explanations when requested
 

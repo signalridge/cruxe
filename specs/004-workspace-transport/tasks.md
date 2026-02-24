@@ -94,9 +94,9 @@
 - [ ] T237 [P] Add `--help` text for new CLI flags: `--transport`, `--port`, `--bind`, `--auto-workspace`, `--allowed-root` with usage examples
 - [ ] T238 Update `tools/list` response to include `workspace` parameter in all tool schemas, ensure HTTP error mapping uses canonical machine-readable `error.code` values from `specs/meta/protocol-error-codes.md` (including malformed JSON-RPC and workspace/compatibility failures), and normalize metadata enums (`indexing_status`, `result_completeness`) in all updated tool contracts
 - [ ] T239 [P] Write E2E test: start server with `--auto-workspace --allowed-root /tmp`, auto-discover 3 workspaces, query each, verify `known_workspaces` table has 3 entries with correct `last_used_at` updates
-- [ ] T239a [US1] Implement warmset prewarm selection in `crates/codecompass-cli/src/commands/serve_mcp.rs` and `crates/codecompass-state/src/workspace.rs`: load most-recently-used workspaces up to configurable bound and prewarm only those indices
-- [ ] T239b [US2] Implement interrupted job reconciliation in `crates/codecompass-state/src/jobs.rs`: mark leftover running jobs as `interrupted` on startup and surface `interrupted_recovery_report` via `crates/codecompass-mcp/src/tools/index_status.rs` and `crates/codecompass-mcp/src/tools/health_check.rs`
-- [ ] T239c [P] [US2] Add integration tests for restart recovery + warmset behavior: verify interrupted report visibility and warmset-first latency improvements on recent workspaces
+- [ ] T454 [US1] Implement warmset prewarm selection in `crates/codecompass-cli/src/commands/serve_mcp.rs` and `crates/codecompass-state/src/workspace.rs`: load most-recently-used workspaces up to configurable bound and prewarm only those indices
+- [ ] T455 [US2] Implement interrupted job reconciliation in `crates/codecompass-state/src/jobs.rs`: mark leftover running jobs as `interrupted` on startup and surface `interrupted_recovery_report` via `crates/codecompass-mcp/src/tools/index_status.rs` and `crates/codecompass-mcp/src/tools/health_check.rs`
+- [ ] T456 [P] [US2] Add integration tests for restart recovery + warmset behavior: verify interrupted report visibility and warmset-first latency improvements on recent workspaces
 
 **Checkpoint**: Security hardened, CLI documented, E2E scenarios pass
 

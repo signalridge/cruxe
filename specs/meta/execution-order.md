@@ -55,13 +55,13 @@ Apply these in parallel with feature development to reduce rework:
 | Spec | Tasks | Phases | Task Range | Depends On | Suggested Focus |
 |------|-------|--------|-----------|------------|-----------------|
 | 001-core-mvp | 81 | 8 | T001-T081 | -- | Bootstrap + indexing + search baseline |
-| 002-agent-protocol | 61 | 7 | T082-T139 (+ T123a-c) | 001 | Agent payload and protocol optimization |
+| 002-agent-protocol | 61 | 7 | T082-T139 (+ T451-T453) | 001 | Agent payload and protocol optimization |
 | 003-structure-nav | 56 | 7 | T140-T195 | 002 | Structure graph and context tooling |
-| 004-workspace-transport | 47 | 5 | T196-T239 (+ T239a-c) | 003 | Multi-workspace and transport |
+| 004-workspace-transport | 47 | 5 | T196-T239 (+ T454-T456) | 003 | Multi-workspace and transport |
 | 005-vcs-core | 56 | 6 | T240-T295 | 004 | Overlay correctness core |
 | 006-vcs-ga-tooling | 29 | 6 | T296-T324 | 005 | GA tooling, ref helpers, portability |
 | 007-call-graph | 39 | 6 | T325-T363 | 006 | Call graph and symbol diff tooling |
-| 008-semantic-hybrid | 53 | 8 | T364-T411 (+ T400a-b, T411a-c) | 007 | Hybrid retrieval and rerank |
+| 008-semantic-hybrid | 53 | 8 | T364-T411 (+ T457-T461) | 007 | Hybrid retrieval and rerank |
 | 009-distribution | 39 | 6 | T412-T450 | 008 | Release/distribution/onboarding |
 
 ## Milestone Gates
