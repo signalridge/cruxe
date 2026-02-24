@@ -137,29 +137,22 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                         metadata.suppressed_duplicate_count = Some(suppressed_duplicate_count);
                     }
 
-                    let mut result_values: Vec<Value> = results
+                    let result_values: Vec<Value> = results
                         .iter()
                         .filter_map(|r| serde_json::to_value(r).ok())
                         .collect();
-
-                    // Enrich with context data if needed
-                    if detail_level == DetailLevel::Context && !compact {
-                        detail::enrich_body_previews(&mut result_values);
-                        if let Some(c) = conn {
-                            detail::enrich_results_with_relations(
-                                &mut result_values,
-                                c,
-                                project_id,
-                                &effective_ref,
-                            );
-                        }
-                    }
-
-                    // Apply detail level filtering
-                    let filtered =
-                        detail::serialize_results_at_level(&result_values, detail_level, compact);
-                    let (filtered, safety_limit_applied) =
-                        enforce_payload_safety_limit(filtered, config.search.max_response_bytes);
+                    let FilteredResultPayload {
+                        filtered,
+                        safety_limit_applied,
+                    } = build_filtered_result_payload(
+                        result_values,
+                        detail_level,
+                        compact,
+                        conn,
+                        project_id,
+                        &effective_ref,
+                        config.search.max_response_bytes,
+                    );
                     if safety_limit_applied {
                         metadata.result_completeness =
                             codecompass_core::types::ResultCompleteness::Truncated;
@@ -294,29 +287,22 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                         metadata.suppressed_duplicate_count = Some(suppressed_duplicate_count);
                     }
 
-                    let mut result_values: Vec<Value> = results
+                    let result_values: Vec<Value> = results
                         .iter()
                         .filter_map(|r| serde_json::to_value(r).ok())
                         .collect();
-
-                    // Enrich with context data if needed
-                    if detail_level == DetailLevel::Context && !compact {
-                        detail::enrich_body_previews(&mut result_values);
-                        if let Some(c) = conn {
-                            detail::enrich_results_with_relations(
-                                &mut result_values,
-                                c,
-                                project_id,
-                                &effective_ref,
-                            );
-                        }
-                    }
-
-                    // Apply detail level filtering
-                    let filtered =
-                        detail::serialize_results_at_level(&result_values, detail_level, compact);
-                    let (filtered, safety_limit_applied) =
-                        enforce_payload_safety_limit(filtered, config.search.max_response_bytes);
+                    let FilteredResultPayload {
+                        filtered,
+                        safety_limit_applied,
+                    } = build_filtered_result_payload(
+                        result_values,
+                        detail_level,
+                        compact,
+                        conn,
+                        project_id,
+                        &effective_ref,
+                        config.search.max_response_bytes,
+                    );
                     if safety_limit_applied {
                         metadata.result_completeness =
                             codecompass_core::types::ResultCompleteness::Truncated;
@@ -2006,6 +1992,36 @@ fn enforce_payload_safety_limit(results: Vec<Value>, max_bytes: usize) -> (Vec<V
     (output, truncated)
 }
 
+struct FilteredResultPayload {
+    filtered: Vec<Value>,
+    safety_limit_applied: bool,
+}
+
+fn build_filtered_result_payload(
+    mut result_values: Vec<Value>,
+    detail_level: DetailLevel,
+    compact: bool,
+    conn: Option<&rusqlite::Connection>,
+    project_id: &str,
+    effective_ref: &str,
+    max_response_bytes: usize,
+) -> FilteredResultPayload {
+    if detail_level == DetailLevel::Context && !compact {
+        detail::enrich_body_previews(&mut result_values);
+        if let Some(c) = conn {
+            detail::enrich_results_with_relations(&mut result_values, c, project_id, effective_ref);
+        }
+    }
+
+    let filtered = detail::serialize_results_at_level(&result_values, detail_level, compact);
+    let (filtered, safety_limit_applied) =
+        enforce_payload_safety_limit(filtered, max_response_bytes);
+    FilteredResultPayload {
+        filtered,
+        safety_limit_applied,
+    }
+}
+
 fn deterministic_suggested_actions(
     existing: &[search::SuggestedAction],
     query: &str,
@@ -2138,6 +2154,42 @@ mod tests {
         let (trimmed, truncated) = enforce_payload_safety_limit(results, 120);
         assert!(truncated);
         assert!(trimmed.len() < 3);
+    }
+
+    #[test]
+    fn filtered_payload_compact_context_omits_heavy_fields() {
+        let results = vec![json!({
+            "symbol_id": "sym_1",
+            "symbol_stable_id": "stable_1",
+            "result_id": "res_1",
+            "result_type": "symbol",
+            "path": "src/lib.rs",
+            "line_start": 10,
+            "line_end": 20,
+            "kind": "function",
+            "name": "validate_token",
+            "snippet": "fn validate_token() { /* body */ }",
+            "body_preview": "preview",
+        })];
+
+        let payload = build_filtered_result_payload(
+            results,
+            DetailLevel::Context,
+            true,
+            None,
+            "proj_1",
+            "main",
+            4096,
+        );
+
+        assert!(!payload.safety_limit_applied);
+        let first = payload
+            .filtered
+            .first()
+            .and_then(|v| v.as_object())
+            .unwrap();
+        assert!(first.get("snippet").is_none());
+        assert!(first.get("body_preview").is_none());
     }
 
     #[test]
