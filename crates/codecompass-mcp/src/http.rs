@@ -20,8 +20,8 @@ use codecompass_core::types::{SchemaStatus, WorkspaceConfig, generate_project_id
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 use tracing::{error, info};
 
@@ -223,9 +223,8 @@ fn build_health_response(state: &HttpState) -> Value {
         .map(|c| {
             let fc = codecompass_state::manifest::file_count(c, &state.project_id, &effective_ref)
                 .unwrap_or(0);
-            let sc =
-                codecompass_state::symbols::symbol_count(c, &state.project_id, &effective_ref)
-                    .unwrap_or(0);
+            let sc = codecompass_state::symbols::symbol_count(c, &state.project_id, &effective_ref)
+                .unwrap_or(0);
             (fc, sc)
         })
         .unwrap_or((0, 0));
@@ -236,7 +235,10 @@ fn build_health_response(state: &HttpState) -> Value {
     } else if pw_status == crate::server::PREWARM_IN_PROGRESS {
         "warming"
     } else if pw_status == crate::server::PREWARM_FAILED
-        || !matches!(schema_status, SchemaStatus::Compatible | SchemaStatus::NotIndexed)
+        || !matches!(
+            schema_status,
+            SchemaStatus::Compatible | SchemaStatus::NotIndexed
+        )
     {
         "error"
     } else {
@@ -316,11 +318,7 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
                 match state.router.resolve_workspace(ws_param) {
                     Ok(resolved) => {
                         let eff_data_dir = state.config.project_data_dir(&resolved.project_id);
-                        (
-                            resolved.workspace_path,
-                            resolved.project_id,
-                            eff_data_dir,
-                        )
+                        (resolved.workspace_path, resolved.project_id, eff_data_dir)
                     }
                     Err(e) => {
                         return crate::server::workspace_error_to_response_public(

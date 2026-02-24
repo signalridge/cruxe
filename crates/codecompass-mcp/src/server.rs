@@ -1,6 +1,6 @@
+use crate::notifications::{McpProgressNotifier, NullProgressNotifier, ProgressNotifier};
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, ProtocolMetadata};
 use crate::tools;
-use crate::notifications::{McpProgressNotifier, NullProgressNotifier, ProgressNotifier};
 use crate::workspace_router::WorkspaceRouter;
 use codecompass_core::config::Config;
 use codecompass_core::constants;
@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{error, info};
 
@@ -60,6 +60,16 @@ pub fn run_server(
     let data_dir = config.project_data_dir(&project_id);
     let db_path = data_dir.join(constants::STATE_DB_FILE);
     let server_start = Instant::now();
+
+    // T455: Mark any leftover running/queued jobs as interrupted on startup
+    if let Ok(conn) = codecompass_state::db::open_connection(&db_path) {
+        match codecompass_state::jobs::mark_interrupted_jobs(&conn) {
+            Ok(count) if count > 0 => {
+                info!(count, "Marked interrupted jobs from previous session");
+            }
+            _ => {}
+        }
+    }
 
     // Create workspace router (validates config at startup — T206/T208)
     let router = WorkspaceRouter::new(workspace_config, workspace.to_path_buf(), db_path.clone())
@@ -99,8 +109,7 @@ pub fn run_server(
 
     let stdin = io::stdin();
     // T214: Wrap stdout in Arc<Mutex> so it can be shared with the progress notifier.
-    let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-        Arc::new(Mutex::new(Box::new(io::stdout())));
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(io::stdout())));
 
     info!("MCP server started");
 
@@ -151,11 +160,7 @@ pub fn run_server(
                         );
                     }
 
-                    (
-                        resolved.workspace_path,
-                        resolved.project_id,
-                        eff_data_dir,
-                    )
+                    (resolved.workspace_path, resolved.project_id, eff_data_dir)
                 }
                 Err(e) => {
                     let resp = workspace_error_to_response(request.id.clone(), &e);
@@ -164,7 +169,11 @@ pub fn run_server(
                 }
             }
         } else {
-            (workspace.to_path_buf(), project_id.clone(), data_dir.clone())
+            (
+                workspace.to_path_buf(),
+                project_id.clone(),
+                data_dir.clone(),
+            )
         };
 
         let eff_db_path = eff_data_dir.join(constants::STATE_DB_FILE);
@@ -206,10 +215,7 @@ pub fn run_server(
 }
 
 /// Convert a workspace resolution error into an MCP tool-level error response.
-fn workspace_error_to_response(
-    id: Option<Value>,
-    err: &WorkspaceError,
-) -> JsonRpcResponse {
+fn workspace_error_to_response(id: Option<Value>, err: &WorkspaceError) -> JsonRpcResponse {
     let (code, message) = match err {
         WorkspaceError::NotRegistered { path } => (
             "workspace_not_registered",
@@ -328,10 +334,7 @@ fn bootstrap_and_index(
             );
         }
         Err(e) => {
-            error!(
-                project_id,
-                "Failed to spawn on-demand indexer: {}", e
-            );
+            error!(project_id, "Failed to spawn on-demand indexer: {}", e);
         }
     }
 

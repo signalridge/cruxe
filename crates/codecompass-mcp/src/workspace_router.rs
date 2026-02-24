@@ -34,8 +34,7 @@ impl WorkspaceRouter {
             return Err(WorkspaceError::AllowedRootRequired);
         }
 
-        let default_project_id =
-            generate_project_id(&default_workspace.to_string_lossy());
+        let default_project_id = generate_project_id(&default_workspace.to_string_lossy());
 
         Ok(Self {
             config,
@@ -71,11 +70,9 @@ impl WorkspaceRouter {
         let path = Path::new(workspace_param);
 
         // Canonicalize the path
-        let canonical = std::fs::canonicalize(path).map_err(|e| {
-            WorkspaceError::NotAllowed {
-                path: workspace_param.to_string(),
-                reason: format!("path resolution failed: {e}"),
-            }
+        let canonical = std::fs::canonicalize(path).map_err(|e| WorkspaceError::NotAllowed {
+            path: workspace_param.to_string(),
+            reason: format!("path resolution failed: {e}"),
         })?;
 
         // If this is the default workspace (after canonicalization), return it directly
@@ -88,20 +85,20 @@ impl WorkspaceRouter {
         }
 
         // Check if workspace is known in DB
-        let conn = codecompass_state::db::open_connection(&self.db_path)
-            .map_err(|e| WorkspaceError::NotAllowed {
+        let conn = codecompass_state::db::open_connection(&self.db_path).map_err(|e| {
+            WorkspaceError::NotAllowed {
                 path: canonical.display().to_string(),
                 reason: format!("database error: {e}"),
-            })?;
+            }
+        })?;
 
         let canonical_str = canonical.to_string_lossy().to_string();
 
-        if let Some(ws) =
-            codecompass_state::workspace::get_workspace(&conn, &canonical_str)
-                .map_err(|e| WorkspaceError::NotAllowed {
-                    path: canonical_str.clone(),
-                    reason: format!("database error: {e}"),
-                })?
+        if let Some(ws) = codecompass_state::workspace::get_workspace(&conn, &canonical_str)
+            .map_err(|e| WorkspaceError::NotAllowed {
+                path: canonical_str.clone(),
+                reason: format!("database error: {e}"),
+            })?
         {
             // Case 2: Known workspace
             let project_id = ws
@@ -134,11 +131,15 @@ impl WorkspaceRouter {
             });
         }
 
-        // Evict LRU if needed
-        let _ = codecompass_state::workspace::evict_lru_auto_discovered(
+        // T236: Evict LRU auto-discovered workspaces if at capacity
+        if let Ok(evicted) = codecompass_state::workspace::evict_lru_auto_discovered(
             &conn,
-            self.config.max_auto_workspaces,
-        );
+            self.config.max_auto_workspaces.saturating_sub(1), // Make room for the new one
+        ) {
+            for path in &evicted {
+                tracing::info!(evicted_workspace = %path, "Evicted LRU auto-discovered workspace");
+            }
+        }
 
         // Register new workspace
         let project_id = generate_project_id(&canonical_str);
@@ -262,8 +263,7 @@ mod tests {
         setup_db(&db_path);
 
         let config = WorkspaceConfig::default();
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         let resolved = router.resolve_workspace(None).unwrap();
         assert_eq!(resolved.workspace_path, dir.path());
@@ -278,8 +278,7 @@ mod tests {
         setup_db(&db_path);
 
         let config = WorkspaceConfig::default();
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         let resolved = router.resolve_workspace(Some("  ")).unwrap();
         assert_eq!(resolved.workspace_path, dir.path());
@@ -303,12 +302,9 @@ mod tests {
         register_workspace_in_db(&db_path, &ws2_str, "proj-b");
 
         let config = WorkspaceConfig::default();
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
-        let resolved = router
-            .resolve_workspace(Some(&ws2_str))
-            .unwrap();
+        let resolved = router.resolve_workspace(Some(&ws2_str)).unwrap();
         assert_eq!(resolved.workspace_path, ws2_canonical);
         assert_eq!(resolved.project_id, "proj-b");
         assert!(!resolved.on_demand_indexing);
@@ -342,8 +338,7 @@ mod tests {
 
         // Verify workspace was registered in DB
         let conn = codecompass_state::db::open_connection(&db_path).unwrap();
-        let ws_record =
-            codecompass_state::workspace::get_workspace(&conn, &ws_str).unwrap();
+        let ws_record = codecompass_state::workspace::get_workspace(&conn, &ws_str).unwrap();
         assert!(ws_record.is_some());
     }
 
@@ -360,15 +355,13 @@ mod tests {
         let ws_canonical = std::fs::canonicalize(&ws).unwrap();
         let ws_str = ws_canonical.to_string_lossy().to_string();
 
-        let allowed_root =
-            std::fs::canonicalize(dir.path().join("data")).unwrap();
+        let allowed_root = std::fs::canonicalize(dir.path().join("data")).unwrap();
         let config = WorkspaceConfig {
             auto_workspace: true,
             allowed_roots: AllowedRoots::new(vec![allowed_root]),
             max_auto_workspaces: 10,
         };
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         let result = router.resolve_workspace(Some(&ws_str));
         assert!(result.is_err());
@@ -398,8 +391,7 @@ mod tests {
             allowed_roots: AllowedRoots::default(),
             max_auto_workspaces: 10,
         };
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         let result = router.resolve_workspace(Some(&ws_str));
         assert!(result.is_err());
@@ -418,8 +410,7 @@ mod tests {
 
         let default_ws = std::fs::canonicalize(dir.path()).unwrap();
         let config = WorkspaceConfig::default();
-        let router =
-            WorkspaceRouter::new(config, default_ws.clone(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, default_ws.clone(), db_path).unwrap();
 
         let default_str = default_ws.to_string_lossy().to_string();
         let resolved = router.resolve_workspace(Some(&default_str)).unwrap();
@@ -446,8 +437,7 @@ mod tests {
             allowed_roots: AllowedRoots::new(vec![allowed_root]),
             max_auto_workspaces: 10,
         };
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         let resolved = router.resolve_workspace(Some(&ws_str)).unwrap();
         let expected_id = generate_project_id(&ws_str);
@@ -472,8 +462,7 @@ mod tests {
             allowed_roots: AllowedRoots::new(vec![allowed_root]),
             max_auto_workspaces: 10,
         };
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         // First resolve: on-demand
         let r1 = router.resolve_workspace(Some(&ws_str)).unwrap();
@@ -493,10 +482,110 @@ mod tests {
         setup_db(&db_path);
 
         let config = WorkspaceConfig::default();
-        let router =
-            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
 
         let result = router.resolve_workspace(Some("/nonexistent/path/xyz"));
+        assert!(result.is_err());
+    }
+
+    // ------ T233: Security tests for workspace path validation ------
+
+    /// T233: Path traversal attack should be rejected (outside allowed roots)
+    #[test]
+    fn security_path_traversal_rejected() {
+        let dir = tempdir().unwrap();
+        let allowed_root = dir.path().join("allowed");
+        std::fs::create_dir_all(&allowed_root).unwrap();
+
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![allowed_root]),
+            max_auto_workspaces: 10,
+        };
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        // Traversal attempt: ../../../etc/passwd (non-existent as dir, canonicalize fails)
+        let result = router.resolve_workspace(Some("../../../etc/passwd"));
+        assert!(result.is_err());
+    }
+
+    /// T233: Relative path that resolves outside allowed root is rejected
+    #[test]
+    fn security_relative_path_outside_root_rejected() {
+        let dir = tempdir().unwrap();
+        let allowed_root = dir.path().join("projects");
+        let outside = dir.path().join("secrets");
+        std::fs::create_dir_all(&allowed_root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![allowed_root]),
+            max_auto_workspaces: 10,
+        };
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        // outside/ is a real directory but not under allowed_root
+        let result = router.resolve_workspace(Some(&outside.to_string_lossy()));
+        assert!(result.is_err());
+    }
+
+    /// T233: Null bytes in path should fail
+    #[test]
+    fn security_null_bytes_in_path_rejected() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![dir.path().to_path_buf()]),
+            max_auto_workspaces: 10,
+        };
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let result = router.resolve_workspace(Some("/tmp/foo\0bar"));
+        assert!(result.is_err());
+    }
+
+    /// T233: Extremely long path should fail gracefully
+    #[test]
+    fn security_extremely_long_path_rejected() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![dir.path().to_path_buf()]),
+            max_auto_workspaces: 10,
+        };
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let long_path = format!("/tmp/{}", "a".repeat(4096));
+        let result = router.resolve_workspace(Some(&long_path));
+        assert!(result.is_err());
+    }
+
+    /// T234: auto_workspace without allowed_root fails at startup
+    #[test]
+    fn security_auto_workspace_requires_allowed_root() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![]),
+            max_auto_workspaces: 10,
+        };
+        let result = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path);
         assert!(result.is_err());
     }
 }

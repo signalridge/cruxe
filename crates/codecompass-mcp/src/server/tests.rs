@@ -1562,8 +1562,8 @@ fn t194_symbol_hierarchy_validation_precision() {
                 project_id,
                 prewarm_status: &test_prewarm_status(),
                 server_start: &test_server_start(),
-            notifier: Arc::new(NullProgressNotifier),
-            progress_token: None,
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
             },
         );
         if response.error.is_some() {
@@ -1626,8 +1626,8 @@ fn t195_code_context_budget_validation() {
                 project_id,
                 prewarm_status: &test_prewarm_status(),
                 server_start: &test_server_start(),
-            notifier: Arc::new(NullProgressNotifier),
-            progress_token: None,
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
             },
         );
         assert!(response.error.is_none(), "context request should succeed");
@@ -3181,8 +3181,8 @@ fn t138_performance_benchmark() {
                 project_id,
                 prewarm_status: &test_prewarm_status(),
                 server_start: &test_server_start(),
-            notifier: Arc::new(NullProgressNotifier),
-            progress_token: None,
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
             },
         );
         let elapsed = start.elapsed();

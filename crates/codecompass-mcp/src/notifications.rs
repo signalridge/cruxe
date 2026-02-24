@@ -9,13 +9,7 @@ use std::sync::{Arc, Mutex};
 /// - `NullProgressNotifier`: no-op for clients without notification support
 pub trait ProgressNotifier: Send + Sync {
     /// Emit a progress update.
-    fn emit_progress(
-        &self,
-        token: &str,
-        title: &str,
-        message: &str,
-        percentage: Option<u32>,
-    );
+    fn emit_progress(&self, token: &str, title: &str, message: &str, percentage: Option<u32>);
 
     /// Emit a completion notification.
     fn emit_end(&self, token: &str, title: &str, message: &str);
@@ -38,20 +32,18 @@ impl McpProgressNotifier {
             "params": params,
         });
         if let Ok(mut w) = self.writer.lock() {
-            let _ = writeln!(w, "{}", serde_json::to_string(&notification).unwrap_or_default());
+            let _ = writeln!(
+                w,
+                "{}",
+                serde_json::to_string(&notification).unwrap_or_default()
+            );
             let _ = w.flush();
         }
     }
 }
 
 impl ProgressNotifier for McpProgressNotifier {
-    fn emit_progress(
-        &self,
-        token: &str,
-        title: &str,
-        message: &str,
-        percentage: Option<u32>,
-    ) {
+    fn emit_progress(&self, token: &str, title: &str, message: &str, percentage: Option<u32>) {
         let mut value = json!({
             "kind": "report",
             "title": title,

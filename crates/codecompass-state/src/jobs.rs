@@ -148,9 +148,7 @@ pub fn get_interrupted_jobs(conn: &Connection) -> Result<Vec<IndexJob>, StateErr
          ORDER BY created_at DESC"
     ).map_err(StateError::sqlite)?;
 
-    let jobs = stmt
-        .query_map([], row_to_job)
-        .map_err(StateError::sqlite)?;
+    let jobs = stmt.query_map([], row_to_job).map_err(StateError::sqlite)?;
 
     jobs.collect::<Result<Vec<_>, _>>()
         .map_err(|e| StateError::Sqlite(e.to_string()))

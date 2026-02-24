@@ -357,12 +357,11 @@ pub fn validate_workspace_path(
     path: &Path,
     allowed_roots: &AllowedRoots,
 ) -> std::result::Result<PathBuf, crate::error::WorkspaceError> {
-    let canonical = std::fs::canonicalize(path).map_err(|e| {
-        crate::error::WorkspaceError::NotAllowed {
+    let canonical =
+        std::fs::canonicalize(path).map_err(|e| crate::error::WorkspaceError::NotAllowed {
             path: path.display().to_string(),
             reason: format!("path resolution failed: {e}"),
-        }
-    })?;
+        })?;
 
     if !allowed_roots.contains(&canonical) {
         return Err(crate::error::WorkspaceError::NotAllowed {

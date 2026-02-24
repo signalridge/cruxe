@@ -237,7 +237,12 @@ fn main() -> anyhow::Result<()> {
             match transport.as_str() {
                 "http" => {
                     commands::serve_mcp::run_http(
-                        &path, config_file, no_prewarm, ws_config, &bind, port,
+                        &path,
+                        config_file,
+                        no_prewarm,
+                        ws_config,
+                        &bind,
+                        port,
                     )?;
                 }
                 _ => {

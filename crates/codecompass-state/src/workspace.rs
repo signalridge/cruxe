@@ -424,12 +424,14 @@ mod tests {
         // Manual workspaces untouched
         let all = list_workspaces(&conn).unwrap();
         assert_eq!(all.len(), 3);
-        assert!(all
-            .iter()
-            .any(|ws| ws.workspace_path == "/home/user/project-0"));
-        assert!(all
-            .iter()
-            .any(|ws| ws.workspace_path == "/home/user/project-1"));
+        assert!(
+            all.iter()
+                .any(|ws| ws.workspace_path == "/home/user/project-0")
+        );
+        assert!(
+            all.iter()
+                .any(|ws| ws.workspace_path == "/home/user/project-1")
+        );
     }
 
     #[test]

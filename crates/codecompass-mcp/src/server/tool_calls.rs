@@ -986,6 +986,25 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 .find(|j| j.status == "published" && j.r#ref == effective_ref)
                 .map(|j| j.updated_at.clone());
 
+            // T455: Include interrupted recovery report if any jobs were marked interrupted
+            let interrupted_jobs = conn
+                .and_then(|c| codecompass_state::jobs::get_interrupted_jobs(c).ok())
+                .unwrap_or_default();
+            let interrupted_recovery_report = if interrupted_jobs.is_empty() {
+                None
+            } else {
+                Some(json!({
+                    "count": interrupted_jobs.len(),
+                    "jobs": interrupted_jobs.iter().map(|j| json!({
+                        "job_id": j.job_id,
+                        "ref": j.r#ref,
+                        "mode": j.mode,
+                        "created_at": j.created_at,
+                    })).collect::<Vec<_>>(),
+                    "message": "These jobs were running when the server last shut down. They were marked as interrupted and may need to be retried.",
+                }))
+            };
+
             let result = json!({
                 "project_id": project_id,
                 "repo_root": workspace.to_string_lossy(),
@@ -1026,6 +1045,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                     "duration_ms": j.duration_ms,
                     "created_at": j.created_at,
                 })).collect::<Vec<_>>(),
+                "interrupted_recovery_report": interrupted_recovery_report,
                 "metadata": build_metadata(
                     &effective_ref,
                     schema_status,
@@ -1102,19 +1122,15 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 Ok(child) => {
                     // T216: Emit begin notification and start progress polling
                     if let Some(ref token) = progress_token {
-                        notifier.emit_progress(
-                            token,
-                            "Indexing",
-                            "Starting indexer...",
-                            Some(0),
-                        );
+                        notifier.emit_progress(token, "Indexing", "Starting indexer...", Some(0));
                     }
 
                     // T215: Background thread that polls progress and emits notifications
                     let notifier_clone = Arc::clone(&notifier);
                     let poll_token = progress_token.clone();
-                    let poll_db_path =
-                        config.project_data_dir(project_id).join(constants::STATE_DB_FILE);
+                    let poll_db_path = config
+                        .project_data_dir(project_id)
+                        .join(constants::STATE_DB_FILE);
                     let poll_project_id = project_id.to_string();
                     std::thread::spawn(move || {
                         let mut child = child;
