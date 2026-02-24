@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -43,8 +43,27 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
     let migrations: &[MigrationFn] = &[
         // V1: baseline — no DDL needed, tables already created by SCHEMA_SQL
         |_conn| Ok(()),
-        // Future migrations go here:
-        // V2: |conn| { conn.execute_batch("ALTER TABLE ...").map_err(StateError::sqlite) },
+        // V2: add progress_token and progress fields to index_jobs.
+        // Idempotent: columns already exist in the base DDL for fresh installs.
+        |conn| {
+            let has_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('index_jobs') WHERE name = 'progress_token'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_column {
+                conn.execute_batch(
+                    "ALTER TABLE index_jobs ADD COLUMN progress_token TEXT;
+                     ALTER TABLE index_jobs ADD COLUMN files_scanned INTEGER DEFAULT 0;
+                     ALTER TABLE index_jobs ADD COLUMN files_indexed INTEGER DEFAULT 0;
+                     ALTER TABLE index_jobs ADD COLUMN symbols_extracted INTEGER DEFAULT 0;",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+            Ok(())
+        },
     ];
 
     for version in (current + 1)..=(CURRENT_SCHEMA_VERSION) {
@@ -156,6 +175,10 @@ CREATE TABLE IF NOT EXISTS index_jobs (
     duration_ms INTEGER,
     error_message TEXT,
     retry_count INTEGER DEFAULT 0,
+    progress_token TEXT,
+    files_scanned INTEGER DEFAULT 0,
+    files_indexed INTEGER DEFAULT 0,
+    symbols_extracted INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

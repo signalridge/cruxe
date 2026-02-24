@@ -8,6 +8,10 @@ pub fn definition() -> ToolDefinition {
         input_schema: json!({
             "type": "object",
             "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Absolute path to target workspace. Default: server's default project."
+                },
                 "path": {
                     "type": "string",
                     "description": "Source file path relative to repo root"

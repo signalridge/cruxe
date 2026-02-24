@@ -16,6 +16,10 @@ pub struct IndexJob {
     pub duration_ms: Option<i64>,
     pub error_message: Option<String>,
     pub retry_count: i32,
+    pub progress_token: Option<String>,
+    pub files_scanned: i64,
+    pub files_indexed: i64,
+    pub symbols_extracted: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -23,8 +27,8 @@ pub struct IndexJob {
 /// Create a new index job.
 pub fn create_job(conn: &Connection, job: &IndexJob) -> Result<(), StateError> {
     conn.execute(
-        "INSERT INTO index_jobs (job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO index_jobs (job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, progress_token, files_scanned, files_indexed, symbols_extracted, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             job.job_id,
             job.project_id,
@@ -37,6 +41,10 @@ pub fn create_job(conn: &Connection, job: &IndexJob) -> Result<(), StateError> {
             job.duration_ms,
             job.error_message,
             job.retry_count,
+            job.progress_token,
+            job.files_scanned,
+            job.files_indexed,
+            job.symbols_extracted,
             job.created_at,
             job.updated_at,
         ],
@@ -71,28 +79,12 @@ pub fn update_job_status(
 /// Get the active (running) job for a project, if any.
 pub fn get_active_job(conn: &Connection, project_id: &str) -> Result<Option<IndexJob>, StateError> {
     let mut stmt = conn.prepare(
-        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, created_at, updated_at
+        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, progress_token, files_scanned, files_indexed, symbols_extracted, created_at, updated_at
          FROM index_jobs WHERE project_id = ?1 AND status IN ('queued', 'running', 'validating')
          ORDER BY created_at DESC LIMIT 1"
     ).map_err(StateError::sqlite)?;
 
-    let result = stmt.query_row(params![project_id], |row| {
-        Ok(IndexJob {
-            job_id: row.get(0)?,
-            project_id: row.get(1)?,
-            r#ref: row.get(2)?,
-            mode: row.get(3)?,
-            head_commit: row.get(4)?,
-            sync_id: row.get(5)?,
-            status: row.get(6)?,
-            changed_files: row.get(7)?,
-            duration_ms: row.get(8)?,
-            error_message: row.get(9)?,
-            retry_count: row.get(10)?,
-            created_at: row.get(11)?,
-            updated_at: row.get(12)?,
-        })
-    });
+    let result = stmt.query_row(params![project_id], row_to_job);
 
     match result {
         Ok(job) => Ok(Some(job)),
@@ -108,33 +100,81 @@ pub fn get_recent_jobs(
     limit: usize,
 ) -> Result<Vec<IndexJob>, StateError> {
     let mut stmt = conn.prepare(
-        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, created_at, updated_at
+        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, progress_token, files_scanned, files_indexed, symbols_extracted, created_at, updated_at
          FROM index_jobs WHERE project_id = ?1
          ORDER BY created_at DESC LIMIT ?2"
     ).map_err(StateError::sqlite)?;
 
     let jobs = stmt
-        .query_map(params![project_id, limit], |row| {
-            Ok(IndexJob {
-                job_id: row.get(0)?,
-                project_id: row.get(1)?,
-                r#ref: row.get(2)?,
-                mode: row.get(3)?,
-                head_commit: row.get(4)?,
-                sync_id: row.get(5)?,
-                status: row.get(6)?,
-                changed_files: row.get(7)?,
-                duration_ms: row.get(8)?,
-                error_message: row.get(9)?,
-                retry_count: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
-            })
-        })
+        .query_map(params![project_id, limit], row_to_job)
         .map_err(StateError::sqlite)?;
 
     jobs.collect::<Result<Vec<_>, _>>()
         .map_err(|e| StateError::Sqlite(e.to_string()))
+}
+
+/// Update progress fields for a running job.
+pub fn update_progress(
+    conn: &Connection,
+    job_id: &str,
+    files_scanned: i64,
+    files_indexed: i64,
+    symbols_extracted: i64,
+) -> Result<(), StateError> {
+    conn.execute(
+        "UPDATE index_jobs SET files_scanned = ?1, files_indexed = ?2, symbols_extracted = ?3, updated_at = ?4 WHERE job_id = ?5",
+        params![files_scanned, files_indexed, symbols_extracted, codecompass_core::time::now_iso8601(), job_id],
+    )
+    .map_err(StateError::sqlite)?;
+    Ok(())
+}
+
+/// Mark all running/queued jobs as interrupted. Returns the count of affected jobs.
+pub fn mark_interrupted_jobs(conn: &Connection) -> Result<usize, StateError> {
+    let count = conn
+        .execute(
+            "UPDATE index_jobs SET status = 'interrupted' WHERE status IN ('queued', 'running', 'validating')",
+            [],
+        )
+        .map_err(StateError::sqlite)?;
+    Ok(count)
+}
+
+/// Get interrupted jobs (for recovery reporting).
+pub fn get_interrupted_jobs(conn: &Connection) -> Result<Vec<IndexJob>, StateError> {
+    let mut stmt = conn.prepare(
+        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, progress_token, files_scanned, files_indexed, symbols_extracted, created_at, updated_at
+         FROM index_jobs WHERE status = 'interrupted'
+         ORDER BY created_at DESC"
+    ).map_err(StateError::sqlite)?;
+
+    let jobs = stmt.query_map([], row_to_job).map_err(StateError::sqlite)?;
+
+    jobs.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| StateError::Sqlite(e.to_string()))
+}
+
+/// Helper to map a row to IndexJob.
+fn row_to_job(row: &rusqlite::Row) -> rusqlite::Result<IndexJob> {
+    Ok(IndexJob {
+        job_id: row.get(0)?,
+        project_id: row.get(1)?,
+        r#ref: row.get(2)?,
+        mode: row.get(3)?,
+        head_commit: row.get(4)?,
+        sync_id: row.get(5)?,
+        status: row.get(6)?,
+        changed_files: row.get(7)?,
+        duration_ms: row.get(8)?,
+        error_message: row.get(9)?,
+        retry_count: row.get(10)?,
+        progress_token: row.get(11)?,
+        files_scanned: row.get(12)?,
+        files_indexed: row.get(13)?,
+        symbols_extracted: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+    })
 }
 
 #[cfg(test)]
@@ -181,6 +221,10 @@ mod tests {
             duration_ms: None,
             error_message: None,
             retry_count: 0,
+            progress_token: None,
+            files_scanned: 0,
+            files_indexed: 0,
+            symbols_extracted: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         }
@@ -435,6 +479,10 @@ mod tests {
             duration_ms: None,
             error_message: None,
             retry_count: 0,
+            progress_token: None,
+            files_scanned: 0,
+            files_indexed: 0,
+            symbols_extracted: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };

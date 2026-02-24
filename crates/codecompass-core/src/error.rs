@@ -22,6 +22,27 @@ pub enum Error {
 
     #[error("vcs error: {0}")]
     Vcs(#[from] VcsError),
+
+    #[error("workspace error: {0}")]
+    Workspace(#[from] WorkspaceError),
+}
+
+#[derive(Error, Debug)]
+pub enum WorkspaceError {
+    #[error("workspace not registered: {path}")]
+    NotRegistered { path: String },
+
+    #[error("workspace not allowed: {path} ({reason})")]
+    NotAllowed { path: String, reason: String },
+
+    #[error("auto-workspace is disabled; enable with --auto-workspace")]
+    AutoDiscoveryDisabled,
+
+    #[error("workspace limit exceeded: max {max} auto-discovered workspaces")]
+    LimitExceeded { max: usize },
+
+    #[error("--allowed-root is required when --auto-workspace is enabled")]
+    AllowedRootRequired,
 }
 
 #[derive(Error, Debug)]

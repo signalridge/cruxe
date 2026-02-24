@@ -9,6 +9,10 @@ pub fn definition() -> ToolDefinition {
         input_schema: json!({
             "type": "object",
             "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Absolute path to target workspace. Default: server's default project."
+                },
                 "symbol_name": {
                     "type": "string",
                     "description": "Anchor symbol name"

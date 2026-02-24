@@ -9,6 +9,10 @@ pub fn definition() -> ToolDefinition {
         input_schema: json!({
             "type": "object",
             "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "Absolute path to target workspace. Default: server's default project."
+                },
                 "query": {
                     "type": "string",
                     "description": "Search query (symbol name, path, error string, or natural language)"

@@ -10,7 +10,7 @@ pub fn definition() -> ToolDefinition {
             "properties": {
                 "workspace": {
                     "type": "string",
-                    "description": "Specific workspace to check. Default: all registered projects."
+                    "description": "Absolute path to target workspace. Default: server's default project."
                 }
             }
         }),

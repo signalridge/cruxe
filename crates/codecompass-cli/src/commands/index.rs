@@ -13,6 +13,8 @@ use std::path::Path;
 use std::time::Instant;
 use tracing::{info, warn};
 
+const PROGRESS_UPDATE_EVERY: u64 = 100;
+
 pub fn run(
     repo_root: &Path,
     force: bool,
@@ -74,6 +76,10 @@ pub fn run(
         duration_ms: None,
         error_message: None,
         retry_count: 0,
+        progress_token: Some(format!("index-job-{}", job_id)),
+        files_scanned: 0,
+        files_indexed: 0,
+        symbols_extracted: 0,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -102,15 +108,13 @@ pub fn run(
             Err(e) => return Err(e.into()),
         };
 
-        // Create batch writer — one IndexWriter per index for the entire operation
+        // Create batch writer — one IndexWriter per index for the entire operation.
+        // NOTE: SQLite writes are auto-committed (no explicit transaction) so that
+        // progress updates in `index_jobs` are immediately visible to `index_status`
+        // polling from the MCP server.  Tantivy is committed at the end via
+        // `batch.commit()`.  A crash mid-indexing may leave partial SQLite data, but
+        // the next incremental or force index run will reconcile both stores.
         let batch = writer::BatchWriter::new(&index_set)?;
-
-        // Begin SQLite transaction for atomicity with Tantivy commit.
-        // All SQLite data writes happen inside this transaction. On success,
-        // Tantivy is committed first, then the SQLite transaction is committed.
-        // On failure, SQLite rolls back and Tantivy changes are discarded (uncommitted).
-        conn.execute_batch("BEGIN IMMEDIATE")
-            .map_err(codecompass_core::error::StateError::sqlite)?;
 
         // For force mode, clear existing index/state for target repo/ref before rebuild
         if force {
@@ -138,6 +142,10 @@ pub fn run(
             config.index.max_file_size,
             &config.index.languages,
         );
+        let total_scanned = files.len() as i64;
+        if let Err(err) = jobs::update_progress(&conn, &job_id, total_scanned, 0, 0) {
+            warn!(job_id = %job_id, "Failed to update index progress: {}", err);
+        }
         println!("Found {} source files", files.len());
 
         let scanned_paths: HashSet<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
@@ -277,6 +285,17 @@ pub fn run(
 
             symbol_count += symbols_for_file.len() as u64;
             indexed_count += 1;
+            if indexed_count.is_multiple_of(PROGRESS_UPDATE_EVERY)
+                && let Err(err) = jobs::update_progress(
+                    &conn,
+                    &job_id,
+                    total_scanned,
+                    indexed_count as i64,
+                    symbol_count as i64,
+                )
+            {
+                warn!(job_id = %job_id, "Failed to update index progress: {}", err);
+            }
         }
 
         // Resolve imports after all symbols are written so cross-file lookups can
@@ -291,15 +310,10 @@ pub fn run(
             )?;
         }
 
-        // Commit Tantivy first, then finalize SQLite transaction.
-        // If Tantivy fails, rollback SQLite to keep both stores consistent.
+        // Commit Tantivy segment updates.
         match batch.commit() {
-            Ok(()) => {
-                conn.execute_batch("COMMIT")
-                    .map_err(codecompass_core::error::StateError::sqlite)?;
-            }
+            Ok(()) => {}
             Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
                 return Err(e.into());
             }
         }
@@ -323,6 +337,15 @@ pub fn run(
             last_accessed_at: now,
         };
         branch_state::upsert_branch_state(&conn, &branch_entry)?;
+        if let Err(err) = jobs::update_progress(
+            &conn,
+            &job_id,
+            total_scanned,
+            indexed_count as i64,
+            symbol_count as i64,
+        ) {
+            warn!(job_id = %job_id, "Failed to update index progress: {}", err);
+        }
 
         Ok((indexed_count, skipped, symbol_count, changed_files))
     })();
@@ -359,8 +382,6 @@ pub fn run(
             Ok(())
         }
         Err(err) => {
-            // Ensure any open SQLite transaction is rolled back before updating job status
-            let _ = conn.execute_batch("ROLLBACK");
             let duration_ms = start.elapsed().as_millis() as i64;
             let error_message = format!("{err:#}");
             let _ = jobs::update_job_status(

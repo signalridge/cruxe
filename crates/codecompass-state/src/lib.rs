@@ -8,3 +8,4 @@ pub mod schema;
 pub mod symbols;
 pub mod tantivy_index;
 pub mod tokenizers;
+pub mod workspace;

@@ -9,6 +9,7 @@ codecompass-state = { workspace = true }
 codecompass-indexer = { workspace = true }
 codecompass-query = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
