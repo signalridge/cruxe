@@ -1103,6 +1103,12 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             let exe = std::env::current_exe().unwrap_or_else(|_| "codecompass".into());
             let workspace_str = workspace.to_string_lossy();
             let job_id = format!("{:016x}", rand_u64());
+            // HIGH-2: Server-generated progress_token per spec T216
+            let server_progress_token = format!("index-job-{}", job_id);
+            // Use client-provided token for notifications if available, otherwise server-generated
+            let effective_progress_token = progress_token
+                .clone()
+                .unwrap_or_else(|| server_progress_token.clone());
 
             let mut cmd = std::process::Command::new(exe);
             cmd.arg("index")
@@ -1121,13 +1127,22 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             match cmd.spawn() {
                 Ok(child) => {
                     // T216: Emit begin notification and start progress polling
-                    if let Some(ref token) = progress_token {
-                        notifier.emit_progress(token, "Indexing", "Starting indexer...", Some(0));
+                    if progress_token.is_some() {
+                        notifier.emit_progress(
+                            &effective_progress_token,
+                            "Indexing",
+                            "Starting indexer...",
+                            Some(0),
+                        );
                     }
 
                     // T215: Background thread that polls progress and emits notifications
                     let notifier_clone = Arc::clone(&notifier);
-                    let poll_token = progress_token.clone();
+                    let poll_token = if progress_token.is_some() {
+                        Some(effective_progress_token.clone())
+                    } else {
+                        None
+                    };
                     let poll_db_path = config
                         .project_data_dir(project_id)
                         .join(constants::STATE_DB_FILE);
@@ -1140,10 +1155,26 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
 
                         loop {
                             match child.try_wait() {
-                                Ok(Some(_status)) => {
-                                    // Child exited — emit end notification
+                                Ok(Some(status)) => {
+                                    // Child exited — emit end notification with summary
                                     if let Some(ref token) = poll_token {
-                                        notifier_clone.emit_end(token, "Indexing", "Complete");
+                                        let summary = if status.success() {
+                                            format!(
+                                                "Indexed {} files, {} symbols",
+                                                last_indexed, last_symbols,
+                                            )
+                                        } else {
+                                            format!(
+                                                "Indexer exited with code {}",
+                                                status.code().unwrap_or(-1)
+                                            )
+                                        };
+                                        let title = if status.success() {
+                                            "Indexing complete"
+                                        } else {
+                                            "Indexing failed"
+                                        };
+                                        notifier_clone.emit_end(token, title, &summary);
                                     }
                                     break;
                                 }
@@ -1190,9 +1221,8 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                     payload.insert("job_id".to_string(), json!(job_id));
                     payload.insert("status".to_string(), json!("running"));
                     payload.insert("mode".to_string(), json!(mode));
-                    if let Some(ref token) = progress_token {
-                        payload.insert("progress_token".to_string(), json!(token));
-                    }
+                    // Always include server-generated progress_token (per spec T216)
+                    payload.insert("progress_token".to_string(), json!(server_progress_token));
                     if tool_name == "sync_repo" {
                         payload.insert("changed_files".to_string(), Value::Null);
                     } else {
@@ -1462,14 +1492,34 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
             Some("Run `codecompass index --force` to rebuild."),
         ),
     };
+    // Status priority: error > warming > indexing > ready (per spec)
     let overall_status = if any_error_project {
         "error"
-    } else if overall_has_active_job {
-        "indexing"
     } else if any_warming_project {
         "warming"
+    } else if overall_has_active_job {
+        "indexing"
     } else {
         "ready"
+    };
+
+    // CRITICAL-4: Add interrupted_recovery_report to health_check (FR-327)
+    let interrupted_jobs = conn
+        .and_then(|c| codecompass_state::jobs::get_interrupted_jobs(c).ok())
+        .unwrap_or_default();
+    let interrupted_recovery_report = if interrupted_jobs.is_empty() {
+        None
+    } else {
+        Some(json!({
+            "count": interrupted_jobs.len(),
+            "jobs": interrupted_jobs.iter().map(|j| json!({
+                "job_id": j.job_id,
+                "ref": j.r#ref,
+                "mode": j.mode,
+                "created_at": j.created_at,
+            })).collect::<Vec<_>>(),
+            "message": "These jobs were running when the server last shut down. They were marked as interrupted and may need to be retried.",
+        }))
     };
 
     let result = json!({
@@ -1485,6 +1535,7 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
             "missing": grammars_missing,
         },
         "active_job": active_job_payload,
+        "interrupted_recovery_report": interrupted_recovery_report,
         "startup_checks": {
             "index": {
                 "status": index_compat_status,

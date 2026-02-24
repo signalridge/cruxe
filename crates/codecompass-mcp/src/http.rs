@@ -51,6 +51,16 @@ pub async fn run_http_server(
     let data_dir = config.project_data_dir(&project_id);
     let db_path = data_dir.join(constants::STATE_DB_FILE);
 
+    // Mark interrupted jobs from previous session (same as stdio transport)
+    if let Ok(conn) = codecompass_state::db::open_connection(&db_path) {
+        match codecompass_state::jobs::mark_interrupted_jobs(&conn) {
+            Ok(count) if count > 0 => {
+                info!(count, "Marked interrupted jobs from previous session");
+            }
+            _ => {}
+        }
+    }
+
     // Create workspace router
     let router = WorkspaceRouter::new(workspace_config, workspace.to_path_buf(), db_path.clone())
         .map_err(|e| format!("workspace config error: {}", e))?;
@@ -229,18 +239,28 @@ fn build_health_response(state: &HttpState) -> Value {
         })
         .unwrap_or((0, 0));
 
-    // Overall status
-    let overall_status = if active_job.is_some() {
-        "indexing"
-    } else if pw_status == crate::server::PREWARM_IN_PROGRESS {
-        "warming"
-    } else if pw_status == crate::server::PREWARM_FAILED
+    // HIGH-3: last_indexed_at from most recent published job
+    let last_indexed_at: Option<String> = conn.as_ref().and_then(|c| {
+        codecompass_state::jobs::get_recent_jobs(c, &state.project_id, 10)
+            .ok()
+            .and_then(|jobs| {
+                jobs.into_iter()
+                    .find(|j| j.status == "published" && j.r#ref == effective_ref)
+                    .map(|j| j.updated_at)
+            })
+    });
+
+    // Overall status — priority: error > warming > indexing > ready (per spec)
+    let overall_status = if pw_status == crate::server::PREWARM_FAILED
         || !matches!(
             schema_status,
             SchemaStatus::Compatible | SchemaStatus::NotIndexed
-        )
-    {
+        ) {
         "error"
+    } else if pw_status == crate::server::PREWARM_IN_PROGRESS {
+        "warming"
+    } else if active_job.is_some() {
+        "indexing"
     } else {
         "ready"
     };
@@ -280,6 +300,7 @@ fn build_health_response(state: &HttpState) -> Value {
             "schema_status": index_compat_status,
             "current_schema_version": current_schema_version,
             "required_schema_version": constants::SCHEMA_VERSION,
+            "last_indexed_at": last_indexed_at,
         }],
     })
 }

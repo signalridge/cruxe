@@ -147,17 +147,43 @@ pub fn run_server(
                     let eff_data_dir = config.project_data_dir(&resolved.project_id);
 
                     // T205: On-demand indexing for auto-discovered workspaces
-                    if resolved.on_demand_indexing
-                        && let Err(e) = bootstrap_and_index(
+                    if resolved.on_demand_indexing {
+                        if let Err(e) = bootstrap_and_index(
                             &resolved.workspace_path,
                             &resolved.project_id,
                             &eff_data_dir,
-                        )
-                    {
-                        error!(
-                            workspace = %resolved.workspace_path.display(),
-                            "on-demand bootstrap failed: {}", e
+                        ) {
+                            error!(
+                                workspace = %resolved.workspace_path.display(),
+                                "on-demand bootstrap failed: {}", e
+                            );
+                        }
+
+                        // HIGH-5: For query tools, return graceful "indexing" response
+                        // instead of compatibility error (spec resolution logic step 4f)
+                        let tool_name = request
+                            .params
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let is_status_tool = matches!(
+                            tool_name,
+                            "index_repo" | "sync_repo" | "index_status" | "health_check"
                         );
+                        if !is_status_tool {
+                            let resp = tool_calls::tool_text_response(
+                                request.id.clone(),
+                                json!({
+                                    "indexing_status": "indexing",
+                                    "result_completeness": "partial",
+                                    "workspace": resolved.workspace_path.to_string_lossy(),
+                                    "message": "Workspace is being indexed. Results will be available shortly. Use index_status to check progress.",
+                                    "suggested_next_actions": ["poll index_status", "retry after indexing completes"],
+                                }),
+                            );
+                            write_response(&writer, &resp)?;
+                            continue;
+                        }
                     }
 
                     (resolved.workspace_path, resolved.project_id, eff_data_dir)

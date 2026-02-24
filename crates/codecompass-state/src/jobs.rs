@@ -122,8 +122,8 @@ pub fn update_progress(
     symbols_extracted: i64,
 ) -> Result<(), StateError> {
     conn.execute(
-        "UPDATE index_jobs SET files_scanned = ?1, files_indexed = ?2, symbols_extracted = ?3 WHERE job_id = ?4",
-        params![files_scanned, files_indexed, symbols_extracted, job_id],
+        "UPDATE index_jobs SET files_scanned = ?1, files_indexed = ?2, symbols_extracted = ?3, updated_at = ?4 WHERE job_id = ?5",
+        params![files_scanned, files_indexed, symbols_extracted, codecompass_core::time::now_iso8601(), job_id],
     )
     .map_err(StateError::sqlite)?;
     Ok(())

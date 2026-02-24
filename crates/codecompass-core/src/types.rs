@@ -574,4 +574,119 @@ mod tests {
             assert_eq!(SymbolKind::parse_kind(kind.as_str()), Some(kind));
         }
     }
+
+    // ------------------------------------------------------------------
+    // T201: AllowedRoots::contains() unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn t201_allowed_roots_prefix_matching() {
+        let roots = AllowedRoots::new(vec![PathBuf::from("/home/user/projects")]);
+        assert!(roots.contains(Path::new("/home/user/projects")));
+        assert!(roots.contains(Path::new("/home/user/projects/repo-a")));
+        assert!(roots.contains(Path::new("/home/user/projects/repo-a/src")));
+        assert!(!roots.contains(Path::new("/home/user")));
+        assert!(!roots.contains(Path::new("/home/user/other")));
+        assert!(!roots.contains(Path::new("/tmp/projects")));
+    }
+
+    #[test]
+    fn t201_allowed_roots_multiple_roots() {
+        let roots = AllowedRoots::new(vec![
+            PathBuf::from("/home/user/projects"),
+            PathBuf::from("/opt/work"),
+        ]);
+        assert!(roots.contains(Path::new("/home/user/projects/repo")));
+        assert!(roots.contains(Path::new("/opt/work/repo")));
+        assert!(!roots.contains(Path::new("/tmp/repo")));
+    }
+
+    #[test]
+    fn t201_allowed_roots_empty_rejects_all() {
+        let roots = AllowedRoots::default();
+        assert!(roots.is_empty());
+        assert!(!roots.contains(Path::new("/any/path")));
+        assert!(!roots.contains(Path::new("/")));
+    }
+
+    #[test]
+    fn t201_allowed_roots_path_traversal_not_fooled() {
+        // Path::starts_with does component-level matching, so
+        // "/home/user/projects-evil" does NOT start_with "/home/user/projects"
+        let roots = AllowedRoots::new(vec![PathBuf::from("/home/user/projects")]);
+        assert!(!roots.contains(Path::new("/home/user/projects-evil")));
+        assert!(!roots.contains(Path::new("/home/user/projects_backup")));
+    }
+
+    // ------------------------------------------------------------------
+    // T202: validate_workspace_path() unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn t202_validate_workspace_path_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical_root = tmp.path().canonicalize().unwrap();
+        let roots = AllowedRoots::new(vec![canonical_root.clone()]);
+
+        let sub = tmp.path().join("repo");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let result = validate_workspace_path(&sub, &roots);
+        assert!(result.is_ok());
+        let canonical = result.unwrap();
+        assert!(canonical.starts_with(&canonical_root));
+    }
+
+    #[test]
+    fn t202_validate_workspace_path_outside_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical_root = tmp.path().canonicalize().unwrap();
+        let roots = AllowedRoots::new(vec![canonical_root.join("allowed")]);
+
+        // tmp itself exists but is not under "allowed"
+        let result = validate_workspace_path(tmp.path(), &roots);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::error::WorkspaceError::NotAllowed { .. }),
+            "expected NotAllowed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn t202_validate_workspace_path_nonexistent() {
+        let roots = AllowedRoots::new(vec![PathBuf::from("/tmp")]);
+        let result =
+            validate_workspace_path(Path::new("/tmp/nonexistent-9f8a7b6c5d4e3f2a1b"), &roots);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // canonicalize fails on nonexistent paths -> NotAllowed with "path resolution failed"
+        assert!(
+            matches!(err, crate::error::WorkspaceError::NotAllowed { .. }),
+            "expected NotAllowed for nonexistent path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn t202_validate_workspace_path_symlink_resolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical_root = tmp.path().canonicalize().unwrap();
+        let roots = AllowedRoots::new(vec![canonical_root.clone()]);
+
+        // Create a real dir and a symlink to it
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let link = tmp.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+
+        #[cfg(unix)]
+        {
+            let result = validate_workspace_path(&link, &roots);
+            assert!(result.is_ok());
+            let canonical = result.unwrap();
+            // The canonical path should resolve through the symlink to the real dir
+            assert!(canonical.starts_with(&canonical_root));
+        }
+    }
 }

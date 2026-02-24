@@ -224,14 +224,20 @@ fn main() -> anyhow::Result<()> {
             max_auto_workspaces,
         } => {
             let path = resolve_path(workspace)?;
+            // HIGH-4: Canonicalize --allowed-root paths at startup; reject nonexistent
+            let mut canonical_roots = Vec::new();
+            for root in &allowed_roots {
+                let root_path = std::path::Path::new(root);
+                match root_path.canonicalize() {
+                    Ok(canonical) => canonical_roots.push(canonical),
+                    Err(e) => {
+                        anyhow::bail!("--allowed-root '{}' is not a valid path: {}", root, e);
+                    }
+                }
+            }
             let ws_config = codecompass_core::types::WorkspaceConfig {
                 auto_workspace,
-                allowed_roots: codecompass_core::types::AllowedRoots::new(
-                    allowed_roots
-                        .into_iter()
-                        .map(std::path::PathBuf::from)
-                        .collect(),
-                ),
+                allowed_roots: codecompass_core::types::AllowedRoots::new(canonical_roots),
                 max_auto_workspaces,
             };
             match transport.as_str() {

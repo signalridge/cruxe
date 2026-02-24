@@ -2716,6 +2716,65 @@ fn t134_tools_list_schema_verification() {
 }
 
 // ------------------------------------------------------------------
+// T207: Contract guard – all query/path tools expose `workspace` param
+// ------------------------------------------------------------------
+
+#[test]
+fn t207_all_tools_expose_workspace_parameter() {
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "fake_project_id";
+
+    let request = make_request("tools/list", json!({}));
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "tools/list should succeed");
+    let result = response.result.expect("result should be present");
+    let tools = result
+        .get("tools")
+        .expect("result should contain 'tools'")
+        .as_array()
+        .expect("'tools' should be an array");
+
+    // All 10 tools must expose a `workspace` property in their inputSchema
+    for tool in tools {
+        let name = tool.get("name").unwrap().as_str().unwrap();
+        let schema = tool
+            .get("inputSchema")
+            .expect("tool should have inputSchema");
+        let props = schema
+            .get("properties")
+            .unwrap_or_else(|| panic!("tool '{name}' inputSchema missing 'properties'"));
+        assert!(
+            props.get("workspace").is_some(),
+            "tool '{name}' is missing 'workspace' parameter in inputSchema"
+        );
+        // Verify workspace is typed as string
+        let ws_prop = props.get("workspace").unwrap();
+        assert_eq!(
+            ws_prop.get("type").unwrap().as_str().unwrap(),
+            "string",
+            "tool '{name}' workspace parameter should be type 'string'"
+        );
+    }
+}
+
+// ------------------------------------------------------------------
 // T135: Full E2E workflow test
 // ------------------------------------------------------------------
 

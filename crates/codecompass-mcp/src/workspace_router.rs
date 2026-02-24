@@ -141,7 +141,7 @@ impl WorkspaceRouter {
             }
         }
 
-        // Register new workspace
+        // Register new workspace (UPSERT — safe for concurrent requests)
         let project_id = generate_project_id(&canonical_str);
         let now = codecompass_core::time::now_iso8601();
 
@@ -153,9 +153,22 @@ impl WorkspaceRouter {
             &now,
         )
         .map_err(|e| WorkspaceError::NotAllowed {
-            path: canonical_str,
+            path: canonical_str.clone(),
             reason: format!("failed to register workspace: {e}"),
         })?;
+
+        // HIGH-6: After UPSERT, re-read to detect if another concurrent request
+        // already bootstrapped this workspace (has project_id set).
+        if let Ok(Some(ws)) = codecompass_state::workspace::get_workspace(&conn, &canonical_str)
+            && ws.project_id.is_some()
+        {
+            // Another request already registered and bootstrapped — reuse it
+            return Ok(ResolvedWorkspace {
+                workspace_path: canonical,
+                project_id: ws.project_id.unwrap(),
+                on_demand_indexing: false, // Already being indexed
+            });
+        }
 
         // Case 3: Auto-discovered — signal that on-demand indexing should start
         Ok(ResolvedWorkspace {
