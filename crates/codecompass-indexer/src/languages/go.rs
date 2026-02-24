@@ -1,4 +1,5 @@
 use super::ExtractedSymbol;
+use crate::import_extract::RawImport;
 use codecompass_core::types::SymbolKind;
 
 pub fn extract(tree: &tree_sitter::Tree, source: &str) -> Vec<ExtractedSymbol> {
@@ -177,4 +178,116 @@ fn extract_type_spec(node: tree_sitter::Node, source: &str) -> Option<ExtractedS
 
 fn node_text(node: tree_sitter::Node, source: &str) -> String {
     source[node.byte_range()].to_string()
+}
+
+/// Extract Go imports from single and grouped import declarations.
+pub fn extract_imports(
+    _tree: &tree_sitter::Tree,
+    source: &str,
+    source_path: &str,
+) -> Vec<RawImport> {
+    let mut imports = Vec::new();
+    let mut in_group = false;
+
+    for (idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import (") {
+            in_group = true;
+            continue;
+        }
+        if in_group {
+            if trimmed == ")" {
+                in_group = false;
+                continue;
+            }
+            if let Some((target_path, alias)) = parse_go_import_line(trimmed) {
+                imports.push(RawImport {
+                    source_qualified_name: format!("file::{}", source_path),
+                    target_qualified_name: target_path.clone(),
+                    target_name: alias.unwrap_or_else(|| {
+                        target_path.rsplit('/').next().unwrap_or("").to_string()
+                    }),
+                    import_line: (idx + 1) as u32,
+                });
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("import ")
+            && let Some((target_path, alias)) =
+                parse_go_import_line(trimmed.trim_start_matches("import ").trim())
+        {
+            imports.push(RawImport {
+                source_qualified_name: format!("file::{}", source_path),
+                target_qualified_name: target_path.clone(),
+                target_name: alias
+                    .unwrap_or_else(|| target_path.rsplit('/').next().unwrap_or("").to_string()),
+                import_line: (idx + 1) as u32,
+            });
+        }
+    }
+
+    imports
+}
+
+fn parse_go_import_line(line: &str) -> Option<(String, Option<String>)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // alias "pkg/path"
+    if let Some((alias, rest)) = trimmed.split_once(' ') {
+        let target_path = extract_go_path(rest.trim())?;
+        let alias = alias.trim();
+        let alias_value = if alias == "_" || alias == "." || alias.is_empty() {
+            None
+        } else {
+            Some(alias.to_string())
+        };
+        return Some((target_path, alias_value));
+    }
+
+    // "pkg/path"
+    extract_go_path(trimmed).map(|p| (p, None))
+}
+
+fn extract_go_path(fragment: &str) -> Option<String> {
+    let start = fragment.find('"')?;
+    let rest = &fragment[start + 1..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_imports;
+    use crate::parser;
+    use std::collections::HashSet;
+
+    #[test]
+    fn extract_imports_handles_single_grouped_and_aliased_forms() {
+        let source = r#"
+import "fmt"
+import (
+    "github.com/org/pkg/auth"
+    cfg "github.com/org/pkg/config"
+)
+"#;
+        let tree = parser::parse_file(source, "go").unwrap();
+        let imports = extract_imports(&tree, source, "main.go");
+        let qualified_targets: HashSet<String> = imports
+            .iter()
+            .map(|item| item.target_qualified_name.clone())
+            .collect();
+        assert!(qualified_targets.contains("fmt"));
+        assert!(qualified_targets.contains("github.com/org/pkg/auth"));
+        assert!(qualified_targets.contains("github.com/org/pkg/config"));
+
+        let target_names: HashSet<String> =
+            imports.into_iter().map(|item| item.target_name).collect();
+        assert!(target_names.contains("fmt"));
+        assert!(target_names.contains("auth"));
+        assert!(target_names.contains("cfg"));
+    }
 }

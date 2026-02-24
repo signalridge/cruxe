@@ -126,6 +126,17 @@ pub struct FileRecord {
     pub content_head: Option<String>,
 }
 
+/// A directed relationship edge between two symbols.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SymbolEdge {
+    pub repo: String,
+    pub ref_name: String,
+    pub from_symbol_id: String,
+    pub to_symbol_id: String,
+    pub edge_type: String,
+    pub confidence: String,
+}
+
 /// Detail level for response verbosity control.
 /// Controls how many fields are included in search/locate results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

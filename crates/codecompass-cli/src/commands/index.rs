@@ -4,8 +4,10 @@ use codecompass_core::constants;
 use codecompass_core::time::now_iso8601;
 use codecompass_core::types::{FileRecord, JobStatus, generate_project_id};
 use codecompass_core::vcs;
-use codecompass_indexer::{languages, parser, scanner, snippet_extract, symbol_extract, writer};
-use codecompass_state::{branch_state, db, jobs, manifest, project, symbols, tantivy_index};
+use codecompass_indexer::{
+    import_extract, languages, parser, scanner, snippet_extract, symbol_extract, writer,
+};
+use codecompass_state::{branch_state, db, edges, jobs, manifest, project, symbols, tantivy_index};
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
@@ -119,6 +121,11 @@ pub fn run(
             )
             .map_err(codecompass_core::error::StateError::sqlite)?;
             conn.execute(
+                "DELETE FROM symbol_edges WHERE repo = ?1 AND \"ref\" = ?2",
+                (&project_id, &effective_ref),
+            )
+            .map_err(codecompass_core::error::StateError::sqlite)?;
+            conn.execute(
                 "DELETE FROM file_manifest WHERE repo = ?1 AND \"ref\" = ?2",
                 (&project_id, &effective_ref),
             )
@@ -145,6 +152,13 @@ pub fn run(
                         &effective_ref,
                         &entry.path,
                     )?;
+                    let source_edge_id = import_extract::source_symbol_id_for_path(&entry.path);
+                    edges::delete_edges_for_file(
+                        &conn,
+                        &project_id,
+                        &effective_ref,
+                        vec![source_edge_id.as_str()],
+                    )?;
                     manifest::delete_manifest(&conn, &project_id, &effective_ref, &entry.path)?;
                     removed_count += 1;
                 }
@@ -154,6 +168,7 @@ pub fn run(
         let mut indexed_count = 0u64;
         let mut symbol_count = 0u64;
         let mut skipped = 0u64;
+        let mut pending_imports: Vec<(String, Vec<import_extract::RawImport>)> = Vec::new();
 
         for file in &files {
             // Read file content
@@ -191,16 +206,24 @@ pub fn run(
             }
 
             // Parse with tree-sitter if supported
-            let extracted = if parser::is_language_supported(&file.language) {
+            let (extracted, raw_imports) = if parser::is_language_supported(&file.language) {
                 match parser::parse_file(&content, &file.language) {
-                    Ok(tree) => languages::extract_symbols(&tree, &content, &file.language),
+                    Ok(tree) => (
+                        languages::extract_symbols(&tree, &content, &file.language),
+                        import_extract::extract_imports(
+                            &tree,
+                            &content,
+                            &file.language,
+                            &file.relative_path,
+                        ),
+                    ),
                     Err(e) => {
                         warn!(path = %file.relative_path, error = %e, "Parse failed");
-                        Vec::new()
+                        (Vec::new(), Vec::new())
                     }
                 }
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             };
 
             // Build records
@@ -243,7 +266,6 @@ pub fn run(
                 &effective_ref,
                 &file.relative_path,
             )?;
-
             // Add to Tantivy batch (no commit yet)
             batch.add_symbols(&index_set.symbols, &symbols_for_file)?;
             batch.add_snippets(&index_set.snippets, &snippets)?;
@@ -251,9 +273,22 @@ pub fn run(
 
             // Write to SQLite (symbols + manifest)
             batch.write_sqlite(&conn, &symbols_for_file, &file_record, mtime_ns)?;
+            pending_imports.push((file.relative_path.clone(), raw_imports));
 
             symbol_count += symbols_for_file.len() as u64;
             indexed_count += 1;
+        }
+
+        // Resolve imports after all symbols are written so cross-file lookups can
+        // match symbols regardless of scan order.
+        for (path, raw_imports) in pending_imports {
+            batch.replace_import_edges_for_file(
+                &conn,
+                &project_id,
+                &effective_ref,
+                &path,
+                raw_imports,
+            )?;
         }
 
         // Commit Tantivy first, then finalize SQLite transaction.

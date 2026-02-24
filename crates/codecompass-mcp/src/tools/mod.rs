@@ -1,4 +1,7 @@
+pub mod find_related_symbols;
+pub mod get_code_context;
 pub mod get_file_outline;
+pub mod get_symbol_hierarchy;
 pub mod health_check;
 pub mod index_repo;
 pub mod index_status;
@@ -25,6 +28,9 @@ pub fn list_tools() -> Vec<ToolDefinition> {
         search_code::definition(),
         locate_symbol::definition(),
         get_file_outline::definition(),
+        get_symbol_hierarchy::definition(),
+        find_related_symbols::definition(),
+        get_code_context::definition(),
         health_check::definition(),
         index_status::definition(),
     ]

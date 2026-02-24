@@ -1,7 +1,9 @@
+use crate::import_extract::{self, RawImport};
 use codecompass_core::error::StateError;
 use codecompass_core::time::now_iso8601;
 use codecompass_core::types::{FileRecord, SnippetRecord, SymbolRecord};
 use codecompass_state::tantivy_index::{self, IndexSet};
+use codecompass_state::{edges, manifest, symbols};
 use rusqlite::Connection;
 use tantivy::{IndexWriter, Term, doc};
 use tracing::{debug, info};
@@ -218,12 +220,12 @@ impl BatchWriter {
         mtime_ns: Option<i64>,
     ) -> Result<(), StateError> {
         for sym in symbols {
-            codecompass_state::symbols::insert_symbol(conn, sym)?;
+            symbols::insert_symbol(conn, sym)?;
         }
 
-        codecompass_state::manifest::upsert_manifest(
+        manifest::upsert_manifest(
             conn,
-            &codecompass_state::manifest::ManifestEntry {
+            &manifest::ManifestEntry {
                 repo: file_record.repo.clone(),
                 r#ref: file_record.r#ref.clone(),
                 path: file_record.path.clone(),
@@ -236,6 +238,21 @@ impl BatchWriter {
         )?;
 
         Ok(())
+    }
+
+    /// Replace import edges for a file atomically.
+    ///
+    /// This deletes all existing edges from the file-scoped pseudo source id and
+    /// inserts a freshly resolved set derived from `raw_imports`.
+    pub fn replace_import_edges_for_file(
+        &self,
+        conn: &Connection,
+        repo: &str,
+        ref_name: &str,
+        file_path: &str,
+        raw_imports: Vec<RawImport>,
+    ) -> Result<(), StateError> {
+        self::replace_import_edges_for_file(conn, repo, ref_name, file_path, raw_imports)
     }
 
     /// Commit all three index writers at once.
@@ -260,16 +277,16 @@ pub fn write_file_records(
     write_symbols_to_tantivy(&index_set.symbols, symbols)?;
 
     for sym in symbols {
-        codecompass_state::symbols::insert_symbol(conn, sym)?;
+        symbols::insert_symbol(conn, sym)?;
     }
 
     write_snippets_to_tantivy(&index_set.snippets, snippets)?;
     write_file_to_tantivy(&index_set.files, file_record)?;
 
     let now = now_iso8601();
-    codecompass_state::manifest::upsert_manifest(
+    manifest::upsert_manifest(
         conn,
-        &codecompass_state::manifest::ManifestEntry {
+        &manifest::ManifestEntry {
             repo: file_record.repo.clone(),
             r#ref: file_record.r#ref.clone(),
             path: file_record.path.clone(),
@@ -282,6 +299,26 @@ pub fn write_file_records(
     )?;
 
     debug!(path = %file_record.path, symbols = symbols.len(), snippets = snippets.len(), "Wrote file records");
+    Ok(())
+}
+
+/// Replace import edges for a file atomically within a transaction.
+pub fn replace_import_edges_for_file(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    file_path: &str,
+    raw_imports: Vec<RawImport>,
+) -> Result<(), StateError> {
+    let source_edge_id = import_extract::source_symbol_id_for_path(file_path);
+    let resolved = import_extract::resolve_imports(conn, raw_imports, repo, ref_name)?;
+    edges::replace_edges_for_file(
+        conn,
+        repo,
+        ref_name,
+        vec![source_edge_id.as_str()],
+        resolved,
+    )?;
     Ok(())
 }
 
