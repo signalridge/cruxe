@@ -133,6 +133,12 @@ CREATE INDEX IF NOT EXISTS idx_symbol_relations_lookup
     ON symbol_relations(repo, "ref", path, line_start);
 CREATE INDEX IF NOT EXISTS idx_symbol_relations_name
     ON symbol_relations(repo, "ref", name);
+CREATE INDEX IF NOT EXISTS idx_symbol_relations_symbol_id
+    ON symbol_relations(repo, "ref", symbol_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_relations_symbol_stable_id
+    ON symbol_relations(repo, "ref", symbol_stable_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_relations_parent_symbol_id
+    ON symbol_relations(repo, "ref", parent_symbol_id);
 
 CREATE TABLE IF NOT EXISTS symbol_edges (
     repo TEXT NOT NULL,
@@ -184,6 +190,10 @@ CREATE TABLE IF NOT EXISTS index_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON index_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_project_status_created
+    ON index_jobs(project_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_to
+    ON symbol_edges(repo, "ref", to_symbol_id);
 
 CREATE TABLE IF NOT EXISTS known_workspaces (
     workspace_path TEXT PRIMARY KEY,

@@ -1,13 +1,16 @@
 use anyhow::{Context, Result, bail};
 use codecompass_core::config::Config;
 use codecompass_core::constants;
+use codecompass_core::ids::new_job_id;
 use codecompass_core::time::now_iso8601;
 use codecompass_core::types::{FileRecord, JobStatus, generate_project_id};
 use codecompass_core::vcs;
 use codecompass_indexer::{
     import_extract, languages, parser, scanner, snippet_extract, symbol_extract, writer,
 };
-use codecompass_state::{branch_state, db, edges, jobs, manifest, project, symbols, tantivy_index};
+use codecompass_state::{
+    branch_state, db, edges, jobs, manifest, project, schema, symbols, tantivy_index,
+};
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
@@ -35,6 +38,7 @@ pub fn run(
         config.storage.busy_timeout_ms,
         config.storage.cache_size,
     )?;
+    schema::create_tables(&conn)?;
 
     // Verify project exists
     let proj = project::get_by_root(&conn, &repo_root_str)?
@@ -58,7 +62,7 @@ pub fn run(
     let job_id = std::env::var("CODECOMPASS_JOB_ID")
         .ok()
         .filter(|id| !id.trim().is_empty())
-        .unwrap_or_else(|| format!("{:016x}", rand_u64()));
+        .unwrap_or_else(new_job_id);
     let now = now_iso8601();
     let job = jobs::IndexJob {
         job_id: job_id.clone(),
@@ -396,16 +400,6 @@ pub fn run(
             Err(err)
         }
     }
-}
-
-fn rand_u64() -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    std::time::SystemTime::now().hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    hasher.finish()
 }
 
 fn file_mtime_ns(path: &Path) -> Option<i64> {

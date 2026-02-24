@@ -141,9 +141,11 @@ pub fn get_symbol_by_id(
              LIMIT 1",
         )
         .map_err(StateError::sqlite)?;
-    stmt.query_row(params![repo, r#ref, symbol_id], row_to_symbol_record)
-        .ok()
-        .map_or(Ok(None), |s| Ok(Some(s)))
+    match stmt.query_row(params![repo, r#ref, symbol_id], row_to_symbol_record) {
+        Ok(symbol) => Ok(Some(symbol)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(StateError::sqlite(e)),
+    }
 }
 
 /// Fetch a symbol by symbol_stable_id.
@@ -161,9 +163,11 @@ pub fn get_symbol_by_stable_id(
              LIMIT 1",
         )
         .map_err(StateError::sqlite)?;
-    stmt.query_row(params![repo, r#ref, symbol_stable_id], row_to_symbol_record)
-        .ok()
-        .map_or(Ok(None), |s| Ok(Some(s)))
+    match stmt.query_row(params![repo, r#ref, symbol_stable_id], row_to_symbol_record) {
+        Ok(symbol) => Ok(Some(symbol)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(StateError::sqlite(e)),
+    }
 }
 
 /// List immediate children for a parent symbol.
