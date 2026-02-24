@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 /// - `McpProgressNotifier`: emits JSON-RPC `notifications/progress` to the client
 /// - `NullProgressNotifier`: no-op for clients without notification support
 pub trait ProgressNotifier: Send + Sync {
+    /// Emit the start of a progress operation.
+    fn emit_begin(&self, token: &str, title: &str, message: &str);
+
     /// Emit a progress update.
     fn emit_progress(&self, token: &str, title: &str, message: &str, percentage: Option<u32>);
 
@@ -43,6 +46,17 @@ impl McpProgressNotifier {
 }
 
 impl ProgressNotifier for McpProgressNotifier {
+    fn emit_begin(&self, token: &str, title: &str, message: &str) {
+        self.send_notification(json!({
+            "progressToken": token,
+            "value": {
+                "kind": "begin",
+                "title": title,
+                "message": message,
+            },
+        }));
+    }
+
     fn emit_progress(&self, token: &str, title: &str, message: &str, percentage: Option<u32>) {
         let mut value = json!({
             "kind": "report",
@@ -75,6 +89,10 @@ impl ProgressNotifier for McpProgressNotifier {
 pub struct NullProgressNotifier;
 
 impl ProgressNotifier for NullProgressNotifier {
+    fn emit_begin(&self, _token: &str, _title: &str, _message: &str) {
+        // no-op
+    }
+
     fn emit_progress(&self, _token: &str, _title: &str, _message: &str, _percentage: Option<u32>) {
         // no-op
     }
@@ -147,8 +165,28 @@ mod tests {
     }
 
     #[test]
+    fn mcp_notifier_emits_begin_notification() {
+        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(CaptureWriter(buffer.clone()))));
+
+        let notifier = McpProgressNotifier::new(writer);
+        notifier.emit_begin("tok-begin", "Indexing", "Starting");
+
+        let output = buffer.lock().unwrap();
+        let line = String::from_utf8_lossy(&output);
+        let parsed: Value = serde_json::from_str(line.trim()).unwrap();
+
+        assert_eq!(parsed["params"]["progressToken"], "tok-begin");
+        assert_eq!(parsed["params"]["value"]["kind"], "begin");
+        assert_eq!(parsed["params"]["value"]["title"], "Indexing");
+        assert_eq!(parsed["params"]["value"]["message"], "Starting");
+    }
+
+    #[test]
     fn null_notifier_does_not_panic() {
         let notifier = NullProgressNotifier;
+        notifier.emit_begin("tok", "title", "begin");
         notifier.emit_progress("tok", "title", "msg", Some(50));
         notifier.emit_end("tok", "title", "done");
         // Just verifying no panics

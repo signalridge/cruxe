@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{error, info};
@@ -35,6 +35,7 @@ pub const PREWARM_IN_PROGRESS: u8 = 1;
 pub const PREWARM_COMPLETE: u8 = 2;
 pub const PREWARM_FAILED: u8 = 3;
 pub const PREWARM_SKIPPED: u8 = 4;
+const DEFAULT_WARMSET_CAPACITY: usize = 3;
 
 /// Convert prewarm status byte to string label.
 pub fn prewarm_status_label(status: u8) -> &'static str {
@@ -46,6 +47,84 @@ pub fn prewarm_status_label(status: u8) -> &'static str {
         PREWARM_SKIPPED => "skipped",
         _ => "unknown",
     }
+}
+
+pub(crate) fn warmset_capacity() -> usize {
+    std::env::var("CODECOMPASS_WARMSET_CAPACITY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_WARMSET_CAPACITY)
+}
+
+pub(crate) fn collect_warmset_project_ids(
+    db_path: &Path,
+    default_project_id: &str,
+    capacity: usize,
+) -> Vec<String> {
+    let mut project_ids = vec![default_project_id.to_string()];
+    if let Ok(conn) = codecompass_state::db::open_connection(db_path)
+        && let Ok(recent) = codecompass_state::workspace::list_recent_workspaces(&conn, capacity)
+    {
+        for ws in recent {
+            let pid = ws
+                .project_id
+                .unwrap_or_else(|| generate_project_id(&ws.workspace_path));
+            if !project_ids.contains(&pid) {
+                project_ids.push(pid);
+            }
+        }
+    }
+    if project_ids.len() > capacity {
+        project_ids.truncate(capacity);
+    }
+    project_ids
+}
+
+pub(crate) fn prewarm_projects(status: Arc<AtomicU8>, config: Config, project_ids: Vec<String>) {
+    status.store(PREWARM_IN_PROGRESS, Ordering::Release);
+    let mut had_index = false;
+    for pid in project_ids {
+        let data_dir = config.project_data_dir(&pid);
+        match IndexSet::open_existing(&data_dir) {
+            Ok(index_set) => {
+                had_index = true;
+                if let Err(e) = codecompass_state::tantivy_index::prewarm_indices(&index_set) {
+                    error!(project_id = %pid, "Tantivy index prewarm failed: {}", e);
+                    status.store(PREWARM_FAILED, Ordering::Release);
+                    return;
+                }
+                info!(project_id = %pid, "Tantivy index prewarm complete");
+            }
+            Err(_) => {
+                // Skip workspaces that are known but not indexed yet.
+            }
+        }
+    }
+    if had_index {
+        status.store(PREWARM_COMPLETE, Ordering::Release);
+    } else {
+        status.store(PREWARM_SKIPPED, Ordering::Release);
+    }
+}
+
+pub(crate) fn is_status_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "index_repo" | "sync_repo" | "index_status" | "health_check"
+    )
+}
+
+fn supports_progress_notifications(params: &Value) -> bool {
+    let Some(capabilities) = params.get("capabilities") else {
+        return false;
+    };
+
+    capabilities.get("notifications").is_some()
+        || capabilities
+            .pointer("/experimental/notifications")
+            .is_some()
+        || capabilities.pointer("/experimental/progress").is_some()
 }
 
 /// Run the MCP server loop on stdin/stdout.
@@ -78,38 +157,21 @@ pub fn run_server(
     // Shared prewarm status
     let prewarm_status = Arc::new(AtomicU8::new(PREWARM_PENDING));
 
-    // Start prewarm in background thread (or skip)
+    // Start warmset prewarm in background thread (or skip)
     if no_prewarm {
         prewarm_status.store(PREWARM_SKIPPED, Ordering::Release);
     } else {
         let ps = Arc::clone(&prewarm_status);
-        let data_dir_clone = data_dir.clone();
-        std::thread::spawn(move || {
-            ps.store(PREWARM_IN_PROGRESS, Ordering::Release);
-            match IndexSet::open_existing(&data_dir_clone) {
-                Ok(index_set) => {
-                    match codecompass_state::tantivy_index::prewarm_indices(&index_set) {
-                        Ok(()) => {
-                            info!("Tantivy index prewarm complete");
-                            ps.store(PREWARM_COMPLETE, Ordering::Release);
-                        }
-                        Err(e) => {
-                            error!("Tantivy index prewarm failed: {}", e);
-                            ps.store(PREWARM_FAILED, Ordering::Release);
-                        }
-                    }
-                }
-                Err(e) => {
-                    info!("Skipping prewarm (no indices): {}", e);
-                    ps.store(PREWARM_SKIPPED, Ordering::Release);
-                }
-            }
-        });
+        let config_clone = config.clone();
+        let project_ids = collect_warmset_project_ids(&db_path, &project_id, warmset_capacity());
+        std::thread::spawn(move || prewarm_projects(ps, config_clone, project_ids));
     }
 
     let stdin = io::stdin();
     // T214: Wrap stdout in Arc<Mutex> so it can be shared with the progress notifier.
     let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(io::stdout())));
+
+    let notifications_enabled = Arc::new(AtomicBool::new(false));
 
     info!("MCP server started");
 
@@ -134,6 +196,13 @@ pub fn run_server(
                 continue;
             }
         };
+
+        if request.method == "initialize" {
+            notifications_enabled.store(
+                supports_progress_notifications(&request.params),
+                Ordering::Release,
+            );
+        }
 
         // Resolve workspace for tools/call requests
         let (eff_workspace, eff_project_id, eff_data_dir) = if request.method == "tools/call" {
@@ -166,11 +235,11 @@ pub fn run_server(
                             .get("name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let is_status_tool = matches!(
-                            tool_name,
-                            "index_repo" | "sync_repo" | "index_status" | "health_check"
-                        );
-                        if !is_status_tool {
+                        if !is_status_tool(tool_name) {
+                            let effective_ref =
+                                codecompass_core::vcs::detect_head_branch(&resolved.workspace_path)
+                                    .unwrap_or_else(|_| constants::REF_LIVE.to_string());
+                            let metadata = ProtocolMetadata::syncing(&effective_ref);
                             let resp = tool_calls::tool_text_response(
                                 request.id.clone(),
                                 json!({
@@ -179,6 +248,7 @@ pub fn run_server(
                                     "workspace": resolved.workspace_path.to_string_lossy(),
                                     "message": "Workspace is being indexed. Results will be available shortly. Use index_status to check progress.",
                                     "suggested_next_actions": ["poll index_status", "retry after indexing completes"],
+                                    "metadata": metadata,
                                 }),
                             );
                             write_response(&writer, &resp)?;
@@ -206,15 +276,23 @@ pub fn run_server(
         let index_runtime = load_index_runtime(&eff_data_dir);
         let conn = codecompass_state::db::open_connection(&eff_db_path).ok();
 
-        // T214: Extract _meta.progressToken from request and create notifier
-        let progress_token = request
-            .params
-            .get("_meta")
-            .and_then(|m| m.get("progressToken"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let notifications_enabled_now = notifications_enabled.load(Ordering::Acquire);
+        // Optional client-provided progress token (used as notification correlation id).
+        // If notifications are enabled but no token is provided, set an empty sentinel so
+        // index_repo can still emit progress using server-generated token.
+        let progress_token = if notifications_enabled_now {
+            request
+                .params
+                .get("_meta")
+                .and_then(|m| m.get("progressToken"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| Some(String::new()))
+        } else {
+            None
+        };
 
-        let notifier: Arc<dyn ProgressNotifier> = if progress_token.is_some() {
+        let notifier: Arc<dyn ProgressNotifier> = if notifications_enabled_now {
             Arc::new(McpProgressNotifier::new(Arc::clone(&writer)))
         } else {
             Arc::new(NullProgressNotifier)
@@ -280,7 +358,7 @@ fn workspace_error_to_response(id: Option<Value>, err: &WorkspaceError) -> JsonR
 
 /// Bootstrap a newly auto-discovered workspace: create project entry, DB, indices,
 /// and spawn the indexer subprocess. (T205)
-fn bootstrap_and_index(
+pub fn bootstrap_and_index(
     workspace: &Path,
     project_id: &str,
     data_dir: &Path,
@@ -658,6 +736,7 @@ pub fn workspace_error_to_response_public(
     workspace_error_to_response(id, err)
 }
 
+
 /// Parameters for calling tool dispatch from the HTTP transport.
 pub struct PublicToolCallParams<'a> {
     pub id: Option<Value>,
@@ -697,6 +776,7 @@ pub fn handle_tool_call_public(params: PublicToolCallParams<'_>) -> JsonRpcRespo
 }
 
 mod tool_calls;
+pub use tool_calls::tool_text_response;
 
 #[cfg(test)]
 mod tests;

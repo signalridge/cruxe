@@ -1108,7 +1108,9 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             // Use client-provided token for notifications if available, otherwise server-generated
             let effective_progress_token = progress_token
                 .clone()
+                .filter(|token| !token.trim().is_empty())
                 .unwrap_or_else(|| server_progress_token.clone());
+            let notifications_enabled = progress_token.is_some();
 
             let mut cmd = std::process::Command::new(exe);
             cmd.arg("index")
@@ -1127,18 +1129,17 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             match cmd.spawn() {
                 Ok(child) => {
                     // T216: Emit begin notification and start progress polling
-                    if progress_token.is_some() {
-                        notifier.emit_progress(
+                    if notifications_enabled {
+                        notifier.emit_begin(
                             &effective_progress_token,
                             "Indexing",
                             "Starting indexer...",
-                            Some(0),
                         );
                     }
 
                     // T215: Background thread that polls progress and emits notifications
                     let notifier_clone = Arc::clone(&notifier);
-                    let poll_token = if progress_token.is_some() {
+                    let poll_token = if notifications_enabled {
                         Some(effective_progress_token.clone())
                     } else {
                         None
@@ -1663,7 +1664,7 @@ fn tool_error_response(
 }
 
 /// Helper: wrap a JSON value as MCP tool text content response.
-pub(super) fn tool_text_response(id: Option<Value>, payload: Value) -> JsonRpcResponse {
+pub(crate) fn tool_text_response(id: Option<Value>, payload: Value) -> JsonRpcResponse {
     JsonRpcResponse::success(
         id,
         json!({

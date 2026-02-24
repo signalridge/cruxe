@@ -65,34 +65,19 @@ pub async fn run_http_server(
     let router = WorkspaceRouter::new(workspace_config, workspace.to_path_buf(), db_path.clone())
         .map_err(|e| format!("workspace config error: {}", e))?;
 
-    // Prewarm
+    // Warmset prewarm
     let prewarm_status = Arc::new(AtomicU8::new(crate::server::PREWARM_PENDING));
     if no_prewarm {
         prewarm_status.store(crate::server::PREWARM_SKIPPED, Ordering::Release);
     } else {
         let ps = Arc::clone(&prewarm_status);
-        let data_dir_clone = data_dir.clone();
-        std::thread::spawn(move || {
-            ps.store(crate::server::PREWARM_IN_PROGRESS, Ordering::Release);
-            match IndexSet::open_existing(&data_dir_clone) {
-                Ok(index_set) => {
-                    match codecompass_state::tantivy_index::prewarm_indices(&index_set) {
-                        Ok(()) => {
-                            info!("Tantivy index prewarm complete");
-                            ps.store(crate::server::PREWARM_COMPLETE, Ordering::Release);
-                        }
-                        Err(e) => {
-                            error!("Tantivy index prewarm failed: {}", e);
-                            ps.store(crate::server::PREWARM_FAILED, Ordering::Release);
-                        }
-                    }
-                }
-                Err(e) => {
-                    info!("Skipping prewarm (no indices): {}", e);
-                    ps.store(crate::server::PREWARM_SKIPPED, Ordering::Release);
-                }
-            }
-        });
+        let config_clone = config.clone();
+        let project_ids = crate::server::collect_warmset_project_ids(
+            &db_path,
+            &project_id,
+            crate::server::warmset_capacity(),
+        );
+        std::thread::spawn(move || crate::server::prewarm_projects(ps, config_clone, project_ids));
     }
 
     let state = Arc::new(HttpState {
@@ -328,6 +313,11 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
             JsonRpcResponse::success(request.id.clone(), json!({ "tools": tool_list }))
         }
         "tools/call" => {
+            let tool_name = request
+                .params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             // Resolve workspace
             let ws_param = request
                 .params
@@ -335,19 +325,54 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
                 .and_then(|a| a.get("workspace"))
                 .and_then(|v| v.as_str());
 
-            let (eff_workspace, eff_project_id, eff_data_dir) =
-                match state.router.resolve_workspace(ws_param) {
-                    Ok(resolved) => {
-                        let eff_data_dir = state.config.project_data_dir(&resolved.project_id);
-                        (resolved.workspace_path, resolved.project_id, eff_data_dir)
+            let (eff_workspace, eff_project_id, eff_data_dir) = match state
+                .router
+                .resolve_workspace(ws_param)
+            {
+                Ok(resolved) => {
+                    let eff_data_dir = state.config.project_data_dir(&resolved.project_id);
+
+                    if resolved.on_demand_indexing {
+                        if let Err(e) = crate::server::bootstrap_and_index(
+                            &resolved.workspace_path,
+                            &resolved.project_id,
+                            &eff_data_dir,
+                        ) {
+                            error!(
+                                workspace = %resolved.workspace_path.display(),
+                                "on-demand bootstrap failed: {}", e
+                            );
+                        }
+
+                        if !crate::server::is_status_tool(tool_name) {
+                            let effective_ref =
+                                codecompass_core::vcs::detect_head_branch(&resolved.workspace_path)
+                                    .unwrap_or_else(|_| constants::REF_LIVE.to_string());
+                            let metadata =
+                                crate::protocol::ProtocolMetadata::syncing(&effective_ref);
+                            let payload = json!({
+                                "indexing_status": "indexing",
+                                "result_completeness": "partial",
+                                "workspace": resolved.workspace_path.to_string_lossy(),
+                                "message": "Workspace is being indexed. Results will be available shortly. Use index_status to check progress.",
+                                "suggested_next_actions": ["poll index_status", "retry after indexing completes"],
+                                "metadata": metadata,
+                            });
+                            return crate::server::tool_text_response(
+                                request.id.clone(),
+                                payload,
+                            );
+                        }
                     }
-                    Err(e) => {
-                        return crate::server::workspace_error_to_response_public(
-                            request.id.clone(),
-                            &e,
-                        );
-                    }
-                };
+                    (resolved.workspace_path, resolved.project_id, eff_data_dir)
+                }
+                Err(e) => {
+                    return crate::server::workspace_error_to_response_public(
+                        request.id.clone(),
+                        &e,
+                    );
+                }
+            };
 
             let eff_db_path = eff_data_dir.join(constants::STATE_DB_FILE);
             let index_set = IndexSet::open_existing(&eff_data_dir).ok();
@@ -361,11 +386,6 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
 
             let conn = codecompass_state::db::open_connection(&eff_db_path).ok();
 
-            let tool_name = request
-                .params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
             let arguments = request
                 .params
                 .get("arguments")

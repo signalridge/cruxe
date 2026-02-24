@@ -17,6 +17,7 @@ pub struct WorkspaceRouter {
     default_workspace: PathBuf,
     default_project_id: String,
     db_path: PathBuf,
+    data_root: PathBuf,
 }
 
 impl WorkspaceRouter {
@@ -35,12 +36,22 @@ impl WorkspaceRouter {
         }
 
         let default_project_id = generate_project_id(&default_workspace.to_string_lossy());
+        let data_root = db_path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .ok_or_else(|| WorkspaceError::NotAllowed {
+                path: db_path.display().to_string(),
+                reason: "invalid state.db path; expected <data_root>/data/<project_id>/state.db"
+                    .to_string(),
+            })?;
 
         Ok(Self {
             config,
             default_workspace,
             default_project_id,
             db_path,
+            data_root,
         })
     }
 
@@ -132,12 +143,48 @@ impl WorkspaceRouter {
         }
 
         // T236: Evict LRU auto-discovered workspaces if at capacity
-        if let Ok(evicted) = codecompass_state::workspace::evict_lru_auto_discovered(
+        match codecompass_state::workspace::evict_lru_auto_discovered(
             &conn,
             self.config.max_auto_workspaces.saturating_sub(1), // Make room for the new one
         ) {
-            for path in &evicted {
-                tracing::info!(evicted_workspace = %path, "Evicted LRU auto-discovered workspace");
+            Ok(evicted) => {
+                for path in &evicted {
+                    let evicted_project_id = generate_project_id(path);
+                    let evicted_data_dir = self.data_root.join(&evicted_project_id);
+                    let mut cleaned_index_data = false;
+
+                    if !evicted_data_dir.starts_with(&self.data_root) {
+                        tracing::warn!(
+                            evicted_workspace = %path,
+                            project_id = %evicted_project_id,
+                            data_dir = %evicted_data_dir.display(),
+                            "Skipping index cleanup for evicted workspace: resolved path escapes data root"
+                        );
+                    } else if evicted_data_dir.exists() {
+                        match std::fs::remove_dir_all(&evicted_data_dir) {
+                            Ok(()) => {
+                                cleaned_index_data = true;
+                            }
+                            Err(err) => tracing::warn!(
+                                evicted_workspace = %path,
+                                project_id = %evicted_project_id,
+                                data_dir = %evicted_data_dir.display(),
+                                "Evicted workspace entry but failed to clean index data: {}",
+                                err
+                            ),
+                        }
+                    }
+
+                    tracing::info!(
+                        evicted_workspace = %path,
+                        project_id = %evicted_project_id,
+                        cleaned_index_data,
+                        "Evicted LRU auto-discovered workspace entry"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Failed to evict LRU auto-discovered workspaces: {}", err);
             }
         }
 
