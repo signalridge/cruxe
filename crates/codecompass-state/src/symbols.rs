@@ -48,32 +48,14 @@ pub fn find_symbols_by_location(
          AND line_start <= ?5 AND line_end >= ?4"
     ).map_err(StateError::sqlite)?;
 
-    let symbols = stmt
-        .query_map(params![repo, r#ref, path, line_start, line_end], |row| {
-            Ok(SymbolRecord {
-                repo: row.get(0)?,
-                r#ref: row.get(1)?,
-                commit: row.get(2)?,
-                path: row.get(3)?,
-                symbol_id: row.get(4)?,
-                symbol_stable_id: row.get(5)?,
-                name: row.get(6)?,
-                qualified_name: row.get(7)?,
-                kind: codecompass_core::types::SymbolKind::parse_kind(&row.get::<_, String>(8)?)
-                    .unwrap_or(codecompass_core::types::SymbolKind::Function),
-                language: row.get(9)?,
-                line_start: row.get(10)?,
-                line_end: row.get(11)?,
-                signature: row.get(12)?,
-                parent_symbol_id: row.get(13)?,
-                visibility: row.get(14)?,
-                content: None,
-            })
-        })
+    let rows = stmt
+        .query_map(
+            params![repo, r#ref, path, line_start, line_end],
+            row_to_symbol_record,
+        )
         .map_err(StateError::sqlite)?;
 
-    symbols
-        .collect::<Result<Vec<_>, _>>()
+    rows.collect::<Result<Vec<_>, _>>()
         .map_err(StateError::sqlite)
 }
 
@@ -102,6 +84,175 @@ pub fn symbol_count(conn: &Connection, repo: &str, r#ref: &str) -> Result<u64, S
         )
         .map_err(StateError::sqlite)?;
     Ok(count as u64)
+}
+
+/// Find symbols by exact name in a repo/ref scope.
+/// If `path` is provided, results are constrained to that file.
+pub fn find_symbols_by_name(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    name: &str,
+    path: Option<&str>,
+) -> Result<Vec<SymbolRecord>, StateError> {
+    if let Some(path) = path {
+        let mut stmt = conn
+            .prepare(
+                "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+                 FROM symbol_relations
+                 WHERE repo = ?1 AND \"ref\" = ?2 AND name = ?3 AND path = ?4
+                 ORDER BY line_start",
+            )
+            .map_err(StateError::sqlite)?;
+        let rows = stmt
+            .query_map(params![repo, r#ref, name, path], row_to_symbol_record)
+            .map_err(StateError::sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StateError::sqlite)
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+                 FROM symbol_relations
+                 WHERE repo = ?1 AND \"ref\" = ?2 AND name = ?3
+                 ORDER BY path, line_start",
+            )
+            .map_err(StateError::sqlite)?;
+        let rows = stmt
+            .query_map(params![repo, r#ref, name], row_to_symbol_record)
+            .map_err(StateError::sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StateError::sqlite)
+    }
+}
+
+/// Fetch a symbol by symbol_id.
+pub fn get_symbol_by_id(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    symbol_id: &str,
+) -> Result<Option<SymbolRecord>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+             FROM symbol_relations
+             WHERE repo = ?1 AND \"ref\" = ?2 AND symbol_id = ?3
+             LIMIT 1",
+        )
+        .map_err(StateError::sqlite)?;
+    stmt.query_row(params![repo, r#ref, symbol_id], row_to_symbol_record)
+        .ok()
+        .map_or(Ok(None), |s| Ok(Some(s)))
+}
+
+/// Fetch a symbol by symbol_stable_id.
+pub fn get_symbol_by_stable_id(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    symbol_stable_id: &str,
+) -> Result<Option<SymbolRecord>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+             FROM symbol_relations
+             WHERE repo = ?1 AND \"ref\" = ?2 AND symbol_stable_id = ?3
+             LIMIT 1",
+        )
+        .map_err(StateError::sqlite)?;
+    stmt.query_row(params![repo, r#ref, symbol_stable_id], row_to_symbol_record)
+        .ok()
+        .map_or(Ok(None), |s| Ok(Some(s)))
+}
+
+/// List immediate children for a parent symbol.
+pub fn get_children_symbols(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    parent_symbol_id: &str,
+) -> Result<Vec<SymbolRecord>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+             FROM symbol_relations
+             WHERE repo = ?1 AND \"ref\" = ?2 AND parent_symbol_id = ?3
+             ORDER BY line_start",
+        )
+        .map_err(StateError::sqlite)?;
+    let rows = stmt
+        .query_map(params![repo, r#ref, parent_symbol_id], row_to_symbol_record)
+        .map_err(StateError::sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
+/// List all symbols in a single file.
+pub fn list_symbols_in_file(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    path: &str,
+) -> Result<Vec<SymbolRecord>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+             FROM symbol_relations
+             WHERE repo = ?1 AND \"ref\" = ?2 AND path = ?3
+             ORDER BY line_start",
+        )
+        .map_err(StateError::sqlite)?;
+    let rows = stmt
+        .query_map(params![repo, r#ref, path], row_to_symbol_record)
+        .map_err(StateError::sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
+/// List symbols under a path prefix (used for module/package scopes).
+pub fn list_symbols_by_path_prefix(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    path_prefix: &str,
+) -> Result<Vec<SymbolRecord>, StateError> {
+    let like_pattern = format!("{path_prefix}%");
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility
+             FROM symbol_relations
+             WHERE repo = ?1 AND \"ref\" = ?2 AND path LIKE ?3
+             ORDER BY path, line_start",
+        )
+        .map_err(StateError::sqlite)?;
+    let rows = stmt
+        .query_map(params![repo, r#ref, like_pattern], row_to_symbol_record)
+        .map_err(StateError::sqlite)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
+fn row_to_symbol_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRecord> {
+    Ok(SymbolRecord {
+        repo: row.get(0)?,
+        r#ref: row.get(1)?,
+        commit: row.get(2)?,
+        path: row.get(3)?,
+        symbol_id: row.get(4)?,
+        symbol_stable_id: row.get(5)?,
+        name: row.get(6)?,
+        qualified_name: row.get(7)?,
+        kind: codecompass_core::types::SymbolKind::parse_kind(&row.get::<_, String>(8)?)
+            .unwrap_or(codecompass_core::types::SymbolKind::Function),
+        language: row.get(9)?,
+        line_start: row.get(10)?,
+        line_end: row.get(11)?,
+        signature: row.get(12)?,
+        parent_symbol_id: row.get(13)?,
+        visibility: row.get(14)?,
+        content: None,
+    })
 }
 
 /// A lightweight symbol record for file outlines (avoids full SymbolRecord overhead).

@@ -117,8 +117,10 @@ pub fn search_code(
             conn,
             query,
             "symbol",
-            search_ref,
-            language,
+            SearchScope {
+                ref_name: search_ref,
+                language,
+            },
             limit,
         )?;
         apply_rrf_scores(&mut results, plan.symbol_weight, RRF_K);
@@ -133,8 +135,10 @@ pub fn search_code(
             conn,
             query,
             "snippet",
-            search_ref,
-            language,
+            SearchScope {
+                ref_name: search_ref,
+                language,
+            },
             limit,
         )?;
         apply_rrf_scores(&mut results, plan.snippet_weight, RRF_K);
@@ -149,8 +153,10 @@ pub fn search_code(
             conn,
             query,
             "file",
-            search_ref,
-            language,
+            SearchScope {
+                ref_name: search_ref,
+                language,
+            },
             limit,
         )?;
         apply_rrf_scores(&mut results, plan.file_weight, RRF_K);
@@ -235,15 +241,19 @@ fn apply_rrf_scores(results: &mut [SearchResult], weight: f32, k: f32) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+struct SearchScope<'a> {
+    ref_name: Option<&'a str>,
+    language: Option<&'a str>,
+}
+
 fn search_index(
     index: &tantivy::Index,
     debug: &mut Option<SearchDebugInfo>,
     conn: Option<&Connection>,
     query: &str,
     result_type: &str,
-    r#ref: Option<&str>,
-    language: Option<&str>,
+    scope: SearchScope<'_>,
     limit: usize,
 ) -> Result<Vec<SearchResult>, StateError> {
     let reader = index.reader().map_err(StateError::tantivy)?;
@@ -282,36 +292,37 @@ fn search_index(
         .map_err(StateError::tantivy)?;
 
     // Build final query with optional ref and language filters
-    let final_query: Box<dyn tantivy::query::Query> = if r#ref.is_some() || language.is_some() {
-        let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
-        clauses.push((Occur::Must, parsed_query));
+    let final_query: Box<dyn tantivy::query::Query> =
+        if scope.ref_name.is_some() || scope.language.is_some() {
+            let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+            clauses.push((Occur::Must, parsed_query));
 
-        if let Some(r) = r#ref
-            && let Ok(ref_field) = schema.get_field("ref")
-        {
-            clauses.push((
-                Occur::Must,
-                Box::new(TermQuery::new(
-                    Term::from_field_text(ref_field, r),
-                    IndexRecordOption::Basic,
-                )),
-            ));
-        }
-        if let Some(lang) = language
-            && let Ok(lang_field) = schema.get_field("language")
-        {
-            clauses.push((
-                Occur::Must,
-                Box::new(TermQuery::new(
-                    Term::from_field_text(lang_field, lang),
-                    IndexRecordOption::Basic,
-                )),
-            ));
-        }
-        Box::new(BooleanQuery::new(clauses))
-    } else {
-        parsed_query
-    };
+            if let Some(r) = scope.ref_name
+                && let Ok(ref_field) = schema.get_field("ref")
+            {
+                clauses.push((
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(ref_field, r),
+                        IndexRecordOption::Basic,
+                    )),
+                ));
+            }
+            if let Some(lang) = scope.language
+                && let Ok(lang_field) = schema.get_field("language")
+            {
+                clauses.push((
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(lang_field, lang),
+                        IndexRecordOption::Basic,
+                    )),
+                ));
+            }
+            Box::new(BooleanQuery::new(clauses))
+        } else {
+            parsed_query
+        };
 
     let top_docs = searcher
         .search(&final_query, &TopDocs::with_limit(limit))
@@ -361,11 +372,13 @@ fn search_index(
                 &path,
                 line_start,
                 line_end,
-                &mut symbol_id,
-                &mut symbol_stable_id,
-                &mut kind,
-                &mut symbol_name,
-                &mut qualified_name,
+                SnippetSymbolMetadata {
+                    symbol_id: &mut symbol_id,
+                    symbol_stable_id: &mut symbol_stable_id,
+                    kind: &mut kind,
+                    name: &mut symbol_name,
+                    qualified_name: &mut qualified_name,
+                },
             );
             if let Some(debug) = debug.as_mut() {
                 if join_hit {
@@ -376,19 +389,19 @@ fn search_index(
             }
         }
 
-        let result_id = compute_stable_result_id(
+        let result_id = compute_stable_result_id(StableResultIdInput {
             result_type,
-            &doc_repo,
-            &doc_ref,
-            &path,
+            repo: &doc_repo,
+            ref_name: &doc_ref,
+            path: &path,
             line_start,
             line_end,
-            kind.as_deref().unwrap_or(""),
-            symbol_name.as_deref().unwrap_or(""),
-            qualified_name.as_deref().unwrap_or(""),
-            &language,
-            symbol_stable_id.as_deref().unwrap_or(""),
-        );
+            kind: kind.as_deref().unwrap_or(""),
+            name: symbol_name.as_deref().unwrap_or(""),
+            qualified_name: qualified_name.as_deref().unwrap_or(""),
+            language: &language,
+            symbol_stable_id: symbol_stable_id.as_deref().unwrap_or(""),
+        });
 
         results.push(SearchResult {
             result_id,
@@ -425,7 +438,14 @@ fn search_index(
     Ok(results)
 }
 
-#[allow(clippy::too_many_arguments)]
+struct SnippetSymbolMetadata<'a> {
+    symbol_id: &'a mut Option<String>,
+    symbol_stable_id: &'a mut Option<String>,
+    kind: &'a mut Option<String>,
+    name: &'a mut Option<String>,
+    qualified_name: &'a mut Option<String>,
+}
+
 fn enrich_snippet_with_symbol_metadata(
     conn: Option<&Connection>,
     repo: &str,
@@ -433,12 +453,16 @@ fn enrich_snippet_with_symbol_metadata(
     path: &str,
     line_start: u32,
     line_end: u32,
-    symbol_id: &mut Option<String>,
-    symbol_stable_id: &mut Option<String>,
-    kind: &mut Option<String>,
-    name: &mut Option<String>,
-    qualified_name: &mut Option<String>,
+    metadata: SnippetSymbolMetadata<'_>,
 ) -> bool {
+    let SnippetSymbolMetadata {
+        symbol_id,
+        symbol_stable_id,
+        kind,
+        name,
+        qualified_name,
+    } = metadata;
+
     let Some(conn) = conn else {
         return false;
     };
@@ -478,25 +502,39 @@ fn choose_best_symbol_match(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn compute_stable_result_id(
-    result_type: &str,
-    repo: &str,
-    r#ref: &str,
-    path: &str,
+struct StableResultIdInput<'a> {
+    result_type: &'a str,
+    repo: &'a str,
+    ref_name: &'a str,
+    path: &'a str,
     line_start: u32,
     line_end: u32,
-    kind: &str,
-    name: &str,
-    qualified_name: &str,
-    language: &str,
-    symbol_stable_id: &str,
-) -> String {
+    kind: &'a str,
+    name: &'a str,
+    qualified_name: &'a str,
+    language: &'a str,
+    symbol_stable_id: &'a str,
+}
+
+fn compute_stable_result_id(input: StableResultIdInput<'_>) -> String {
+    let StableResultIdInput {
+        result_type,
+        repo,
+        ref_name,
+        path,
+        line_start,
+        line_end,
+        kind,
+        name,
+        qualified_name,
+        language,
+        symbol_stable_id,
+    } = input;
     let payload = format!(
         "result:v2|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         result_type,
         repo,
-        r#ref,
+        ref_name,
         path,
         line_start,
         line_end,

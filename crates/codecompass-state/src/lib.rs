@@ -1,5 +1,6 @@
 pub mod branch_state;
 pub mod db;
+pub mod edges;
 pub mod jobs;
 pub mod manifest;
 pub mod project;

@@ -74,6 +74,131 @@ fn do_init(repo_root: &Path, data_root: &Path) -> (String, PathBuf) {
     (project_id, data_dir)
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create destination directory");
+    for entry in std::fs::read_dir(src).expect("read source directory") {
+        let entry = entry.expect("read directory entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry
+            .file_type()
+            .expect("read file type for source entry")
+            .is_dir()
+        {
+            copy_dir_recursive(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).unwrap_or_else(|e| {
+                panic!(
+                    "copy file '{}' -> '{}' failed: {}",
+                    from.display(),
+                    to.display(),
+                    e
+                )
+            });
+        }
+    }
+}
+
+fn index_repo_with_import_edges(
+    repo_root: &Path,
+    project_id: &str,
+    effective_ref: &str,
+    index_set: &codecompass_state::tantivy_index::IndexSet,
+    conn: &rusqlite::Connection,
+) {
+    let files = codecompass_indexer::scanner::scan_directory(
+        repo_root,
+        codecompass_core::constants::MAX_FILE_SIZE,
+    );
+    let mut pending_imports = Vec::new();
+
+    for file in &files {
+        let content = std::fs::read_to_string(&file.path).expect("read fixture file");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+        let (extracted, raw_imports) =
+            if codecompass_indexer::parser::is_language_supported(&file.language) {
+                match codecompass_indexer::parser::parse_file(&content, &file.language) {
+                    Ok(tree) => (
+                        codecompass_indexer::languages::extract_symbols(
+                            &tree,
+                            &content,
+                            &file.language,
+                        ),
+                        codecompass_indexer::import_extract::extract_imports(
+                            &tree,
+                            &content,
+                            &file.language,
+                            &file.relative_path,
+                        ),
+                    ),
+                    Err(_) => (Vec::new(), Vec::new()),
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+        let symbols = codecompass_indexer::symbol_extract::build_symbol_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let snippets = codecompass_indexer::snippet_extract::build_snippet_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let file_record = codecompass_core::types::FileRecord {
+            repo: project_id.to_string(),
+            r#ref: effective_ref.to_string(),
+            commit: None,
+            path: file.relative_path.clone(),
+            filename: file
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            language: file.language.clone(),
+            content_hash,
+            size_bytes: content.len() as u64,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
+        };
+
+        codecompass_state::symbols::delete_symbols_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+        )
+        .expect("delete symbols for file");
+        codecompass_indexer::writer::write_file_records(
+            index_set,
+            conn,
+            &symbols,
+            &snippets,
+            &file_record,
+        )
+        .expect("write indexed file records");
+        pending_imports.push((file.relative_path.clone(), raw_imports));
+    }
+
+    for (path, raw_imports) in pending_imports {
+        codecompass_indexer::writer::replace_import_edges_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &path,
+            raw_imports,
+        )
+        .expect("replace import edges for file");
+    }
+}
+
 // ===========================================================================
 // T031 -- Init + Doctor Roundtrip
 // ===========================================================================
@@ -1364,6 +1489,166 @@ fn t071_ref_scoped_search_isolates_branches() {
     )
     .expect("locate validate_token on feat/auth");
     assert!(!vt_feat.is_empty(), "validate_token should be on feat/auth");
+}
+
+// ===========================================================================
+// T157/T158 -- Import edge indexing integration
+// ===========================================================================
+
+#[test]
+fn t157_index_populates_import_edges_for_rust_fixture() {
+    let fixture = fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+
+    let (project_id, data_dir) = do_init(&fixture, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set =
+        codecompass_state::tantivy_index::IndexSet::open(&data_dir).expect("open tantivy");
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    index_repo_with_import_edges(&fixture, &project_id, effective_ref, &index_set, &conn);
+
+    let claims_symbol = codecompass_state::symbols::find_symbols_by_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "Claims",
+        Some("src/auth.rs"),
+    )
+    .expect("query Claims symbol");
+    assert_eq!(
+        claims_symbol.len(),
+        1,
+        "Claims should be unique in src/auth.rs"
+    );
+    let claims_stable_id = claims_symbol[0].symbol_stable_id.clone();
+
+    let source_symbol_id =
+        codecompass_indexer::import_extract::source_symbol_id_for_path("src/handler.rs");
+    let edges_from_handler = codecompass_state::edges::get_edges_from(
+        &conn,
+        &project_id,
+        effective_ref,
+        &source_symbol_id,
+    )
+    .expect("query import edges from handler");
+
+    assert!(
+        !edges_from_handler.is_empty(),
+        "src/handler.rs should produce import edges"
+    );
+    assert!(
+        edges_from_handler
+            .iter()
+            .any(|edge| edge.to_symbol_id == claims_stable_id),
+        "expected import edge from src/handler.rs to Claims symbol"
+    );
+    assert!(
+        edges_from_handler
+            .iter()
+            .all(|edge| edge.edge_type == "imports" && edge.confidence == "static"),
+        "all extracted edges should be imports/static"
+    );
+}
+
+#[test]
+fn t158_reindex_replaces_import_edges_without_stale_rows() {
+    let fixture = fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    copy_dir_recursive(&fixture, &workspace);
+
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let (project_id, data_dir) = do_init(&workspace, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set =
+        codecompass_state::tantivy_index::IndexSet::open(&data_dir).expect("open tantivy");
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    index_repo_with_import_edges(&workspace, &project_id, effective_ref, &index_set, &conn);
+
+    let connection_symbol = codecompass_state::symbols::find_symbols_by_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "Connection",
+        Some("src/db.rs"),
+    )
+    .expect("query Connection symbol");
+    assert_eq!(
+        connection_symbol.len(),
+        1,
+        "Connection should be unique in src/db.rs"
+    );
+    let connection_stable_id = connection_symbol[0].symbol_stable_id.clone();
+
+    let claims_symbol = codecompass_state::symbols::find_symbols_by_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "Claims",
+        Some("src/auth.rs"),
+    )
+    .expect("query Claims symbol");
+    assert_eq!(
+        claims_symbol.len(),
+        1,
+        "Claims should be unique in src/auth.rs"
+    );
+    let claims_stable_id = claims_symbol[0].symbol_stable_id.clone();
+
+    let source_symbol_id =
+        codecompass_indexer::import_extract::source_symbol_id_for_path("src/lib.rs");
+    let before_edges = codecompass_state::edges::get_edges_from(
+        &conn,
+        &project_id,
+        effective_ref,
+        &source_symbol_id,
+    )
+    .expect("query import edges before re-index");
+    assert!(
+        before_edges
+            .iter()
+            .any(|edge| edge.to_symbol_id == connection_stable_id),
+        "precondition failed: src/lib.rs should import Connection before edit"
+    );
+
+    let lib_path = workspace.join("src/lib.rs");
+    let original = std::fs::read_to_string(&lib_path).expect("read src/lib.rs");
+    assert!(
+        original.contains("use crate::db::Connection;"),
+        "fixture precondition failed: src/lib.rs should import Connection"
+    );
+    let updated = original.replace("use crate::db::Connection;", "use crate::auth::Claims;");
+    std::fs::write(&lib_path, updated).expect("write updated src/lib.rs");
+
+    index_repo_with_import_edges(&workspace, &project_id, effective_ref, &index_set, &conn);
+
+    let after_edges = codecompass_state::edges::get_edges_from(
+        &conn,
+        &project_id,
+        effective_ref,
+        &source_symbol_id,
+    )
+    .expect("query import edges after re-index");
+
+    assert!(
+        after_edges
+            .iter()
+            .all(|edge| edge.to_symbol_id != connection_stable_id),
+        "stale Connection import edge should be removed after re-index"
+    );
+    assert!(
+        after_edges
+            .iter()
+            .any(|edge| edge.to_symbol_id == claims_stable_id),
+        "updated src/lib.rs import should point to Claims after re-index"
+    );
 }
 
 // ===========================================================================

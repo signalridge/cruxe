@@ -262,6 +262,7 @@ dependencies = [
  "codecompass-mcp",
  "codecompass-query",
  "codecompass-state",
+ "rusqlite",
  "serde_json",
  "tantivy",
  "tempfile",

@@ -43,7 +43,7 @@ symbol. Uses `parent_symbol_id` in `symbol_relations` for structural navigation.
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `symbol_name` | string | yes | Name of the symbol to start from. |
-| `path` | string | no | File path to disambiguate symbols with the same name. If omitted, first match is used. |
+| `path` | string | no | File path to disambiguate symbols with the same name. If omitted and matches span multiple files, returns `ambiguous_symbol`. |
 | `ref` | string | no | Branch/ref scope. Default: current HEAD or `"live"`. |
 | `direction` | string | no | `"ancestors"` (leaf to root) or `"descendants"` (root to leaves). Default: `"ancestors"`. |
 
@@ -162,7 +162,7 @@ module-level, or package-level. Uses `symbol_relations` for co-location and
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `symbol_name` | string | yes | Name of the anchor symbol. |
-| `path` | string | no | File path to disambiguate. |
+| `path` | string | no | File path to disambiguate. If omitted and matches span multiple files, returns `ambiguous_symbol`. |
 | `ref` | string | no | Branch/ref scope. Default: current HEAD or `"live"`. |
 | `scope` | string | no | `"file"`, `"module"`, or `"package"`. Default: `"file"`. |
 | `limit` | int | no | Max results. Default: 20. |
@@ -232,6 +232,7 @@ module-level, or package-level. Uses `symbol_relations` for co-location and
 |----------|---------|
 | `same_file` | Symbol is in the same source file. |
 | `same_module` | Symbol is in a sibling file within the same module/package. |
+| `same_package` | Symbol is in the same package scope but outside the immediate module. |
 | `imported` | Symbol is connected via an import edge in `symbol_edges`. |
 
 ### Errors
@@ -239,6 +240,7 @@ module-level, or package-level. Uses `symbol_relations` for co-location and
 | Code | Meaning |
 |------|---------|
 | `symbol_not_found` | No symbol matching the name (and optional path) was found. |
+| `ambiguous_symbol` | Multiple symbols match and no `path` was provided to disambiguate. |
 
 ---
 
@@ -427,7 +429,7 @@ additional tools (in addition to the 5 from 001-core-mvp and tools from
       "type": "object",
       "properties": {
         "symbol_name": { "type": "string", "description": "Symbol name to start from" },
-        "path": { "type": "string", "description": "File path to disambiguate" },
+        "path": { "type": "string", "description": "File path to disambiguate; omitted may return ambiguous_symbol if multiple files match" },
         "ref": { "type": "string", "description": "Branch/ref scope" },
         "direction": { "type": "string", "enum": ["ancestors", "descendants"], "default": "ancestors" }
       },
@@ -441,7 +443,7 @@ additional tools (in addition to the 5 from 001-core-mvp and tools from
       "type": "object",
       "properties": {
         "symbol_name": { "type": "string", "description": "Anchor symbol name" },
-        "path": { "type": "string", "description": "File path to disambiguate" },
+        "path": { "type": "string", "description": "File path to disambiguate; omitted may return ambiguous_symbol if multiple files match" },
         "ref": { "type": "string", "description": "Branch/ref scope" },
         "scope": { "type": "string", "enum": ["file", "module", "package"], "default": "file" },
         "limit": { "type": "integer", "default": 20, "description": "Max results" }
