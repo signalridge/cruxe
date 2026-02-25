@@ -259,6 +259,7 @@ impl WorkspaceRouter {
 mod tests {
     use super::*;
     use codecompass_core::types::AllowedRoots;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     /// Helper: set up a DB with schema at the given path.
@@ -552,6 +553,246 @@ mod tests {
         assert!(r2.on_demand_indexing);
         assert!(!r2.should_bootstrap);
         assert_eq!(r1.project_id, r2.project_id);
+    }
+
+    // T239: Auto-discover 3 workspaces and verify known_workspaces entries + last_used updates.
+    #[test]
+    fn t239_auto_discover_three_workspaces_updates_known_workspaces() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let root = dir.path().join("auto-discover");
+        let ws1 = root.join("repo-a");
+        let ws2 = root.join("repo-b");
+        let ws3 = root.join("repo-c");
+        std::fs::create_dir_all(&ws1).unwrap();
+        std::fs::create_dir_all(&ws2).unwrap();
+        std::fs::create_dir_all(&ws3).unwrap();
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![std::fs::canonicalize(&root).unwrap()]),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path.clone()).unwrap();
+
+        let ws1s = std::fs::canonicalize(&ws1)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let ws2s = std::fs::canonicalize(&ws2)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let ws3s = std::fs::canonicalize(&ws3)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let _ = router.resolve_workspace(Some(&ws1s)).unwrap();
+        let _ = router.resolve_workspace(Some(&ws2s)).unwrap();
+        let _ = router.resolve_workspace(Some(&ws3s)).unwrap();
+
+        // Querying again should update last_used for the selected workspace.
+        let _ = router.resolve_workspace(Some(&ws2s)).unwrap();
+
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        let workspaces = codecompass_state::workspace::list_workspaces(&conn).unwrap();
+        assert_eq!(workspaces.len(), 3, "should register 3 known workspaces");
+        let mut paths: Vec<_> = workspaces
+            .iter()
+            .map(|w| w.workspace_path.clone())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec![ws1s.clone(), ws2s.clone(), ws3s.clone()]);
+
+        let ws2_entry = workspaces
+            .iter()
+            .find(|w| w.workspace_path == ws2s)
+            .expect("workspace-b should be present");
+        assert!(
+            !ws2_entry.last_used_at.is_empty(),
+            "last_used_at should be populated for re-queried workspace"
+        );
+    }
+
+    #[test]
+    fn t460_lru_eviction_cleans_evicted_workspace_index_data() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let root = dir.path().join("auto-evict");
+        let ws1 = root.join("repo-a");
+        let ws2 = root.join("repo-b");
+        let ws3 = root.join("repo-c");
+        std::fs::create_dir_all(&ws1).unwrap();
+        std::fs::create_dir_all(&ws2).unwrap();
+        std::fs::create_dir_all(&ws3).unwrap();
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![std::fs::canonicalize(&root).unwrap()]),
+            max_auto_workspaces: 2,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path.clone()).unwrap();
+
+        let ws1s = std::fs::canonicalize(&ws1)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let ws2s = std::fs::canonicalize(&ws2)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let ws3s = std::fs::canonicalize(&ws3)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let _ = router.resolve_workspace(Some(&ws1s)).unwrap();
+        let _ = router.resolve_workspace(Some(&ws2s)).unwrap();
+
+        let ws1_pid = generate_project_id(&ws1s);
+        let ws2_pid = generate_project_id(&ws2s);
+        let ws1_data_dir = dir.path().join(&ws1_pid);
+        let ws2_data_dir = dir.path().join(&ws2_pid);
+        std::fs::create_dir_all(&ws1_data_dir).unwrap();
+        std::fs::create_dir_all(&ws2_data_dir).unwrap();
+        std::fs::write(ws1_data_dir.join("marker"), "evict-me").unwrap();
+        std::fs::write(ws2_data_dir.join("marker"), "keep-me").unwrap();
+
+        // Force deterministic LRU order: ws1 older than ws2
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        codecompass_state::workspace::update_last_used(&conn, &ws1s, "2026-01-01T00:00:00Z")
+            .unwrap();
+        codecompass_state::workspace::update_last_used(&conn, &ws2s, "2026-01-02T00:00:00Z")
+            .unwrap();
+
+        let _ = router.resolve_workspace(Some(&ws3s)).unwrap();
+
+        let workspaces = codecompass_state::workspace::list_workspaces(&conn).unwrap();
+        let paths: Vec<_> = workspaces
+            .iter()
+            .map(|w| w.workspace_path.as_str())
+            .collect();
+        assert!(
+            !paths.contains(&ws1s.as_str()),
+            "LRU workspace should be evicted from known_workspaces"
+        );
+        assert!(paths.contains(&ws2s.as_str()));
+        assert!(paths.contains(&ws3s.as_str()));
+
+        assert!(
+            !ws1_data_dir.exists(),
+            "evicted workspace index data should be cleaned"
+        );
+        assert!(
+            ws2_data_dir.exists(),
+            "non-evicted workspace index data should remain"
+        );
+    }
+
+    #[test]
+    fn t461_concurrent_workspace_discovery_claims_single_bootstrap_launcher() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let root = dir.path().join("auto-concurrent");
+        let ws = root.join("repo");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws_canonical = std::fs::canonicalize(&ws).unwrap();
+        let ws_str = ws_canonical.to_string_lossy().to_string();
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![std::fs::canonicalize(&root).unwrap()]),
+            max_auto_workspaces: 10,
+        };
+        let router = Arc::new(
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path.clone()).unwrap(),
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let router = Arc::clone(&router);
+            let ws_str = ws_str.clone();
+            handles.push(std::thread::spawn(move || {
+                router
+                    .resolve_workspace(Some(&ws_str))
+                    .expect("concurrent resolve should succeed")
+            }));
+        }
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let bootstrap_count = results.iter().filter(|r| r.should_bootstrap).count();
+        assert_eq!(
+            bootstrap_count, 1,
+            "exactly one concurrent request should claim bootstrap launcher rights"
+        );
+        assert!(
+            results.iter().all(|r| r.on_demand_indexing),
+            "all concurrent requests should surface on-demand indexing semantics"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|r| r.project_id == results[0].project_id),
+            "all concurrent requests should resolve to the same project id"
+        );
+    }
+
+    // T457: Workspace routing smoke guard (strict p95 thresholds live in benchmark harness).
+    #[test]
+    fn t457_workspace_routing_overhead_smoke_guard() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let mut samples = Vec::new();
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            let resolved = router.resolve_workspace(None).unwrap();
+            assert_eq!(resolved.workspace_path, dir.path());
+            samples.push(started.elapsed());
+        }
+        samples.sort();
+        let p95 = samples[190];
+        assert!(
+            p95.as_millis() < 500,
+            "workspace routing smoke budget should remain < 500ms, got {}ms",
+            p95.as_millis()
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark harness"]
+    fn benchmark_t457_workspace_routing_overhead_p95_under_5ms() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let mut samples = Vec::new();
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            let resolved = router.resolve_workspace(None).unwrap();
+            assert_eq!(resolved.workspace_path, dir.path());
+            samples.push(started.elapsed());
+        }
+        samples.sort();
+        let p95 = samples[190];
+        assert!(
+            p95.as_millis() < 5,
+            "workspace routing benchmark p95 should be < 5ms, got {}ms",
+            p95.as_millis()
+        );
     }
 
     // Nonexistent path returns error

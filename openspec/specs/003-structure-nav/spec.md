@@ -1,9 +1,7 @@
 ## Purpose
 Define 003 structure-navigation metadata guarantees and scope boundaries for
 token-budget controls without introducing compact input parameters.
-
 ## Requirements
-
 ### Requirement: 003 metadata contract uses canonical status enums
 `get_code_context`, `get_symbol_hierarchy`, and `find_related_symbols` MUST
 emit Protocol v1 metadata aligned with canonical enum values.
@@ -37,3 +35,25 @@ parameter in this change.
 #### Scenario: Budget control still provides safe degradation
 - **WHEN** caller requests limited token budget in 003 tools
 - **THEN** runtime MUST return bounded output with deterministic truncation metadata and guidance
+
+### Requirement: Structure-navigation behavior remains stable under handler decomposition
+Refactoring and decomposition of structure-navigation handlers MUST preserve
+external tool semantics for:
+- `get_symbol_hierarchy`
+- `find_related_symbols`
+- `get_code_context`
+
+Stability includes:
+- unchanged input schema and parameter meaning
+- unchanged response field semantics
+- unchanged canonical metadata behavior
+- unchanged deterministic truncation guidance behavior
+
+#### Scenario: get_symbol_hierarchy semantics remain unchanged after refactor
+- **WHEN** the same fixture and request inputs are executed before and after handler decomposition
+- **THEN** response semantics (hierarchy direction, chain semantics, metadata contract) MUST remain equivalent
+
+#### Scenario: get_code_context truncation contract remains unchanged after refactor
+- **WHEN** token budget truncation is triggered in `get_code_context`
+- **THEN** result bounding and deterministic truncation guidance MUST remain equivalent to pre-refactor behavior
+

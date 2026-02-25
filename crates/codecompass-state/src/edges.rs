@@ -194,6 +194,74 @@ pub fn get_edges_to(
         .map_err(StateError::sqlite)
 }
 
+/// Get outgoing edges from a symbol constrained to one edge type.
+pub fn get_edges_from_by_type(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    from_symbol_id: &str,
+    edge_type: &str,
+) -> Result<Vec<SymbolEdge>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence
+             FROM symbol_edges
+             WHERE repo = ?1 AND \"ref\" = ?2 AND from_symbol_id = ?3 AND edge_type = ?4
+             ORDER BY to_symbol_id",
+        )
+        .map_err(StateError::sqlite)?;
+
+    let rows = stmt
+        .query_map(params![repo, ref_name, from_symbol_id, edge_type], |row| {
+            Ok(SymbolEdge {
+                repo: row.get(0)?,
+                ref_name: row.get(1)?,
+                from_symbol_id: row.get(2)?,
+                to_symbol_id: row.get(3)?,
+                edge_type: row.get(4)?,
+                confidence: row.get(5)?,
+            })
+        })
+        .map_err(StateError::sqlite)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
+/// Get incoming edges to a symbol constrained to one edge type.
+pub fn get_edges_to_by_type(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    to_symbol_id: &str,
+    edge_type: &str,
+) -> Result<Vec<SymbolEdge>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence
+             FROM symbol_edges
+             WHERE repo = ?1 AND \"ref\" = ?2 AND to_symbol_id = ?3 AND edge_type = ?4
+             ORDER BY from_symbol_id",
+        )
+        .map_err(StateError::sqlite)?;
+
+    let rows = stmt
+        .query_map(params![repo, ref_name, to_symbol_id, edge_type], |row| {
+            Ok(SymbolEdge {
+                repo: row.get(0)?,
+                ref_name: row.get(1)?,
+                from_symbol_id: row.get(2)?,
+                to_symbol_id: row.get(3)?,
+                edge_type: row.get(4)?,
+                confidence: row.get(5)?,
+            })
+        })
+        .map_err(StateError::sqlite)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
 /// Get all edges of a given edge type within a repo/ref.
 pub fn get_edges_by_type(
     conn: &Connection,
@@ -295,6 +363,16 @@ mod tests {
         let imports = get_edges_by_type(&conn, "my-repo", "main", "imports").unwrap();
         assert_eq!(imports.len(), 2);
         assert!(imports.iter().all(|e| e.edge_type == "imports"));
+
+        let outgoing_imports =
+            get_edges_from_by_type(&conn, "my-repo", "main", "file2::module", "imports").unwrap();
+        assert_eq!(outgoing_imports.len(), 1);
+        assert_eq!(outgoing_imports[0].to_symbol_id, "auth::claims");
+
+        let incoming_calls =
+            get_edges_to_by_type(&conn, "my-repo", "main", "auth::claims", "calls").unwrap();
+        assert_eq!(incoming_calls.len(), 1);
+        assert_eq!(incoming_calls[0].from_symbol_id, "file2::module");
     }
 
     #[test]
@@ -368,5 +446,61 @@ mod tests {
         let file1 = get_edges_from(&conn, "my-repo", "main", "file1::module").unwrap();
         assert_eq!(file1.len(), 1);
         assert_eq!(file1[0].to_symbol_id, "auth::refresh");
+    }
+
+    #[test]
+    fn test_query_plan_uses_symbol_edge_type_indexes() {
+        let conn = setup_test_db();
+        insert_edges(
+            &conn,
+            "my-repo",
+            "main",
+            vec![
+                edge("file1::module", "auth::claims", "imports"),
+                edge("file2::module", "auth::claims", "calls"),
+            ],
+        )
+        .unwrap();
+
+        let forward_plan = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT 1 FROM symbol_edges
+                 WHERE repo = ?1 AND \"ref\" = ?2 AND from_symbol_id = ?3 AND edge_type = ?4",
+            )
+            .unwrap()
+            .query_map(
+                params!["my-repo", "main", "file1::module", "imports"],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            forward_plan
+                .iter()
+                .any(|line| line.contains("idx_symbol_edges_from_type")),
+            "forward edge query should use idx_symbol_edges_from_type: {forward_plan:?}"
+        );
+
+        let reverse_plan = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT 1 FROM symbol_edges
+                 WHERE repo = ?1 AND \"ref\" = ?2 AND to_symbol_id = ?3 AND edge_type = ?4",
+            )
+            .unwrap()
+            .query_map(params!["my-repo", "main", "auth::claims", "calls"], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            reverse_plan
+                .iter()
+                .any(|line| line.contains("idx_symbol_edges_to_type")),
+            "reverse edge query should use idx_symbol_edges_to_type: {reverse_plan:?}"
+        );
     }
 }

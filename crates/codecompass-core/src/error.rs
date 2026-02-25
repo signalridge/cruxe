@@ -45,6 +45,68 @@ pub enum WorkspaceError {
     AllowedRootRequired,
 }
 
+/// Canonical protocol-level error codes shared by MCP/HTTP transports.
+///
+/// Source of truth: `specs/meta/protocol-error-codes.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProtocolErrorCode {
+    InvalidInput,
+    InvalidStrategy,
+    InvalidMaxTokens,
+    ProjectNotFound,
+    WorkspaceNotRegistered,
+    WorkspaceNotAllowed,
+    WorkspaceLimitExceeded,
+    IndexInProgress,
+    IndexNotReady,
+    SyncInProgress,
+    IndexStale,
+    IndexIncompatible,
+    RefNotIndexed,
+    OverlayNotReady,
+    MergeBaseFailed,
+    SymbolNotFound,
+    AmbiguousSymbol,
+    FileNotFound,
+    ResultNotFound,
+    NoEdgesAvailable,
+    InternalError,
+}
+
+impl ProtocolErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidStrategy => "invalid_strategy",
+            Self::InvalidMaxTokens => "invalid_max_tokens",
+            Self::ProjectNotFound => "project_not_found",
+            Self::WorkspaceNotRegistered => "workspace_not_registered",
+            Self::WorkspaceNotAllowed => "workspace_not_allowed",
+            Self::WorkspaceLimitExceeded => "workspace_limit_exceeded",
+            Self::IndexInProgress => "index_in_progress",
+            Self::IndexNotReady => "index_not_ready",
+            Self::SyncInProgress => "sync_in_progress",
+            Self::IndexStale => "index_stale",
+            Self::IndexIncompatible => "index_incompatible",
+            Self::RefNotIndexed => "ref_not_indexed",
+            Self::OverlayNotReady => "overlay_not_ready",
+            Self::MergeBaseFailed => "merge_base_failed",
+            Self::SymbolNotFound => "symbol_not_found",
+            Self::AmbiguousSymbol => "ambiguous_symbol",
+            Self::FileNotFound => "file_not_found",
+            Self::ResultNotFound => "result_not_found",
+            Self::NoEdgesAvailable => "no_edges_available",
+            Self::InternalError => "internal_error",
+        }
+    }
+}
+
+impl std::fmt::Display for ProtocolErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("config file not found: {path}")]
@@ -166,3 +228,26 @@ pub enum VcsError {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::ProtocolErrorCode;
+
+    #[test]
+    fn protocol_error_code_strings_match_registry() {
+        assert_eq!(ProtocolErrorCode::InvalidInput.as_str(), "invalid_input");
+        assert_eq!(
+            ProtocolErrorCode::WorkspaceNotAllowed.as_str(),
+            "workspace_not_allowed"
+        );
+        assert_eq!(
+            ProtocolErrorCode::IndexIncompatible.as_str(),
+            "index_incompatible"
+        );
+        assert_eq!(
+            ProtocolErrorCode::SymbolNotFound.as_str(),
+            "symbol_not_found"
+        );
+        assert_eq!(ProtocolErrorCode::InternalError.as_str(), "internal_error");
+    }
+}

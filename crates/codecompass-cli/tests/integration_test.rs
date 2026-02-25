@@ -1832,3 +1832,32 @@ fn t081_relevance_benchmark_top1_precision() {
         failure_report,
     );
 }
+
+// ---------------------------------------------------------------------------
+// T235: HTTP transport binds to localhost by default
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t235_serve_mcp_help_defaults_bind_to_localhost() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_codecompass"))
+        .arg("serve-mcp")
+        .arg("--help")
+        .output()
+        .expect("run codecompass serve-mcp --help");
+    assert!(
+        output.status.success(),
+        "serve-mcp --help should succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        help.contains("--bind <BIND>"),
+        "help text should contain --bind option"
+    );
+    assert!(
+        help.contains("127.0.0.1"),
+        "default bind should remain localhost for security"
+    );
+}

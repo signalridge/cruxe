@@ -4,7 +4,7 @@ use codecompass_core::constants;
 use codecompass_core::types::generate_project_id;
 use codecompass_core::vcs;
 use codecompass_query::search;
-use codecompass_state::{db, project, tantivy_index::IndexSet};
+use codecompass_state::{db, project, schema, tantivy_index::IndexSet};
 use std::path::Path;
 
 pub fn run(
@@ -40,6 +40,8 @@ pub fn run(
         config.storage.cache_size,
     )
     .map_err(|e| anyhow::anyhow!("Failed to open state DB: {}", e))?;
+    schema::create_tables(&conn)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize schema: {}", e))?;
     let proj = project::get_by_root(&conn, &repo_root_str)?
         .ok_or_else(|| anyhow::anyhow!("Project not initialized. Run `codecompass init` first."))?;
     let resolved_ref = r#ref.map(String::from).unwrap_or_else(|| {

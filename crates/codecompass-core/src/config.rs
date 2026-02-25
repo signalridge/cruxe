@@ -1,6 +1,8 @@
 use crate::constants;
 use crate::error::ConfigError;
+use crate::types::{FreshnessPolicy, RankingExplainLevel, SemanticMode};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -47,6 +49,8 @@ pub struct SearchConfig {
     pub ranking_explain_level: String,
     #[serde(default = "default_max_response_bytes")]
     pub max_response_bytes: usize,
+    #[serde(default)]
+    pub semantic: SemanticConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -59,6 +63,26 @@ pub struct DebugConfig {
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticConfig {
+    #[serde(default = "default_semantic_mode")]
+    pub semantic_mode: String,
+    #[serde(default = "default_semantic_profile")]
+    pub profile: String,
+    #[serde(default)]
+    pub profiles: BTreeMap<String, SemanticProfileOverrides>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SemanticProfileOverrides {
+    #[serde(default)]
+    pub min_score: Option<f64>,
+    #[serde(default)]
+    pub max_candidates: Option<usize>,
+    #[serde(default)]
+    pub blend_weight: Option<f64>,
 }
 
 fn default_max_file_size() -> u64 {
@@ -96,6 +120,12 @@ fn default_ranking_explain_level() -> String {
 fn default_max_response_bytes() -> usize {
     64 * 1024
 }
+fn default_semantic_mode() -> String {
+    "off".into()
+}
+fn default_semantic_profile() -> String {
+    "default".into()
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -127,6 +157,7 @@ impl Default for SearchConfig {
             freshness_policy: default_freshness_policy(),
             ranking_explain_level: default_ranking_explain_level(),
             max_response_bytes: default_max_response_bytes(),
+            semantic: SemanticConfig::default(),
         }
     }
 }
@@ -136,6 +167,34 @@ impl Default for LoggingConfig {
         Self {
             level: default_log_level(),
         }
+    }
+}
+
+impl Default for SemanticConfig {
+    fn default() -> Self {
+        Self {
+            semantic_mode: default_semantic_mode(),
+            profile: default_semantic_profile(),
+            profiles: BTreeMap::new(),
+        }
+    }
+}
+
+impl SearchConfig {
+    pub fn freshness_policy_typed(&self) -> FreshnessPolicy {
+        parse_freshness_policy(&self.freshness_policy).unwrap_or(FreshnessPolicy::Balanced)
+    }
+
+    pub fn ranking_explain_level_typed(&self) -> RankingExplainLevel {
+        parse_ranking_explain_level(&self.ranking_explain_level).unwrap_or(RankingExplainLevel::Off)
+    }
+
+    pub fn semantic_mode_typed(&self) -> SemanticMode {
+        parse_semantic_mode(&self.semantic.semantic_mode).unwrap_or(SemanticMode::Off)
+    }
+
+    pub fn semantic_profile_overrides(&self) -> Option<&SemanticProfileOverrides> {
+        self.semantic.profiles.get(&self.semantic.profile)
     }
 }
 
@@ -197,8 +256,15 @@ impl Config {
         // Convention: CODECOMPASS_<SECTION>_<KEY> in UPPER_SNAKE_CASE
         apply_env_overrides(&mut config);
 
+        config.search.freshness_policy =
+            normalize_freshness_policy(&config.search.freshness_policy);
         config.search.ranking_explain_level =
             normalize_ranking_explain_level(&config.search.ranking_explain_level);
+        config.search.semantic.semantic_mode =
+            normalize_semantic_mode(&config.search.semantic.semantic_mode);
+        if config.search.semantic.profile.trim().is_empty() {
+            config.search.semantic.profile = default_semantic_profile();
+        }
         if config.search.max_response_bytes == 0 {
             config.search.max_response_bytes = default_max_response_bytes();
         }
@@ -293,6 +359,14 @@ fn apply_env_overrides(config: &mut Config) {
     {
         config.search.max_response_bytes = n;
     }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_MODE") {
+        config.search.semantic.semantic_mode = v;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_QUERY_SEMANTIC_MODE") {
+        config.search.semantic.semantic_mode = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_PROFILE") {
+        config.search.semantic.profile = v;
+    }
     if let Ok(v) = std::env::var("CODECOMPASS_DEBUG_RANKING_REASONS") {
         config.debug.ranking_reasons = v == "true" || v == "1";
     }
@@ -328,12 +402,70 @@ fn promote_query_section(merged: &mut toml::Value) {
     }
 }
 
-fn normalize_ranking_explain_level(raw: &str) -> String {
+fn parse_freshness_policy(raw: &str) -> Option<FreshnessPolicy> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "basic" => "basic".to_string(),
-        "full" => "full".to_string(),
-        _ => "off".to_string(),
+        "strict" => Some(FreshnessPolicy::Strict),
+        "balanced" => Some(FreshnessPolicy::Balanced),
+        "best_effort" | "besteffort" => Some(FreshnessPolicy::BestEffort),
+        _ => None,
     }
+}
+
+fn freshness_policy_to_str(policy: FreshnessPolicy) -> &'static str {
+    match policy {
+        FreshnessPolicy::Strict => "strict",
+        FreshnessPolicy::Balanced => "balanced",
+        FreshnessPolicy::BestEffort => "best_effort",
+    }
+}
+
+fn normalize_freshness_policy(raw: &str) -> String {
+    let policy = parse_freshness_policy(raw).unwrap_or(FreshnessPolicy::Balanced);
+    freshness_policy_to_str(policy).to_string()
+}
+
+fn parse_ranking_explain_level(raw: &str) -> Option<RankingExplainLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(RankingExplainLevel::Off),
+        "basic" => Some(RankingExplainLevel::Basic),
+        "full" => Some(RankingExplainLevel::Full),
+        _ => None,
+    }
+}
+
+fn ranking_explain_level_to_str(level: RankingExplainLevel) -> &'static str {
+    match level {
+        RankingExplainLevel::Off => "off",
+        RankingExplainLevel::Basic => "basic",
+        RankingExplainLevel::Full => "full",
+    }
+}
+
+fn normalize_ranking_explain_level(raw: &str) -> String {
+    let level = parse_ranking_explain_level(raw).unwrap_or(RankingExplainLevel::Off);
+    ranking_explain_level_to_str(level).to_string()
+}
+
+fn parse_semantic_mode(raw: &str) -> Option<SemanticMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(SemanticMode::Off),
+        "shadow" => Some(SemanticMode::Shadow),
+        "on" | "enabled" => Some(SemanticMode::On),
+        _ => None,
+    }
+}
+
+fn semantic_mode_to_str(mode: SemanticMode) -> &'static str {
+    match mode {
+        SemanticMode::Off => "off",
+        SemanticMode::Shadow => "shadow",
+        SemanticMode::On => "on",
+    }
+}
+
+fn normalize_semantic_mode(raw: &str) -> String {
+    let mode = parse_semantic_mode(raw).unwrap_or(SemanticMode::Off);
+    semantic_mode_to_str(mode).to_string()
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -348,6 +480,15 @@ fn expand_tilde(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn normalize_freshness_policy_values() {
+        assert_eq!(normalize_freshness_policy("strict"), "strict");
+        assert_eq!(normalize_freshness_policy("BALANCED"), "balanced");
+        assert_eq!(normalize_freshness_policy("bestEffort"), "best_effort");
+        assert_eq!(normalize_freshness_policy("unknown"), "balanced");
+    }
 
     #[test]
     fn normalize_ranking_explain_level_values() {
@@ -355,6 +496,14 @@ mod tests {
         assert_eq!(normalize_ranking_explain_level("BASIC"), "basic");
         assert_eq!(normalize_ranking_explain_level("full"), "full");
         assert_eq!(normalize_ranking_explain_level("unknown"), "off");
+    }
+
+    #[test]
+    fn normalize_semantic_mode_values() {
+        assert_eq!(normalize_semantic_mode("off"), "off");
+        assert_eq!(normalize_semantic_mode("shadow"), "shadow");
+        assert_eq!(normalize_semantic_mode("ENABLED"), "on");
+        assert_eq!(normalize_semantic_mode("unknown"), "off");
     }
 
     #[test]
@@ -392,5 +541,61 @@ mod tests {
                 .unwrap(),
             2048
         );
+    }
+
+    #[test]
+    fn load_with_file_normalizes_invalid_values_and_legacy_debug_flag() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search]
+            freshness_policy = "invalid"
+            ranking_explain_level = "verbose"
+            max_response_bytes = 0
+
+            [search.semantic]
+            semantic_mode = "future_mode"
+            profile = ""
+
+            [debug]
+            ranking_reasons = true
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(loaded.search.freshness_policy, "balanced");
+        assert_eq!(loaded.search.ranking_explain_level, "full");
+        assert_eq!(loaded.search.max_response_bytes, 64 * 1024);
+        assert_eq!(loaded.search.semantic.semantic_mode, "off");
+        assert_eq!(loaded.search.semantic.profile, "default");
+        assert_eq!(
+            loaded.search.freshness_policy_typed(),
+            FreshnessPolicy::Balanced
+        );
+        assert_eq!(
+            loaded.search.ranking_explain_level_typed(),
+            RankingExplainLevel::Full
+        );
+        assert_eq!(loaded.search.semantic_mode_typed(), SemanticMode::Off);
+    }
+
+    #[test]
+    fn semantic_profile_override_lookup_uses_selected_profile() {
+        let mut cfg = SearchConfig::default();
+        cfg.semantic.profile = "high_recall".to_string();
+        cfg.semantic.profiles.insert(
+            "high_recall".to_string(),
+            SemanticProfileOverrides {
+                min_score: Some(0.12),
+                max_candidates: Some(128),
+                blend_weight: Some(0.7),
+            },
+        );
+        let selected = cfg.semantic_profile_overrides().unwrap();
+        assert_eq!(selected.max_candidates, Some(128));
+        assert_eq!(selected.min_score, Some(0.12));
     }
 }

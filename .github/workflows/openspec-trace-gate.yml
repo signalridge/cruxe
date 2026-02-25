@@ -1,0 +1,16 @@
+name: openspec-trace-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  trace-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Enforce OpenSpec trace gate
+        run: .github/scripts/check_openspec_trace_gate.sh

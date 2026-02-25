@@ -4,9 +4,8 @@ use crate::tools;
 use crate::workspace_router::WorkspaceRouter;
 use codecompass_core::config::Config;
 use codecompass_core::constants;
-use codecompass_core::error::{StateError, WorkspaceError};
+use codecompass_core::error::{ProtocolErrorCode, StateError, WorkspaceError};
 use codecompass_core::types::{DetailLevel, SchemaStatus, WorkspaceConfig, generate_project_id};
-use codecompass_query::context;
 use codecompass_query::detail;
 use codecompass_query::freshness::{
     self, FreshnessResult, PolicyAction, apply_freshness_policy, check_freshness_with_scan_params,
@@ -19,14 +18,13 @@ use codecompass_query::related;
 use codecompass_query::search;
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use self::tool_calls::{ToolCallParams, handle_tool_call};
 
@@ -133,6 +131,52 @@ pub(crate) fn prewarm_projects(status: Arc<AtomicU8>, config: Config, project_id
     }
 }
 
+/// Lightweight runtime SQLite connection manager shared across transport handlers.
+///
+/// Connections are keyed by `db_path` and reused across requests. Callers can
+/// invalidate a path entry to force lazy reopen after failures.
+pub struct ConnectionManager {
+    connections: Mutex<HashMap<std::path::PathBuf, Arc<Mutex<rusqlite::Connection>>>>,
+}
+
+impl ConnectionManager {
+    pub fn new() -> Self {
+        Self {
+            connections: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn get_or_open(
+        &self,
+        db_path: &Path,
+    ) -> Result<Arc<Mutex<rusqlite::Connection>>, StateError> {
+        let mut map = self
+            .connections
+            .lock()
+            .map_err(|e| StateError::sqlite(format!("connection manager lock poisoned: {e}")))?;
+        if let Some(existing) = map.get(db_path) {
+            return Ok(Arc::clone(existing));
+        }
+
+        let conn = codecompass_state::db::open_connection(db_path)?;
+        let shared = Arc::new(Mutex::new(conn));
+        map.insert(db_path.to_path_buf(), Arc::clone(&shared));
+        Ok(shared)
+    }
+
+    pub fn invalidate(&self, db_path: &Path) {
+        if let Ok(mut map) = self.connections.lock() {
+            map.remove(db_path);
+        }
+    }
+}
+
+impl Default for ConnectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub(crate) fn is_status_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
@@ -181,6 +225,7 @@ pub fn run_server(
 
     // Shared prewarm status
     let prewarm_status = Arc::new(AtomicU8::new(PREWARM_PENDING));
+    let connection_manager = ConnectionManager::new();
 
     // Start warmset prewarm in background thread (or skip)
     if no_prewarm {
@@ -229,80 +274,6 @@ pub fn run_server(
             );
         }
 
-        // Resolve workspace for tools/call requests
-        let (eff_workspace, eff_project_id, eff_data_dir) = if request.method == "tools/call" {
-            let ws_param = request
-                .params
-                .get("arguments")
-                .and_then(|a| a.get("workspace"))
-                .and_then(|v| v.as_str());
-            match router.resolve_workspace(ws_param) {
-                Ok(resolved) => {
-                    let eff_data_dir = config.project_data_dir(&resolved.project_id);
-
-                    // T205: On-demand indexing for auto-discovered workspaces
-                    if resolved.on_demand_indexing {
-                        if resolved.should_bootstrap
-                            && let Err(e) = bootstrap_and_index(
-                                &resolved.workspace_path,
-                                &resolved.project_id,
-                                &eff_data_dir,
-                            )
-                        {
-                            error!(
-                                workspace = %resolved.workspace_path.display(),
-                                "on-demand bootstrap failed: {}", e
-                            );
-                        }
-
-                        // HIGH-5: For query tools, return graceful "indexing" response
-                        // instead of compatibility error (spec resolution logic step 4f)
-                        let tool_name = request
-                            .params
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if !is_status_tool(tool_name) {
-                            let effective_ref =
-                                codecompass_core::vcs::detect_head_branch(&resolved.workspace_path)
-                                    .unwrap_or_else(|_| constants::REF_LIVE.to_string());
-                            let metadata = ProtocolMetadata::syncing(&effective_ref);
-                            let resp = tool_calls::tool_text_response(
-                                request.id.clone(),
-                                json!({
-                                    "indexing_status": "indexing",
-                                    "result_completeness": "partial",
-                                    "workspace": resolved.workspace_path.to_string_lossy(),
-                                    "message": "Workspace is being indexed. Results will be available shortly. Use index_status to check progress.",
-                                    "suggested_next_actions": ["poll index_status", "retry after indexing completes"],
-                                    "metadata": metadata,
-                                }),
-                            );
-                            write_response(&writer, &resp)?;
-                            continue;
-                        }
-                    }
-
-                    (resolved.workspace_path, resolved.project_id, eff_data_dir)
-                }
-                Err(e) => {
-                    let resp = workspace_error_to_response(request.id.clone(), &e);
-                    write_response(&writer, &resp)?;
-                    continue;
-                }
-            }
-        } else {
-            (
-                workspace.to_path_buf(),
-                project_id.clone(),
-                data_dir.clone(),
-            )
-        };
-
-        let eff_db_path = eff_data_dir.join(constants::STATE_DB_FILE);
-        let index_runtime = load_index_runtime(&eff_data_dir);
-        let conn = codecompass_state::db::open_connection(&eff_db_path).ok();
-
         let notifications_enabled_now = notifications_enabled.load(Ordering::Acquire);
         // Optional client-provided progress token (used as notification correlation id).
         // If notifications are enabled but no token is provided, set an empty sentinel so
@@ -325,20 +296,25 @@ pub fn run_server(
             Arc::new(NullProgressNotifier)
         };
 
-        let request_ctx = RequestContext {
+        let runtime = DispatchRuntime {
             config: &config,
-            index_set: index_runtime.index_set.as_ref(),
-            schema_status: index_runtime.schema_status,
-            compatibility_reason: index_runtime.compatibility_reason.as_deref(),
-            conn: conn.as_ref(),
-            workspace: &eff_workspace,
-            project_id: &eff_project_id,
+            router: &router,
+            workspace,
+            project_id: &project_id,
+            data_dir: &data_dir,
+            connection_manager: &connection_manager,
             prewarm_status: &prewarm_status,
             server_start: &server_start,
+        };
+        let transport = TransportExecutionContext {
             notifier,
             progress_token: progress_token.as_deref(),
+            transport_label: "stdio",
+            log_workspace_resolution_failures: true,
+            log_degraded_sqlite_open: true,
         };
-        let response = handle_request_with_ctx(&request, &request_ctx);
+
+        let response = execute_transport_request(&request, &runtime, &transport);
         write_response(&writer, &response)?;
     }
 
@@ -349,33 +325,33 @@ pub fn run_server(
 fn workspace_error_to_response(id: Option<Value>, err: &WorkspaceError) -> JsonRpcResponse {
     let (code, message) = match err {
         WorkspaceError::NotRegistered { path } => (
-            "workspace_not_registered",
+            ProtocolErrorCode::WorkspaceNotRegistered,
             format!(
                 "Workspace not registered: {}. Pass a known workspace or enable --auto-workspace.",
                 path
             ),
         ),
         WorkspaceError::NotAllowed { path, reason } => (
-            "workspace_not_allowed",
+            ProtocolErrorCode::WorkspaceNotAllowed,
             format!("Workspace not allowed: {} ({})", path, reason),
         ),
         WorkspaceError::AutoDiscoveryDisabled => (
-            "workspace_not_registered",
+            ProtocolErrorCode::WorkspaceNotRegistered,
             "Auto-workspace is disabled. Enable with --auto-workspace.".to_string(),
         ),
         WorkspaceError::LimitExceeded { max } => (
-            "workspace_limit_exceeded",
+            ProtocolErrorCode::WorkspaceLimitExceeded,
             format!("Maximum auto-discovered workspaces ({}) exceeded.", max),
         ),
         WorkspaceError::AllowedRootRequired => (
-            "invalid_input",
+            ProtocolErrorCode::InvalidInput,
             "--allowed-root is required when --auto-workspace is enabled.".to_string(),
         ),
     };
 
     let error_payload = json!({
         "error": {
-            "code": code,
+            "code": code.as_str(),
             "message": message,
         }
     });
@@ -389,6 +365,7 @@ pub fn bootstrap_and_index(
     workspace: &Path,
     project_id: &str,
     data_dir: &Path,
+    storage_data_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create data directory
     std::fs::create_dir_all(data_dir)?;
@@ -436,23 +413,20 @@ pub fn bootstrap_and_index(
     // Create Tantivy index directories
     let _ = codecompass_state::tantivy_index::IndexSet::open(data_dir)?;
 
-    // Spawn indexer subprocess
-    let exe = std::env::current_exe().unwrap_or_else(|_| "codecompass".into());
-    let workspace_str = workspace.to_string_lossy();
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("index")
-        .arg("--path")
-        .arg(workspace_str.as_ref())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
     // Pass config file path if available in config's data dir
     let config_path = workspace.join(constants::PROJECT_CONFIG_FILE);
-    if config_path.exists() {
-        cmd.arg("--config").arg(&config_path);
-    }
+    let bootstrap_job_id = crate::index_launcher::generate_job_id();
+    let launch_request = crate::index_launcher::IndexLaunchRequest {
+        workspace,
+        force: false,
+        ref_name: None,
+        config_path: config_path.exists().then_some(config_path.as_path()),
+        project_id: Some(project_id),
+        storage_data_dir: Some(storage_data_dir),
+        job_id: Some(&bootstrap_job_id),
+    };
 
-    match cmd.spawn() {
+    match crate::index_launcher::spawn_index_process(&launch_request) {
         Ok(child) => {
             std::thread::spawn(move || {
                 let mut child = child;
@@ -498,6 +472,183 @@ struct RequestContext<'a> {
     server_start: &'a Instant,
     notifier: Arc<dyn ProgressNotifier>,
     progress_token: Option<&'a str>,
+}
+
+pub struct DispatchRuntime<'a> {
+    pub config: &'a Config,
+    pub router: &'a WorkspaceRouter,
+    pub workspace: &'a Path,
+    pub project_id: &'a str,
+    pub data_dir: &'a Path,
+    pub connection_manager: &'a ConnectionManager,
+    pub prewarm_status: &'a AtomicU8,
+    pub server_start: &'a Instant,
+}
+
+pub struct TransportExecutionContext<'a> {
+    pub notifier: Arc<dyn ProgressNotifier>,
+    pub progress_token: Option<&'a str>,
+    pub transport_label: &'static str,
+    pub log_workspace_resolution_failures: bool,
+    pub log_degraded_sqlite_open: bool,
+}
+
+struct EffectiveWorkspaceContext {
+    workspace: std::path::PathBuf,
+    project_id: String,
+    data_dir: std::path::PathBuf,
+}
+
+enum DispatchOutcome {
+    Continue(EffectiveWorkspaceContext),
+    Response(JsonRpcResponse),
+}
+
+fn resolve_tool_call_workspace(
+    request: &JsonRpcRequest,
+    runtime: &DispatchRuntime<'_>,
+    transport: &TransportExecutionContext<'_>,
+) -> DispatchOutcome {
+    let tool_name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let ws_param = request
+        .params
+        .get("arguments")
+        .and_then(|a| a.get("workspace"))
+        .and_then(|v| v.as_str());
+
+    match runtime.router.resolve_workspace(ws_param) {
+        Ok(resolved) => {
+            let eff_data_dir = runtime.config.project_data_dir(&resolved.project_id);
+            if resolved.on_demand_indexing {
+                if resolved.should_bootstrap
+                    && let Err(e) = bootstrap_and_index(
+                        &resolved.workspace_path,
+                        &resolved.project_id,
+                        &eff_data_dir,
+                        &runtime.config.storage.data_dir,
+                    )
+                {
+                    error!(
+                        workspace = %resolved.workspace_path.display(),
+                        "on-demand bootstrap failed: {}", e
+                    );
+                }
+
+                if !is_status_tool(tool_name) {
+                    let effective_ref =
+                        codecompass_core::vcs::detect_head_branch(&resolved.workspace_path)
+                            .unwrap_or_else(|_| constants::REF_LIVE.to_string());
+                    let metadata = ProtocolMetadata::syncing(&effective_ref);
+                    return DispatchOutcome::Response(tool_calls::tool_text_response(
+                        request.id.clone(),
+                        json!({
+                            "indexing_status": "indexing",
+                            "result_completeness": "partial",
+                            "workspace": resolved.workspace_path.to_string_lossy(),
+                            "message": "Workspace is being indexed. Results will be available shortly. Use index_status to check progress.",
+                            "suggested_next_actions": ["poll index_status", "retry after indexing completes"],
+                            "metadata": metadata,
+                        }),
+                    ));
+                }
+            }
+
+            DispatchOutcome::Continue(EffectiveWorkspaceContext {
+                workspace: resolved.workspace_path,
+                project_id: resolved.project_id,
+                data_dir: eff_data_dir,
+            })
+        }
+        Err(e) => {
+            if transport.log_workspace_resolution_failures {
+                warn!(
+                    transport = transport.transport_label,
+                    tool = tool_name,
+                    workspace_param = ?ws_param,
+                    error = %e,
+                    "Workspace resolution failed"
+                );
+            }
+            DispatchOutcome::Response(workspace_error_to_response(request.id.clone(), &e))
+        }
+    }
+}
+
+pub fn execute_transport_request(
+    request: &JsonRpcRequest,
+    runtime: &DispatchRuntime<'_>,
+    transport: &TransportExecutionContext<'_>,
+) -> JsonRpcResponse {
+    let mut effective_workspace = runtime.workspace.to_path_buf();
+    let mut effective_project_id = runtime.project_id.to_string();
+    let mut effective_data_dir = runtime.data_dir.to_path_buf();
+
+    if request.method == "tools/call" {
+        match resolve_tool_call_workspace(request, runtime, transport) {
+            DispatchOutcome::Continue(ctx) => {
+                effective_workspace = ctx.workspace;
+                effective_project_id = ctx.project_id;
+                effective_data_dir = ctx.data_dir;
+            }
+            DispatchOutcome::Response(response) => return response,
+        }
+    }
+
+    let eff_db_path = effective_data_dir.join(constants::STATE_DB_FILE);
+    let index_runtime = load_index_runtime(&effective_data_dir);
+    let conn_handle = match runtime.connection_manager.get_or_open(&eff_db_path) {
+        Ok(handle) => Some(handle),
+        Err(err) => {
+            if transport.log_degraded_sqlite_open {
+                warn!(
+                    transport = transport.transport_label,
+                    db_path = %eff_db_path.display(),
+                    project_id = %effective_project_id,
+                    error = %err,
+                    "Failed to open sqlite connection; proceeding with degraded compatibility behavior"
+                );
+            }
+            runtime.connection_manager.invalidate(&eff_db_path);
+            None
+        }
+    };
+    let conn_guard = conn_handle
+        .as_ref()
+        .and_then(|handle| match handle.lock() {
+            Ok(guard) => Some(guard),
+            Err(err) => {
+                if transport.log_degraded_sqlite_open {
+                    warn!(
+                        transport = transport.transport_label,
+                        db_path = %eff_db_path.display(),
+                        project_id = %effective_project_id,
+                        error = %err,
+                        "Failed to lock sqlite connection; proceeding with degraded compatibility behavior"
+                    );
+                }
+                runtime.connection_manager.invalidate(&eff_db_path);
+                None
+            }
+        });
+
+    let request_ctx = RequestContext {
+        config: runtime.config,
+        index_set: index_runtime.index_set.as_ref(),
+        schema_status: index_runtime.schema_status,
+        compatibility_reason: index_runtime.compatibility_reason.as_deref(),
+        conn: conn_guard.as_deref(),
+        workspace: &effective_workspace,
+        project_id: &effective_project_id,
+        prewarm_status: runtime.prewarm_status,
+        server_start: runtime.server_start,
+        notifier: transport.notifier.clone(),
+        progress_token: transport.progress_token,
+    };
+    handle_request_with_ctx(request, &request_ctx)
 }
 
 fn handle_request_with_ctx(request: &JsonRpcRequest, ctx: &RequestContext<'_>) -> JsonRpcResponse {
@@ -672,6 +823,342 @@ fn resolve_project_schema_status(
     }
 }
 
+pub(crate) fn schema_status_contract(
+    schema_status: SchemaStatus,
+) -> (&'static str, Option<&'static str>) {
+    match schema_status {
+        SchemaStatus::Compatible => ("compatible", None),
+        SchemaStatus::NotIndexed => ("not_indexed", None),
+        SchemaStatus::ReindexRequired => (
+            "reindex_required",
+            Some("Run `codecompass index --force` to reindex."),
+        ),
+        SchemaStatus::CorruptManifest => (
+            "corrupt_manifest",
+            Some("Run `codecompass index --force` to rebuild."),
+        ),
+    }
+}
+
+pub(crate) fn schema_status_current_version(
+    schema_status: SchemaStatus,
+    stored_schema_version: u32,
+) -> u32 {
+    match schema_status {
+        SchemaStatus::Compatible => constants::SCHEMA_VERSION,
+        _ => stored_schema_version,
+    }
+}
+
+pub(crate) fn build_interrupted_recovery_report(
+    conn: Option<&rusqlite::Connection>,
+) -> Option<Value> {
+    let interrupted_jobs = conn
+        .and_then(|c| codecompass_state::jobs::get_interrupted_jobs(c).ok())
+        .unwrap_or_default();
+    if interrupted_jobs.is_empty() {
+        return None;
+    }
+    let last_interrupted_at = interrupted_jobs
+        .iter()
+        .map(|j| j.updated_at.as_str())
+        .max()
+        .unwrap_or_default();
+    Some(json!({
+        "detected": true,
+        "interrupted_jobs": interrupted_jobs.len(),
+        "last_interrupted_at": last_interrupted_at,
+        "recommended_action": "run sync_repo or index_repo for the affected workspace",
+    }))
+}
+
+pub(crate) struct HealthProjectStatus {
+    pub index_status: &'static str,
+    pub is_error: bool,
+    pub is_warming: bool,
+}
+
+pub(crate) fn health_project_status(
+    project_schema_status: SchemaStatus,
+    is_primary_project: bool,
+    prewarm_status: u8,
+    has_active_job: bool,
+) -> HealthProjectStatus {
+    let has_schema_error = !matches!(project_schema_status, SchemaStatus::Compatible);
+    let prewarm_failed_for_project = is_primary_project && prewarm_status == PREWARM_FAILED;
+    if has_schema_error || prewarm_failed_for_project {
+        return HealthProjectStatus {
+            index_status: "error",
+            is_error: true,
+            is_warming: false,
+        };
+    }
+    if is_primary_project && prewarm_status == PREWARM_IN_PROGRESS {
+        return HealthProjectStatus {
+            index_status: "warming",
+            is_error: false,
+            is_warming: true,
+        };
+    }
+    if has_active_job {
+        return HealthProjectStatus {
+            index_status: "indexing",
+            is_error: false,
+            is_warming: false,
+        };
+    }
+    HealthProjectStatus {
+        index_status: "ready",
+        is_error: false,
+        is_warming: false,
+    }
+}
+
+pub(crate) fn health_overall_status(
+    any_project_error: bool,
+    any_project_warming: bool,
+    any_project_indexing: bool,
+    schema_status: SchemaStatus,
+    prewarm_status: u8,
+) -> &'static str {
+    if any_project_error
+        || prewarm_status == PREWARM_FAILED
+        || !matches!(schema_status, SchemaStatus::Compatible)
+    {
+        "error"
+    } else if any_project_warming || prewarm_status == PREWARM_IN_PROGRESS {
+        "warming"
+    } else if any_project_indexing {
+        "indexing"
+    } else {
+        "ready"
+    }
+}
+
+pub(crate) struct HealthCoreOptions {
+    pub workspace_scoped: bool,
+    pub include_freshness_status: bool,
+    pub include_extended_active_job_fields: bool,
+}
+
+pub(crate) struct HealthCoreRequest<'a> {
+    pub config: &'a Config,
+    pub conn: Option<&'a rusqlite::Connection>,
+    pub workspace: &'a Path,
+    pub project_id: &'a str,
+    pub schema_status: SchemaStatus,
+    pub prewarm_status: u8,
+    pub effective_ref: &'a str,
+    pub options: HealthCoreOptions,
+}
+
+pub(crate) struct HealthCorePayload {
+    pub projects: Vec<Value>,
+    pub active_job: Option<Value>,
+    pub overall_status: &'static str,
+    pub startup_index_status: &'static str,
+    pub startup_compat_message: Option<&'static str>,
+    pub startup_current_schema_version: u32,
+    pub interrupted_recovery_report: Option<Value>,
+}
+
+pub(crate) fn build_health_core_payload(request: HealthCoreRequest<'_>) -> HealthCorePayload {
+    let HealthCoreRequest {
+        config,
+        conn,
+        workspace,
+        project_id,
+        schema_status,
+        prewarm_status,
+        effective_ref,
+        options,
+    } = request;
+    let stored_schema_version = conn.and_then(|c| {
+        codecompass_state::project::get_by_id(c, project_id)
+            .ok()
+            .flatten()
+            .map(|p| p.schema_version)
+    });
+    let startup_current_schema_version =
+        schema_status_current_version(schema_status, stored_schema_version.unwrap_or(0));
+    let (startup_index_status, startup_compat_message) = schema_status_contract(schema_status);
+
+    let mut any_project_error = false;
+    let mut any_project_warming = false;
+    let mut any_project_indexing = false;
+    let mut active_job_payload: Option<Value> = None;
+    let mut project_payloads = Vec::new();
+
+    if let Some(c) = conn {
+        let mut projects = if options.workspace_scoped {
+            codecompass_state::project::get_by_id(c, project_id)
+                .ok()
+                .flatten()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            codecompass_state::project::list_projects(c).unwrap_or_default()
+        };
+        if projects.is_empty()
+            && let Some(p) = codecompass_state::project::get_by_id(c, project_id)
+                .ok()
+                .flatten()
+        {
+            projects.push(p);
+        }
+
+        for p in projects {
+            let project_workspace = Path::new(&p.repo_root);
+            let project_ref = if p.default_ref.trim().is_empty() {
+                constants::REF_LIVE.to_string()
+            } else {
+                p.default_ref.clone()
+            };
+            let project_schema_status =
+                resolve_project_schema_status(config, project_id, &p.project_id, schema_status);
+            let (project_schema_status_str, _) = schema_status_contract(project_schema_status);
+            let project_current_schema_version =
+                schema_status_current_version(project_schema_status, p.schema_version);
+
+            let active_job = codecompass_state::jobs::get_active_job(c, &p.project_id)
+                .ok()
+                .flatten();
+            if let Some(j) = &active_job {
+                any_project_indexing = true;
+                if active_job_payload.is_none() {
+                    let mut payload = json!({
+                        "job_id": j.job_id,
+                        "project_id": j.project_id,
+                        "mode": j.mode,
+                        "status": j.status,
+                        "ref": j.r#ref,
+                    });
+                    if options.include_extended_active_job_fields {
+                        payload["changed_files"] = json!(j.changed_files);
+                        payload["started_at"] = json!(j.created_at.clone());
+                    }
+                    active_job_payload = Some(payload);
+                }
+            }
+
+            let project_status = health_project_status(
+                project_schema_status,
+                p.project_id == project_id,
+                prewarm_status,
+                active_job.is_some(),
+            );
+            any_project_error |= project_status.is_error;
+            any_project_warming |= project_status.is_warming;
+
+            let file_count =
+                codecompass_state::manifest::file_count(c, &p.project_id, &project_ref)
+                    .unwrap_or(0);
+            let symbol_count =
+                codecompass_state::symbols::symbol_count(c, &p.project_id, &project_ref)
+                    .unwrap_or(0);
+            let last_indexed_at = codecompass_state::jobs::get_recent_jobs(c, &p.project_id, 10)
+                .ok()
+                .and_then(|jobs| {
+                    jobs.into_iter()
+                        .find(|j| j.status == "published" && j.r#ref == project_ref)
+                        .map(|j| j.updated_at)
+                });
+
+            let mut project_payload = json!({
+                "project_id": p.project_id,
+                "repo_root": p.repo_root,
+                "index_status": project_status.index_status,
+                "last_indexed_at": last_indexed_at,
+                "ref": project_ref,
+                "file_count": file_count,
+                "symbol_count": symbol_count,
+                "schema_status": project_schema_status_str,
+                "current_schema_version": project_current_schema_version,
+                "required_schema_version": constants::SCHEMA_VERSION,
+            });
+            if options.include_freshness_status {
+                let freshness_result = check_freshness_with_scan_params(
+                    Some(c),
+                    project_workspace,
+                    &p.project_id,
+                    project_payload["ref"]
+                        .as_str()
+                        .unwrap_or(constants::REF_LIVE),
+                    config.index.max_file_size,
+                    Some(&config.index.languages),
+                );
+                project_payload["freshness_status"] =
+                    json!(freshness::freshness_status(&freshness_result));
+            }
+            project_payloads.push(project_payload);
+        }
+    }
+
+    if project_payloads.is_empty() {
+        let fallback_status = if conn.is_none()
+            || !matches!(schema_status, SchemaStatus::Compatible)
+            || prewarm_status == PREWARM_FAILED
+        {
+            any_project_error = true;
+            "error"
+        } else if prewarm_status == PREWARM_IN_PROGRESS {
+            any_project_warming = true;
+            "warming"
+        } else {
+            "ready"
+        };
+        let (fallback_schema_status, _) = schema_status_contract(schema_status);
+        let fallback_current_schema_version =
+            schema_status_current_version(schema_status, stored_schema_version.unwrap_or(0));
+        let mut fallback_payload = json!({
+            "project_id": project_id,
+            "repo_root": workspace.to_string_lossy(),
+            "index_status": fallback_status,
+            "last_indexed_at": Value::Null,
+            "ref": effective_ref,
+            "file_count": conn
+                .and_then(|c| codecompass_state::manifest::file_count(c, project_id, effective_ref).ok())
+                .unwrap_or(0),
+            "symbol_count": conn
+                .and_then(|c| codecompass_state::symbols::symbol_count(c, project_id, effective_ref).ok())
+                .unwrap_or(0),
+            "schema_status": fallback_schema_status,
+            "current_schema_version": fallback_current_schema_version,
+            "required_schema_version": constants::SCHEMA_VERSION,
+        });
+        if options.include_freshness_status {
+            fallback_payload["freshness_status"] = json!(
+                build_metadata(
+                    effective_ref,
+                    schema_status,
+                    config,
+                    conn,
+                    workspace,
+                    project_id,
+                )
+                .freshness_status
+            );
+        }
+        project_payloads.push(fallback_payload);
+    }
+
+    HealthCorePayload {
+        overall_status: health_overall_status(
+            any_project_error,
+            any_project_warming,
+            any_project_indexing,
+            schema_status,
+            prewarm_status,
+        ),
+        projects: project_payloads,
+        active_job: active_job_payload,
+        startup_index_status,
+        startup_compat_message,
+        startup_current_schema_version,
+        interrupted_recovery_report: build_interrupted_recovery_report(conn),
+    }
+}
+
 /// Build protocol metadata using an explicit FreshnessResult (for query tools).
 fn build_metadata_with_freshness(
     r#ref: &str,
@@ -703,7 +1190,7 @@ fn resolve_freshness_policy(
         .get("freshness_policy")
         .and_then(|v| v.as_str())
         .map(parse_freshness_policy)
-        .unwrap_or_else(|| parse_freshness_policy(&config.search.freshness_policy))
+        .unwrap_or_else(|| config.search.freshness_policy_typed())
 }
 
 fn is_project_registered(conn: Option<&rusqlite::Connection>, workspace: &Path) -> bool {
@@ -745,6 +1232,13 @@ fn resolve_tool_ref(
 
 // ---- Public API for HTTP transport (T223) ----
 
+/// Public runtime compatibility bundle for HTTP transport request routing.
+pub struct PublicIndexRuntime {
+    pub index_set: Option<IndexSet>,
+    pub schema_status: SchemaStatus,
+    pub compatibility_reason: Option<String>,
+}
+
 /// Public wrapper for `resolve_tool_ref` used by the HTTP transport.
 pub fn resolve_tool_ref_public(
     requested_ref: Option<&str>,
@@ -771,6 +1265,16 @@ pub fn tool_text_response_public(id: Option<Value>, payload: Value) -> JsonRpcRe
 /// Public wrapper for index-open error classification used by HTTP transport.
 pub fn classify_index_open_error_public(err: &StateError) -> SchemaStatus {
     classify_index_open_error(err).0
+}
+
+/// Public wrapper for loading index/runtime compatibility used by HTTP transport.
+pub fn load_index_runtime_public(data_dir: &Path) -> PublicIndexRuntime {
+    let runtime = load_index_runtime(data_dir);
+    PublicIndexRuntime {
+        index_set: runtime.index_set,
+        schema_status: runtime.schema_status,
+        compatibility_reason: runtime.compatibility_reason,
+    }
 }
 
 /// Parameters for calling tool dispatch from the HTTP transport.

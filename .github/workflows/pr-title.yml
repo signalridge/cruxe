@@ -1,0 +1,21 @@
+name: pr-title
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  validate-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title against conventional format
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || "";
+            const re = /^(feat|fix|docs|refactor|test|chore|perf|ci|build|style)(\([^)]+\))?:\s.+$/;
+            if (!re.test(title)) {
+              core.setFailed(
+                `PR title "${title}" does not match required format: <type>(<scope>): <summary>`
+              );
+            }

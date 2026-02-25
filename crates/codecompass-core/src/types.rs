@@ -178,6 +178,19 @@ pub enum RankingExplainLevel {
     Full,
 }
 
+/// Semantic retrieval execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticMode {
+    /// Disable semantic retrieval.
+    #[default]
+    Off,
+    /// Run semantic scoring in shadow mode for telemetry/verification only.
+    Shadow,
+    /// Enable semantic scoring in user-visible retrieval ranking.
+    On,
+}
+
 /// Per-result ranking explanation for debug mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankingReasons {
@@ -231,6 +244,30 @@ impl RefScope {
         Self {
             r#ref: r#ref.into(),
             is_explicit: true,
+        }
+    }
+}
+
+/// Canonical merge key for base/overlay reconciliation paths.
+///
+/// This prevents ad-hoc tuple/string keying drift across VCS overlay merges.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct OverlayMergeKey {
+    pub repo: String,
+    pub ref_name: String,
+    pub path: String,
+}
+
+impl OverlayMergeKey {
+    pub fn new(
+        repo: impl Into<String>,
+        ref_name: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo: repo.into(),
+            ref_name: ref_name.into(),
+            path: path.into(),
         }
     }
 }
@@ -688,5 +725,29 @@ mod tests {
             // The canonical path should resolve through the symlink to the real dir
             assert!(canonical.starts_with(&canonical_root));
         }
+    }
+
+    #[test]
+    fn overlay_merge_key_equality_and_ordering() {
+        let base = OverlayMergeKey::new("repo", "main", "src/lib.rs");
+        let overlay_same = OverlayMergeKey::new("repo", "main", "src/lib.rs");
+        let overlay_other = OverlayMergeKey::new("repo", "feature", "src/lib.rs");
+
+        assert_eq!(base, overlay_same, "equal logical merge keys must match");
+        assert_ne!(
+            base, overlay_other,
+            "ref changes must produce distinct merge keys"
+        );
+
+        let mut keys = vec![
+            OverlayMergeKey::new("repo", "feature", "src/z.rs"),
+            OverlayMergeKey::new("repo", "feature", "src/a.rs"),
+            OverlayMergeKey::new("repo", "main", "src/a.rs"),
+        ];
+        keys.sort();
+
+        assert_eq!(keys[0], OverlayMergeKey::new("repo", "feature", "src/a.rs"));
+        assert_eq!(keys[1], OverlayMergeKey::new("repo", "feature", "src/z.rs"));
+        assert_eq!(keys[2], OverlayMergeKey::new("repo", "main", "src/a.rs"));
     }
 }

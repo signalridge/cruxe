@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -62,6 +62,17 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                 )
                 .map_err(StateError::sqlite)?;
             }
+            Ok(())
+        },
+        // V3: add symbol_edges composite indexes for forward/reverse graph traversals.
+        |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
+                     ON symbol_edges(repo, \"ref\", from_symbol_id, edge_type);
+                 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
+                     ON symbol_edges(repo, \"ref\", to_symbol_id, edge_type);",
+            )
+            .map_err(StateError::sqlite)?;
             Ok(())
         },
     ];
@@ -133,6 +144,12 @@ CREATE INDEX IF NOT EXISTS idx_symbol_relations_lookup
     ON symbol_relations(repo, "ref", path, line_start);
 CREATE INDEX IF NOT EXISTS idx_symbol_relations_name
     ON symbol_relations(repo, "ref", name);
+CREATE INDEX IF NOT EXISTS idx_symbol_relations_symbol_id
+    ON symbol_relations(repo, "ref", symbol_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_relations_symbol_stable_id
+    ON symbol_relations(repo, "ref", symbol_stable_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_relations_parent_symbol_id
+    ON symbol_relations(repo, "ref", parent_symbol_id);
 
 CREATE TABLE IF NOT EXISTS symbol_edges (
     repo TEXT NOT NULL,
@@ -184,6 +201,14 @@ CREATE TABLE IF NOT EXISTS index_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON index_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_project_status_created
+    ON index_jobs(project_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_to
+    ON symbol_edges(repo, "ref", to_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
+    ON symbol_edges(repo, "ref", from_symbol_id, edge_type);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
+    ON symbol_edges(repo, "ref", to_symbol_id, edge_type);
 
 CREATE TABLE IF NOT EXISTS known_workspaces (
     workspace_path TEXT PRIMARY KEY,
