@@ -31,14 +31,11 @@ if ! grep -q '^openspec/' <<<"${changed_files}"; then
 fi
 
 active_change_files="$(
-  grep -E '^openspec/changes/[^/]+/' <<<"${changed_files}" \
+  git ls-files "openspec/changes/*" \
     | grep -Ev '^openspec/changes/archive/' || true
 )"
 if [[ -n "${active_change_files}" ]]; then
-  active_changes="$(
-    awk -F/ '/^openspec\/changes\/[^/]+\// {print $3}' <<<"${active_change_files}" \
-      | sort -u
-  )"
+  active_changes="$(awk -F/ '{print $3}' <<<"${active_change_files}" | sort -u)"
   echo "BLOCK TRACE_GATE: non-archived OpenSpec change artifacts detected"
   echo "Active change directories:"
   echo "${active_changes}"
