@@ -2,10 +2,16 @@
 
 **Feature Branch**: `005-vcs-core`
 **Created**: 2026-02-23
-**Status**: Draft
+**Status**: Complete (merge candidate)
 **Version**: v0.9.0 (pre-GA core gate)
 **Depends On**: 004-workspace-transport
 **Input**: Constitution Principle III (Branch and Worktree Correctness), `specs/meta/design.md` Section 5.1 and Section 9.1-9.7
+
+## Closure Update (2026-02-25)
+
+- All scoped FRs are implemented and all scoped SCs are covered by passing tests.
+- 005 is closed as a merge-candidate spec.
+- This feature cycle did not create new `openspec/changes/*` artifacts.
 
 ## Overview
 

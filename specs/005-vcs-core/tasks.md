@@ -4,6 +4,9 @@
 **Prerequisites**: plan.md (required), spec.md (required), data-model.md, contracts/mcp-tools.md
 **Depends On**: 004-workspace-transport
 
+> Status note (2026-02-25): All listed tasks are complete and 005 is closed as a
+> merge-candidate spec.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
