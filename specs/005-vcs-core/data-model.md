@@ -178,9 +178,11 @@ CREATE TABLE worktree_leases (
   repo TEXT NOT NULL,
   ref TEXT NOT NULL,
   worktree_path TEXT NOT NULL,          -- absolute path to worktree directory
+  owner_pid INTEGER NOT NULL,           -- owning process (lease collision guard)
   refcount INTEGER NOT NULL DEFAULT 0,  -- number of active consumers
   created_at TEXT NOT NULL,
   last_used_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,             -- compatibility mirror for last_used_at
   status TEXT DEFAULT 'active',         -- 'active', 'stale', 'removing'
   PRIMARY KEY(repo, ref)
 );
@@ -194,9 +196,11 @@ CREATE INDEX idx_worktree_leases_status
 | `repo` | TEXT | Project identity |
 | `ref` | TEXT | Branch/ref for this worktree |
 | `worktree_path` | TEXT | Absolute filesystem path to the Git worktree |
+| `owner_pid` | INTEGER | Current lease owner process id (0 when released) |
 | `refcount` | INTEGER | Number of active consumers holding the lease |
 | `created_at` | TEXT | ISO8601 creation timestamp |
 | `last_used_at` | TEXT | ISO8601 last access timestamp |
+| `updated_at` | TEXT | Compatibility timestamp mirror (same value as `last_used_at`) |
 | `status` | TEXT | Lifecycle state: `active`, `stale`, `removing` |
 
 Lifecycle:
