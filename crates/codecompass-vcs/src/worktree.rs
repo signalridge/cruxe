@@ -362,6 +362,7 @@ mod tests {
         let repo = init_repo(&repo_root);
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch("main", &head, true).ok();
+        repo.set_head("refs/heads/main").unwrap();
 
         let db_path = tmp.path().join("state.db");
         let conn = db::open_connection(&db_path).unwrap();
