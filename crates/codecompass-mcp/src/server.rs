@@ -244,7 +244,13 @@ fn evict_idle_connections(
     while map.len() > target_size {
         let candidate = map
             .iter()
-            .filter(|(_, managed)| Arc::strong_count(&managed.connection) == 1)
+            .filter(|(_, managed)| {
+                // Best-effort "idle" heuristic:
+                // when only the manager map holds the Arc, no request currently
+                // retains this connection handle.
+                // `strong_count` is intentionally used as a soft signal only.
+                Arc::strong_count(&managed.connection) == 1
+            })
             .min_by_key(|(_, managed)| managed.last_accessed_at)
             .map(|(path, _)| path.clone());
         let Some(path) = candidate else {
@@ -386,6 +392,8 @@ pub fn run_server(
         let transport = TransportExecutionContext {
             notifier,
             progress_token: progress_token.as_deref(),
+            // stdio serves a single MCP client per process; keep one shared scope
+            // unless transports provide explicit per-session identifiers.
             session_scope: Some("stdio"),
             transport_label: "stdio",
             log_workspace_resolution_failures: true,
@@ -1384,17 +1392,15 @@ fn prune_expired_session_overrides(
 }
 
 fn enforce_session_override_capacity(entries: &mut HashMap<String, SessionRefOverrideEntry>) {
-    if entries.len() <= SESSION_OVERRIDE_MAX_ENTRIES {
-        return;
-    }
-    let mut oldest = entries
-        .iter()
-        .map(|(key, entry)| (key.clone(), entry.last_touched_at))
-        .collect::<Vec<_>>();
-    oldest.sort_by_key(|(_, touched_at)| *touched_at);
-    let overflow = entries.len().saturating_sub(SESSION_OVERRIDE_MAX_ENTRIES);
-    for (key, _) in oldest.into_iter().take(overflow) {
-        entries.remove(&key);
+    while entries.len() > SESSION_OVERRIDE_MAX_ENTRIES {
+        let oldest_key = entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_touched_at)
+            .map(|(key, _)| key.clone());
+        let Some(oldest_key) = oldest_key else {
+            break;
+        };
+        entries.remove(&oldest_key);
     }
 }
 

@@ -15,7 +15,7 @@ blake3 = { workspace = true }
 tar = "0.4"
 zstd = "0.13"
 tempfile = { workspace = true }
-fs2 = "0.4"
+fs4 = "0.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }

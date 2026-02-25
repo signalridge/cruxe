@@ -246,21 +246,17 @@ fn query_edge_rows(
     target_ids: &[&str; 2],
     kind_filter: Option<&str>,
 ) -> Result<Vec<EdgeRow>, StateError> {
-    let sql = if kind_filter.is_some() {
+    let mut sql = String::from(
         "SELECT from_symbol_id, to_symbol_id, edge_type \
          FROM symbol_edges \
          WHERE repo = ?1 AND \"ref\" = ?2 \
-           AND (to_symbol_id = ?3 OR to_symbol_id = ?4) \
-           AND edge_type = ?5 \
-         ORDER BY from_symbol_id, to_symbol_id, edge_type"
-    } else {
-        "SELECT from_symbol_id, to_symbol_id, edge_type \
-         FROM symbol_edges \
-         WHERE repo = ?1 AND \"ref\" = ?2 \
-           AND (to_symbol_id = ?3 OR to_symbol_id = ?4) \
-         ORDER BY from_symbol_id, to_symbol_id, edge_type"
-    };
-    let mut stmt = conn.prepare(sql).map_err(StateError::sqlite)?;
+           AND (to_symbol_id = ?3 OR to_symbol_id = ?4)",
+    );
+    if kind_filter.is_some() {
+        sql.push_str(" AND edge_type = ?5");
+    }
+    sql.push_str(" ORDER BY from_symbol_id, to_symbol_id, edge_type");
+    let mut stmt = conn.prepare(&sql).map_err(StateError::sqlite)?;
     let rows = if let Some(kind) = kind_filter {
         stmt.query_map(
             params![project_id, ref_name, target_ids[0], target_ids[1], kind],
@@ -314,7 +310,7 @@ fn to_reference_result(
         line_end: from_symbol.line_end,
         edge_type: row.edge_type,
         source_layer,
-        context: read_source_line(workspace, &path, line_start),
+        context: read_source_line(workspace, ref_name, &path, line_start),
         from_symbol,
     })
 }
@@ -376,12 +372,53 @@ fn symbol_to_reference_symbol(symbol: &SymbolRecord) -> ReferenceSymbol {
     }
 }
 
-fn read_source_line(workspace: &Path, relative_path: &str, line_start: u32) -> Option<String> {
+fn read_source_line(
+    workspace: &Path,
+    ref_name: &str,
+    relative_path: &str,
+    line_start: u32,
+) -> Option<String> {
     if line_start == 0 {
         return None;
     }
+    read_source_line_from_git_ref(workspace, ref_name, relative_path, line_start)
+        .or_else(|| read_source_line_from_workspace(workspace, relative_path, line_start))
+}
+
+fn read_source_line_from_workspace(
+    workspace: &Path,
+    relative_path: &str,
+    line_start: u32,
+) -> Option<String> {
     let path = workspace.join(relative_path);
     let content = std::fs::read_to_string(path).ok()?;
+    content
+        .lines()
+        .nth(line_start.saturating_sub(1) as usize)
+        .map(|value| value.trim().to_string())
+}
+
+fn read_source_line_from_git_ref(
+    workspace: &Path,
+    ref_name: &str,
+    relative_path: &str,
+    line_start: u32,
+) -> Option<String> {
+    if !workspace.join(".git").exists() {
+        return None;
+    }
+    let object = format!("{ref_name}:{relative_path}");
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .arg("show")
+        .arg(&object)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let content = String::from_utf8(output.stdout).ok()?;
     content
         .lines()
         .nth(line_start.saturating_sub(1) as usize)
@@ -407,6 +444,20 @@ mod tests {
         let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
         schema::create_tables(&conn).unwrap();
         (tmp, conn)
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn insert_symbol(
@@ -625,5 +676,148 @@ mod tests {
         assert_eq!(result.total_references, 1);
         assert_eq!(result.references[0].from_symbol.symbol_id, "sym-caller");
         assert_eq!(result.references[0].from_symbol.name, "call_site");
+    }
+
+    #[test]
+    fn find_references_reads_context_from_requested_ref() {
+        let (tmp, conn) = setup();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+
+        git(&workspace, &["init"]);
+        git(&workspace, &["config", "user.email", "tests@example.com"]);
+        git(&workspace, &["config", "user.name", "CodeCompass Tests"]);
+        std::fs::write(
+            workspace.join("src/lib.rs"),
+            "fn call_site() { validate_token_main(); }\n",
+        )
+        .unwrap();
+        git(&workspace, &["add", "."]);
+        git(&workspace, &["commit", "-m", "base"]);
+        git(&workspace, &["branch", "-M", "main"]);
+        git(&workspace, &["checkout", "-b", "feat/auth"]);
+        std::fs::write(
+            workspace.join("src/lib.rs"),
+            "fn call_site() { validate_token_feat(); }\n",
+        )
+        .unwrap();
+        git(&workspace, &["add", "."]);
+        git(&workspace, &["commit", "-m", "feature"]);
+
+        let project_id = "proj";
+        let now = "2026-02-25T00:00:00Z".to_string();
+        project::create_project(
+            &conn,
+            &codecompass_core::types::Project {
+                project_id: project_id.to_string(),
+                repo_root: workspace.to_string_lossy().to_string(),
+                display_name: Some("test".to_string()),
+                default_ref: "main".to_string(),
+                vcs_mode: true,
+                schema_version: 1,
+                parser_version: 1,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+        )
+        .unwrap();
+
+        insert_symbol(
+            &conn,
+            project_id,
+            "main",
+            "sym-target-main",
+            "stable-target",
+            "validate_token",
+            "src/auth.rs",
+            10,
+        );
+        insert_symbol(
+            &conn,
+            project_id,
+            "feat/auth",
+            "sym-target-feat",
+            "stable-target",
+            "validate_token",
+            "src/auth.rs",
+            10,
+        );
+        insert_symbol(
+            &conn,
+            project_id,
+            "main",
+            "sym-caller-main",
+            "stable-caller-main",
+            "call_site",
+            "src/lib.rs",
+            1,
+        );
+        insert_symbol(
+            &conn,
+            project_id,
+            "feat/auth",
+            "sym-caller-feat",
+            "stable-caller-feat",
+            "call_site",
+            "src/lib.rs",
+            1,
+        );
+        edges::insert_edges(
+            &conn,
+            project_id,
+            "main",
+            vec![SymbolEdge {
+                repo: project_id.to_string(),
+                ref_name: "main".to_string(),
+                from_symbol_id: "sym-caller-main".to_string(),
+                to_symbol_id: "stable-target".to_string(),
+                edge_type: "calls".to_string(),
+                confidence: "static".to_string(),
+            }],
+        )
+        .unwrap();
+        edges::insert_edges(
+            &conn,
+            project_id,
+            "feat/auth",
+            vec![SymbolEdge {
+                repo: project_id.to_string(),
+                ref_name: "feat/auth".to_string(),
+                from_symbol_id: "sym-caller-feat".to_string(),
+                to_symbol_id: "stable-target".to_string(),
+                edge_type: "calls".to_string(),
+                confidence: "static".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let result = find_references(
+            &conn,
+            &workspace,
+            project_id,
+            "feat/auth",
+            Some("calls"),
+            "validate_token",
+            20,
+        )
+        .unwrap();
+        let base = result
+            .references
+            .iter()
+            .find(|reference| reference.source_layer == SourceLayer::Base)
+            .expect("base reference");
+        let overlay = result
+            .references
+            .iter()
+            .find(|reference| reference.source_layer == SourceLayer::Overlay)
+            .expect("overlay reference");
+        assert_eq!(
+            base.context.as_deref(),
+            Some("fn call_site() { validate_token_main(); }")
+        );
+        assert_eq!(
+            overlay.context.as_deref(),
+            Some("fn call_site() { validate_token_feat(); }")
+        );
     }
 }

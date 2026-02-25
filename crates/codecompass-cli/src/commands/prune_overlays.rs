@@ -3,7 +3,9 @@ use codecompass_core::config::Config;
 use codecompass_core::constants;
 use codecompass_core::types::generate_project_id;
 use codecompass_indexer::overlay;
-use codecompass_state::{branch_state, db, maintenance_lock, project, schema, worktree_leases};
+use codecompass_state::{
+    branch_state, db, maintenance_lock, overlay_paths, project, schema, worktree_leases,
+};
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -26,8 +28,10 @@ pub fn run(workspace: &Path, older_than_days: u64, config_file: Option<&Path>) -
         );
     };
 
-    let cutoff = OffsetDateTime::now_utc() - time::Duration::days(older_than_days as i64);
-    let data_dir_canonical = std::fs::canonicalize(&data_dir).unwrap_or_else(|_| data_dir.clone());
+    let retention_days = i64::try_from(older_than_days)
+        .context("--older-than is too large for timestamp arithmetic")?;
+    let cutoff = OffsetDateTime::now_utc() - time::Duration::days(retention_days);
+    let data_dir_canonical = overlay_paths::canonicalize_data_dir(&data_dir);
     let mut removed = 0usize;
     let mut kept_active = 0usize;
     let mut kept_recent = 0usize;
@@ -100,22 +104,17 @@ fn validate_prune_target(data_dir_canonical: &Path, overlay_dir: &Path) -> Resul
     if !overlay_dir.exists() {
         return Ok(Some(overlay_dir.to_path_buf()));
     }
-    let overlay_canonical = std::fs::canonicalize(overlay_dir)
+    let overlay_canonical = overlay_paths::canonicalize_overlay_dir(overlay_dir)
         .with_context(|| format!("failed to resolve {}", overlay_dir.display()))?;
-    let allowed_roots = [
-        data_dir_canonical.join("overlay"),
-        data_dir_canonical.join("overlays"),
-    ];
-
-    for allowed_root in allowed_roots {
-        if !allowed_root.exists() {
-            continue;
-        }
-        let root_canonical = std::fs::canonicalize(&allowed_root)
-            .with_context(|| format!("failed to resolve {}", allowed_root.display()))?;
-        if overlay_canonical.starts_with(&root_canonical) {
-            return Ok(Some(overlay_canonical));
-        }
+    if overlay_paths::is_overlay_dir_allowed(data_dir_canonical, &overlay_canonical).with_context(
+        || {
+            format!(
+                "failed to validate overlay safety roots under {}",
+                data_dir_canonical.display()
+            )
+        },
+    )? {
+        return Ok(Some(overlay_canonical));
     }
     Ok(None)
 }

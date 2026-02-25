@@ -6,6 +6,7 @@ pub mod import;
 pub mod jobs;
 pub mod maintenance_lock;
 pub mod manifest;
+pub mod overlay_paths;
 pub mod project;
 pub mod schema;
 pub mod symbols;

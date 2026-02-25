@@ -81,7 +81,7 @@ pub fn diff_context(
         },
     )?;
     let mut diff_entries = adapter
-        .diff_name_status(repo_root, base_ref, head_ref)
+        .diff_name_status(repo_root, &merge_base_commit, head_ref)
         .map_err(StateError::vcs)?;
 
     if let Some(prefix) = path_filter.filter(|value| !value.trim().is_empty()) {
@@ -529,6 +529,115 @@ mod tests {
             diff.changes
                 .iter()
                 .any(|change| change.symbol == "deleted" && change.change_type == "deleted")
+        );
+    }
+
+    #[test]
+    fn diff_context_uses_merge_base_for_changed_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn base() {}\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["branch", "-M", "main"]);
+
+        git(&repo, &["checkout", "-b", "feat/diff"]);
+        std::fs::write(repo.join("src/feat.rs"), "pub fn feat_only() {}\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "feature change"]);
+
+        git(&repo, &["checkout", "main"]);
+        std::fs::write(repo.join("src/main_only.rs"), "pub fn main_only() {}\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "main-only change"]);
+
+        git(&repo, &["checkout", "feat/diff"]);
+
+        let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+        branch_state::upsert_branch_state(
+            &conn,
+            &branch_state::BranchState {
+                repo: "proj".to_string(),
+                r#ref: "main".to_string(),
+                merge_base_commit: None,
+                last_indexed_commit: "main-head".to_string(),
+                overlay_dir: None,
+                file_count: 2,
+                symbol_count: 2,
+                is_default_branch: true,
+                status: "active".to_string(),
+                eviction_eligible_at: None,
+                created_at: "2026-02-25T00:00:00Z".to_string(),
+                last_accessed_at: "2026-02-25T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+        branch_state::upsert_branch_state(
+            &conn,
+            &branch_state::BranchState {
+                repo: "proj".to_string(),
+                r#ref: "feat/diff".to_string(),
+                merge_base_commit: None,
+                last_indexed_commit: "feat-head".to_string(),
+                overlay_dir: None,
+                file_count: 2,
+                symbol_count: 2,
+                is_default_branch: false,
+                status: "active".to_string(),
+                eviction_eligible_at: None,
+                created_at: "2026-02-25T00:00:00Z".to_string(),
+                last_accessed_at: "2026-02-25T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        insert_symbol(
+            &conn,
+            "proj",
+            "main",
+            "src/main_only.rs",
+            "stable-main-only",
+            "sym-main-only",
+            "main_only",
+            "pub fn main_only() {}",
+            "main only body",
+        );
+        insert_symbol(
+            &conn,
+            "proj",
+            "feat/diff",
+            "src/feat.rs",
+            "stable-feat-only",
+            "sym-feat-only",
+            "feat_only",
+            "pub fn feat_only() {}",
+            "feat only body",
+        );
+
+        let diff = diff_context(&conn, &repo, "proj", "main", "feat/diff", None, 50).unwrap();
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.symbol == "feat_only" && change.change_type == "added"),
+            "feature branch changes should be included"
+        );
+        assert!(
+            !diff
+                .changes
+                .iter()
+                .any(|change| change.symbol == "main_only" && change.change_type == "deleted"),
+            "main-only changes after branch divergence must not appear in feature diff"
+        );
+        assert!(
+            !diff
+                .file_changes
+                .iter()
+                .any(|change| change.path == "src/main_only.rs"),
+            "file list should be based on merge-base delta"
         );
     }
 

@@ -1,5 +1,5 @@
 use codecompass_core::error::StateError;
-use fs2::FileExt;
+use fs4::FileExt;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};

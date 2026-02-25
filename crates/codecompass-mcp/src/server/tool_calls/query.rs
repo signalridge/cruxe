@@ -59,27 +59,18 @@ fn resolve_vcs_overlay_context(
         .unwrap_or_else(|| {
             codecompass_indexer::overlay::overlay_dir_for_ref(&data_dir, effective_ref)
         });
-    let data_dir_canonical = std::fs::canonicalize(&data_dir).unwrap_or(data_dir.clone());
-    let overlay_canonical = std::fs::canonicalize(&overlay_dir).map_err(|err| {
+    let data_dir_canonical = codecompass_state::overlay_paths::canonicalize_data_dir(&data_dir);
+    let overlay_canonical =
+        codecompass_state::overlay_paths::canonicalize_overlay_dir(&overlay_dir).map_err(
+            |err| StateError::overlay_not_ready(project_id, effective_ref, format!("error={err}")),
+        )?;
+    let allowed = codecompass_state::overlay_paths::is_overlay_dir_allowed(
+        &data_dir_canonical,
+        &overlay_canonical,
+    )
+    .map_err(|err| {
         StateError::overlay_not_ready(project_id, effective_ref, format!("error={err}"))
     })?;
-    let allowed_roots = [
-        data_dir_canonical.join("overlay"),
-        data_dir_canonical.join("overlays"),
-    ];
-    let mut allowed = false;
-    for allowed_root in allowed_roots {
-        if !allowed_root.exists() {
-            continue;
-        }
-        let root = std::fs::canonicalize(&allowed_root).map_err(|err| {
-            StateError::overlay_not_ready(project_id, effective_ref, format!("error={err}"))
-        })?;
-        if overlay_canonical.starts_with(&root) {
-            allowed = true;
-            break;
-        }
-    }
     if !allowed {
         return Err(StateError::overlay_not_ready(
             project_id,

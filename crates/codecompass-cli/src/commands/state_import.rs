@@ -89,25 +89,6 @@ fn remap_imported_project_data(
     let created_at = existing_created_at(&tx, spec.local_project_id)?.unwrap_or_else(now_iso8601);
     let updated_at = now_iso8601();
 
-    tx.execute(
-        "INSERT INTO projects
-         (project_id, repo_root, display_name, default_ref, vcs_mode, schema_version, parser_version, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(project_id) DO NOTHING",
-        rusqlite::params![
-            spec.local_project_id,
-            spec.workspace_str,
-            spec.display_name.clone(),
-            spec.default_ref,
-            spec.vcs_mode,
-            spec.schema_version,
-            spec.parser_version,
-            created_at,
-            updated_at,
-        ],
-    )
-    .map_err(codecompass_core::error::StateError::sqlite)?;
-
     if spec.imported_project_id != spec.local_project_id {
         remap_repo_tables(&tx, spec.imported_project_id, spec.local_project_id)?;
         tx.execute(
@@ -148,7 +129,7 @@ fn remap_imported_project_data(
             spec.schema_version,
             spec.parser_version,
             created_at,
-            now_iso8601(),
+            updated_at,
         ],
     )
     .map_err(codecompass_core::error::StateError::sqlite)?;
