@@ -6,6 +6,7 @@ members = [
     "crates/codecompass-indexer",
     "crates/codecompass-query",
     "crates/codecompass-mcp",
+    "crates/codecompass-vcs",
 ]
 resolver = "2"
 
@@ -29,6 +30,7 @@ tantivy = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ignore = "0.4"
 tempfile = "3"
+git2 = { version = "0.19", default-features = false }
 
 # Internal crates
 codecompass-core = { path = "crates/codecompass-core" }
@@ -36,3 +38,4 @@ codecompass-state = { path = "crates/codecompass-state" }
 codecompass-indexer = { path = "crates/codecompass-indexer" }
 codecompass-query = { path = "crates/codecompass-query" }
 codecompass-mcp = { path = "crates/codecompass-mcp" }
+codecompass-vcs = { path = "crates/codecompass-vcs" }

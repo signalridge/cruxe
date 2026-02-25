@@ -322,6 +322,30 @@ pub(super) fn deterministic_locate_suggested_actions(
 
 pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, Option<Value>) {
     match err {
+        StateError::Sqlite(msg) if msg.starts_with("sync_in_progress:") => (
+            ProtocolErrorCode::SyncInProgress,
+            "A sync job is already active for this project/ref.".to_string(),
+            Some(json!({
+                "details": msg,
+                "remediation": "Poll index_status and retry sync_repo after the active sync completes.",
+            })),
+        ),
+        StateError::Sqlite(msg) if msg.starts_with("ref_not_indexed:") => (
+            ProtocolErrorCode::RefNotIndexed,
+            "The requested ref has no indexed state yet.".to_string(),
+            Some(json!({
+                "details": msg,
+                "remediation": "Run sync_repo for this ref before querying.",
+            })),
+        ),
+        StateError::Sqlite(msg) if msg.starts_with("overlay_not_ready:") => (
+            ProtocolErrorCode::OverlayNotReady,
+            "The requested ref overlay is not query-ready yet.".to_string(),
+            Some(json!({
+                "details": msg,
+                "remediation": "Poll index_status until indexing finishes, then retry.",
+            })),
+        ),
         StateError::SchemaMigrationRequired { current, required } => (
             ProtocolErrorCode::IndexIncompatible,
             "Index schema is incompatible. Run `codecompass index --force`.".to_string(),

@@ -277,6 +277,7 @@ mod tests {
     #[test]
     fn dedup_search_results_by_stable_id() {
         let base = search::SearchResult {
+            repo: "repo-1".to_string(),
             result_id: "r1".to_string(),
             symbol_id: Some("sym1".to_string()),
             symbol_stable_id: Some("stable1".to_string()),
@@ -292,10 +293,13 @@ mod tests {
             visibility: None,
             score: 1.0,
             snippet: None,
+            chunk_type: None,
+            source_layer: None,
         };
         let mut second = base.clone();
         second.result_id = "r2".to_string();
         let third = search::SearchResult {
+            repo: "repo-1".to_string(),
             result_id: "r3".to_string(),
             symbol_id: None,
             symbol_stable_id: None,
@@ -311,6 +315,8 @@ mod tests {
             visibility: None,
             score: 0.5,
             snippet: None,
+            chunk_type: None,
+            source_layer: None,
         };
 
         let (deduped, kept_indices, suppressed) = dedup_search_results(vec![base, second, third]);
@@ -322,6 +328,7 @@ mod tests {
     #[test]
     fn dedup_locate_results_by_stable_id() {
         let a = locate::LocateResult {
+            repo: "repo-1".to_string(),
             symbol_id: "s1".to_string(),
             symbol_stable_id: "stable".to_string(),
             path: "src/lib.rs".to_string(),
@@ -333,6 +340,7 @@ mod tests {
             signature: None,
             language: "rust".to_string(),
             visibility: None,
+            source_layer: None,
             score: 1.0,
         };
         let mut b = a.clone();

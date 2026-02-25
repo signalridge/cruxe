@@ -10,6 +10,10 @@ pub struct BranchState {
     pub last_indexed_commit: String,
     pub overlay_dir: Option<String>,
     pub file_count: i64,
+    pub symbol_count: i64,
+    pub is_default_branch: bool,
+    pub status: String,
+    pub eviction_eligible_at: Option<String>,
     pub created_at: String,
     pub last_accessed_at: String,
 }
@@ -17,13 +21,18 @@ pub struct BranchState {
 /// Upsert a branch state entry (INSERT OR REPLACE on composite PK).
 pub fn upsert_branch_state(conn: &Connection, entry: &BranchState) -> Result<(), StateError> {
     conn.execute(
-        "INSERT INTO branch_state (repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, created_at, last_accessed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO branch_state
+         (repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, symbol_count, is_default_branch, status, eviction_eligible_at, created_at, last_accessed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(repo, \"ref\") DO UPDATE SET
            merge_base_commit = excluded.merge_base_commit,
            last_indexed_commit = excluded.last_indexed_commit,
            overlay_dir = excluded.overlay_dir,
            file_count = excluded.file_count,
+           symbol_count = excluded.symbol_count,
+           is_default_branch = excluded.is_default_branch,
+           status = excluded.status,
+           eviction_eligible_at = excluded.eviction_eligible_at,
            created_at = excluded.created_at,
            last_accessed_at = excluded.last_accessed_at",
         params![
@@ -33,6 +42,10 @@ pub fn upsert_branch_state(conn: &Connection, entry: &BranchState) -> Result<(),
             entry.last_indexed_commit,
             entry.overlay_dir,
             entry.file_count,
+            entry.symbol_count,
+            if entry.is_default_branch { 1 } else { 0 },
+            entry.status,
+            entry.eviction_eligible_at,
             entry.created_at,
             entry.last_accessed_at,
         ],
@@ -48,7 +61,7 @@ pub fn get_branch_state(
     r#ref: &str,
 ) -> Result<Option<BranchState>, StateError> {
     let result = conn.query_row(
-        "SELECT repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, created_at, last_accessed_at
+        "SELECT repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, symbol_count, is_default_branch, status, eviction_eligible_at, created_at, last_accessed_at
          FROM branch_state WHERE repo = ?1 AND \"ref\" = ?2",
         params![repo, r#ref],
         |row| {
@@ -59,8 +72,12 @@ pub fn get_branch_state(
                 last_indexed_commit: row.get(3)?,
                 overlay_dir: row.get(4)?,
                 file_count: row.get(5)?,
-                created_at: row.get(6)?,
-                last_accessed_at: row.get(7)?,
+                symbol_count: row.get(6)?,
+                is_default_branch: row.get::<_, i64>(7)? != 0,
+                status: row.get(8)?,
+                eviction_eligible_at: row.get(9)?,
+                created_at: row.get(10)?,
+                last_accessed_at: row.get(11)?,
             })
         },
     );
@@ -86,7 +103,7 @@ pub fn delete_branch_state(conn: &Connection, repo: &str, r#ref: &str) -> Result
 pub fn list_branch_states(conn: &Connection, repo: &str) -> Result<Vec<BranchState>, StateError> {
     let mut stmt = conn
         .prepare(
-            "SELECT repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, created_at, last_accessed_at
+            "SELECT repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, symbol_count, is_default_branch, status, eviction_eligible_at, created_at, last_accessed_at
              FROM branch_state WHERE repo = ?1",
         )
         .map_err(StateError::sqlite)?;
@@ -100,8 +117,12 @@ pub fn list_branch_states(conn: &Connection, repo: &str) -> Result<Vec<BranchSta
                 last_indexed_commit: row.get(3)?,
                 overlay_dir: row.get(4)?,
                 file_count: row.get(5)?,
-                created_at: row.get(6)?,
-                last_accessed_at: row.get(7)?,
+                symbol_count: row.get(6)?,
+                is_default_branch: row.get::<_, i64>(7)? != 0,
+                status: row.get(8)?,
+                eviction_eligible_at: row.get(9)?,
+                created_at: row.get(10)?,
+                last_accessed_at: row.get(11)?,
             })
         })
         .map_err(StateError::sqlite)?;
@@ -109,6 +130,71 @@ pub fn list_branch_states(conn: &Connection, repo: &str) -> Result<Vec<BranchSta
     entries
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| StateError::Sqlite(e.to_string()))
+}
+
+pub fn set_status(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    status: &str,
+) -> Result<(), StateError> {
+    conn.execute(
+        "UPDATE branch_state SET status = ?3 WHERE repo = ?1 AND \"ref\" = ?2",
+        params![repo, r#ref, status],
+    )
+    .map_err(StateError::sqlite)?;
+    Ok(())
+}
+
+pub fn get_by_status(
+    conn: &Connection,
+    repo: &str,
+    status: &str,
+) -> Result<Vec<BranchState>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT repo, \"ref\", merge_base_commit, last_indexed_commit, overlay_dir, file_count, symbol_count, is_default_branch, status, eviction_eligible_at, created_at, last_accessed_at
+             FROM branch_state WHERE repo = ?1 AND status = ?2",
+        )
+        .map_err(StateError::sqlite)?;
+
+    let rows = stmt
+        .query_map(params![repo, status], |row| {
+            Ok(BranchState {
+                repo: row.get(0)?,
+                r#ref: row.get(1)?,
+                merge_base_commit: row.get(2)?,
+                last_indexed_commit: row.get(3)?,
+                overlay_dir: row.get(4)?,
+                file_count: row.get(5)?,
+                symbol_count: row.get(6)?,
+                is_default_branch: row.get::<_, i64>(7)? != 0,
+                status: row.get(8)?,
+                eviction_eligible_at: row.get(9)?,
+                created_at: row.get(10)?,
+                last_accessed_at: row.get(11)?,
+            })
+        })
+        .map_err(StateError::sqlite)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StateError::sqlite)
+}
+
+pub fn mark_eviction_eligible(
+    conn: &Connection,
+    repo: &str,
+    r#ref: &str,
+    eligible_at: &str,
+) -> Result<(), StateError> {
+    conn.execute(
+        "UPDATE branch_state
+         SET eviction_eligible_at = ?3
+         WHERE repo = ?1 AND \"ref\" = ?2",
+        params![repo, r#ref, eligible_at],
+    )
+    .map_err(StateError::sqlite)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -133,6 +219,10 @@ mod tests {
             last_indexed_commit: "def456".to_string(),
             overlay_dir: Some("/tmp/overlay".to_string()),
             file_count: 42,
+            symbol_count: 120,
+            is_default_branch: true,
+            status: "active".to_string(),
+            eviction_eligible_at: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             last_accessed_at: "2026-01-01T00:00:00Z".to_string(),
         }
@@ -154,6 +244,10 @@ mod tests {
         assert_eq!(got.last_indexed_commit, "def456");
         assert_eq!(got.overlay_dir, Some("/tmp/overlay".to_string()));
         assert_eq!(got.file_count, 42);
+        assert_eq!(got.symbol_count, 120);
+        assert!(got.is_default_branch);
+        assert_eq!(got.status, "active");
+        assert!(got.eviction_eligible_at.is_none());
         assert_eq!(got.created_at, "2026-01-01T00:00:00Z");
         assert_eq!(got.last_accessed_at, "2026-01-01T00:00:00Z");
     }
@@ -175,16 +269,25 @@ mod tests {
         let mut updated = entry.clone();
         updated.last_indexed_commit = "new_commit_789".to_string();
         updated.file_count = 100;
+        updated.symbol_count = 222;
         updated.merge_base_commit = Some("new_base".to_string());
         updated.overlay_dir = None;
+        updated.status = "stale".to_string();
+        updated.eviction_eligible_at = Some("2026-02-10T00:00:00Z".to_string());
         updated.last_accessed_at = "2026-02-01T00:00:00Z".to_string();
         upsert_branch_state(&conn, &updated).unwrap();
 
         let got = get_branch_state(&conn, "my-repo", "main").unwrap().unwrap();
         assert_eq!(got.last_indexed_commit, "new_commit_789");
         assert_eq!(got.file_count, 100);
+        assert_eq!(got.symbol_count, 222);
         assert_eq!(got.merge_base_commit, Some("new_base".to_string()));
         assert!(got.overlay_dir.is_none());
+        assert_eq!(got.status, "stale");
+        assert_eq!(
+            got.eviction_eligible_at,
+            Some("2026-02-10T00:00:00Z".to_string())
+        );
         assert_eq!(got.last_accessed_at, "2026-02-01T00:00:00Z");
 
         // Should still be only 1 entry for this repo
@@ -247,5 +350,41 @@ mod tests {
         let conn = setup_test_db();
         let entries = list_branch_states(&conn, "no-repo").unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_status_operations() {
+        let conn = setup_test_db();
+        let mut main = sample_entry();
+        main.r#ref = "main".to_string();
+        main.status = "active".to_string();
+        upsert_branch_state(&conn, &main).unwrap();
+
+        let mut feature = sample_entry();
+        feature.r#ref = "feat/auth".to_string();
+        feature.status = "stale".to_string();
+        upsert_branch_state(&conn, &feature).unwrap();
+
+        let stale = get_by_status(&conn, "my-repo", "stale").unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].r#ref, "feat/auth");
+
+        set_status(&conn, "my-repo", "feat/auth", "active").unwrap();
+        let active = get_by_status(&conn, "my-repo", "active").unwrap();
+        assert_eq!(active.len(), 2);
+    }
+
+    #[test]
+    fn test_mark_eviction_eligible() {
+        let conn = setup_test_db();
+        let entry = sample_entry();
+        upsert_branch_state(&conn, &entry).unwrap();
+
+        mark_eviction_eligible(&conn, "my-repo", "main", "2026-03-01T00:00:00Z").unwrap();
+        let got = get_branch_state(&conn, "my-repo", "main").unwrap().unwrap();
+        assert_eq!(
+            got.eviction_eligible_at,
+            Some("2026-03-01T00:00:00Z".to_string())
+        );
     }
 }

@@ -1,8 +1,10 @@
 use codecompass_core::error::StateError;
-use codecompass_core::types::{QueryIntent, RankingReasons, RefScope, SymbolRecord};
+use codecompass_core::types::{QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolRecord};
 use codecompass_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::Path;
 use tantivy::Term;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
@@ -10,12 +12,15 @@ use tantivy::schema::{IndexRecordOption, Value};
 use tracing::debug;
 
 use crate::intent::classify_intent;
+use crate::overlay_merge;
 use crate::planner::build_plan_with_ref;
 use crate::ranking::{rerank, rerank_with_reasons};
 
 /// A search result from search_code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub repo: String,
     pub result_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_id: Option<String>,
@@ -39,6 +44,10 @@ pub struct SearchResult {
     pub score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub chunk_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_layer: Option<SourceLayer>,
 }
 
 /// A suggested next action for the AI agent.
@@ -72,6 +81,14 @@ pub struct SearchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchDebugInfo {
     pub join_status: JoinStatus,
+}
+
+pub struct VcsSearchContext<'a> {
+    pub base_index_set: &'a IndexSet,
+    pub overlay_index_set: &'a IndexSet,
+    pub tombstones: &'a HashSet<String>,
+    pub base_ref: &'a str,
+    pub target_ref: &'a str,
 }
 
 /// Join metrics for snippet -> symbol enrichment.
@@ -196,6 +213,145 @@ pub fn search_code(
         debug,
         ranking_reasons,
     })
+}
+
+/// Execute VCS-mode merged search for a non-default ref.
+///
+/// This runs base and overlay queries separately, suppresses tombstoned base paths,
+/// applies overlay-wins merge semantics, and returns a unified response.
+pub fn search_code_vcs_merged(
+    ctx: VcsSearchContext<'_>,
+    conn: Option<&Connection>,
+    query: &str,
+    language: Option<&str>,
+    limit: usize,
+    debug_ranking: bool,
+) -> Result<SearchResponse, StateError> {
+    let run_sequential = || -> Result<(SearchResponse, SearchResponse), StateError> {
+        let base = search_code(
+            ctx.base_index_set,
+            conn,
+            query,
+            Some(ctx.base_ref),
+            language,
+            limit,
+            false,
+        )?;
+        let overlay = search_code(
+            ctx.overlay_index_set,
+            conn,
+            query,
+            Some(ctx.target_ref),
+            language,
+            limit,
+            false,
+        )?;
+        Ok((base, overlay))
+    };
+
+    let (base, overlay) = if let Some(conn) = conn {
+        let base_conn = clone_connection_for_parallel(conn);
+        let overlay_conn = clone_connection_for_parallel(conn);
+        if let (Some(base_conn), Some(overlay_conn)) = (base_conn, overlay_conn) {
+            std::thread::scope(|scope| {
+                let base_task = scope.spawn(move || {
+                    search_code(
+                        ctx.base_index_set,
+                        Some(&base_conn),
+                        query,
+                        Some(ctx.base_ref),
+                        language,
+                        limit,
+                        false,
+                    )
+                });
+                let overlay_task = scope.spawn(move || {
+                    search_code(
+                        ctx.overlay_index_set,
+                        Some(&overlay_conn),
+                        query,
+                        Some(ctx.target_ref),
+                        language,
+                        limit,
+                        false,
+                    )
+                });
+
+                let base = base_task
+                    .join()
+                    .map_err(|_| StateError::Sqlite("base search worker panicked".to_string()))??;
+                let overlay = overlay_task.join().map_err(|_| {
+                    StateError::Sqlite("overlay search worker panicked".to_string())
+                })??;
+                Ok::<_, StateError>((base, overlay))
+            })?
+        } else {
+            run_sequential()?
+        }
+    } else {
+        std::thread::scope(|scope| {
+            let base_task = scope.spawn(|| {
+                search_code(
+                    ctx.base_index_set,
+                    None,
+                    query,
+                    Some(ctx.base_ref),
+                    language,
+                    limit,
+                    false,
+                )
+            });
+            let overlay_task = scope.spawn(|| {
+                search_code(
+                    ctx.overlay_index_set,
+                    None,
+                    query,
+                    Some(ctx.target_ref),
+                    language,
+                    limit,
+                    false,
+                )
+            });
+
+            let base = base_task
+                .join()
+                .map_err(|_| StateError::Sqlite("base search worker panicked".to_string()))??;
+            let overlay = overlay_task
+                .join()
+                .map_err(|_| StateError::Sqlite("overlay search worker panicked".to_string()))??;
+            Ok::<_, StateError>((base, overlay))
+        })?
+    };
+
+    let mut results = overlay_merge::merged_search(base.results, overlay.results, ctx.tombstones);
+    let ranking_reasons = if debug_ranking {
+        Some(rerank_with_reasons(&mut results, query))
+    } else {
+        rerank(&mut results, query);
+        None
+    };
+    results.truncate(limit);
+
+    Ok(SearchResponse {
+        results,
+        query_intent: base.query_intent,
+        total_candidates: base.total_candidates + overlay.total_candidates,
+        suggested_next_actions: if !overlay.suggested_next_actions.is_empty() {
+            overlay.suggested_next_actions
+        } else {
+            base.suggested_next_actions
+        },
+        debug: None,
+        ranking_reasons,
+    })
+}
+
+fn clone_connection_for_parallel(conn: &Connection) -> Option<Connection> {
+    let path = conn.path()?;
+    if path == ":memory:" {
+        return None;
+    }
+    codecompass_state::db::open_connection(Path::new(path)).ok()
 }
 
 /// Build suggested next actions based on top results.
@@ -404,6 +560,7 @@ fn search_index(
         });
 
         results.push(SearchResult {
+            repo: doc_repo,
             result_id,
             symbol_id,
             symbol_stable_id,
@@ -432,6 +589,8 @@ fn search_index(
                     c
                 }
             }),
+            chunk_type: get_text("chunk_type"),
+            source_layer: None,
         });
     }
 

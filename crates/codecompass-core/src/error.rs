@@ -130,6 +130,9 @@ pub enum StateError {
     #[error("tantivy error: {0}")]
     Tantivy(String),
 
+    #[error("vcs error: {0}")]
+    Vcs(String),
+
     #[error("project not found: {project_id}")]
     ProjectNotFound { project_id: String },
 
@@ -155,6 +158,11 @@ impl StateError {
     /// Convenience constructor for Tantivy errors — use with `.map_err(StateError::tantivy)`.
     pub fn tantivy<E: std::fmt::Display>(e: E) -> Self {
         Self::Tantivy(e.to_string())
+    }
+
+    /// Convenience constructor for VCS errors — use with `.map_err(StateError::vcs)`.
+    pub fn vcs<E: std::fmt::Display>(e: E) -> Self {
+        Self::Vcs(e.to_string())
     }
 }
 

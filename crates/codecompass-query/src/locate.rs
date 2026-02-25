@@ -1,5 +1,7 @@
 use codecompass_core::error::StateError;
+use codecompass_core::types::SourceLayer;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, TermQuery};
 use tantivy::schema::IndexRecordOption;
@@ -7,9 +9,13 @@ use tantivy::schema::Value;
 use tantivy::{Index, Term};
 use tracing::debug;
 
+use crate::overlay_merge;
+
 /// A located symbol result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateResult {
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub repo: String,
     pub symbol_id: String,
     pub symbol_stable_id: String,
     pub path: String,
@@ -23,6 +29,8 @@ pub struct LocateResult {
     pub language: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_layer: Option<SourceLayer>,
     pub score: f32,
 }
 
@@ -127,6 +135,7 @@ pub fn locate_symbol(
         };
 
         results.push(LocateResult {
+            repo: get_text("repo"),
             symbol_id: get_text("symbol_id"),
             symbol_stable_id: get_text("symbol_stable_id"),
             path: get_text("path"),
@@ -138,10 +147,63 @@ pub fn locate_symbol(
             signature: opt_text("signature"),
             language: get_text("language"),
             visibility: opt_text("visibility"),
+            source_layer: None,
             score,
         });
     }
 
     debug!(name, results = results.len(), "locate_symbol");
     Ok(results)
+}
+
+pub struct VcsLocateContext<'a> {
+    pub base_index: &'a Index,
+    pub overlay_index: &'a Index,
+    pub tombstones: &'a HashSet<String>,
+    pub base_ref: &'a str,
+    pub target_ref: &'a str,
+}
+
+/// Execute VCS-mode locate over base + overlay and merge with overlay precedence.
+pub fn locate_symbol_vcs_merged(
+    ctx: VcsLocateContext<'_>,
+    name: &str,
+    kind: Option<&str>,
+    language: Option<&str>,
+    limit: usize,
+) -> Result<(Vec<LocateResult>, usize), StateError> {
+    let (base, overlay) = std::thread::scope(|scope| {
+        let base_task = scope.spawn(|| {
+            locate_symbol(
+                ctx.base_index,
+                name,
+                kind,
+                language,
+                Some(ctx.base_ref),
+                limit,
+            )
+        });
+        let overlay_task = scope.spawn(|| {
+            locate_symbol(
+                ctx.overlay_index,
+                name,
+                kind,
+                language,
+                Some(ctx.target_ref),
+                limit,
+            )
+        });
+
+        let base = base_task
+            .join()
+            .map_err(|_| StateError::Sqlite("base locate worker panicked".to_string()))??;
+        let overlay = overlay_task
+            .join()
+            .map_err(|_| StateError::Sqlite("overlay locate worker panicked".to_string()))??;
+        Ok::<_, StateError>((base, overlay))
+    })?;
+
+    let total_candidates = base.len() + overlay.len();
+    let merged = overlay_merge::merged_locate(base, overlay, ctx.tombstones);
+    Ok((merged, total_candidates))
 }

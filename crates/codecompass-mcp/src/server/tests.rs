@@ -3913,6 +3913,10 @@ fn build_fixture_index_in_git_repo(
         last_indexed_commit: initial_commit,
         overlay_dir: None,
         file_count: scanned.len() as i64,
+        symbol_count: 0,
+        is_default_branch: false,
+        status: "active".to_string(),
+        eviction_eligible_at: None,
         created_at: "2026-01-01T00:00:00Z".to_string(),
         last_accessed_at: "2026-01-01T00:00:00Z".to_string(),
     };
@@ -4872,5 +4876,365 @@ fn benchmark_t457_first_query_p95_under_400ms() {
         p95.as_millis() < 400,
         "warmset-enabled first-query benchmark p95 should be < 400ms, got {}ms",
         p95.as_millis()
+    );
+}
+
+#[cfg(unix)]
+fn vcs_fixture_setup_script() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/fixtures/vcs-sample/setup.sh")
+}
+
+#[cfg(unix)]
+fn setup_vcs_mcp_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Config,
+    rusqlite::Connection,
+    String,
+) {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let script = vcs_fixture_setup_script();
+    assert!(
+        script.exists(),
+        "missing fixture script: {}",
+        script.display()
+    );
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .arg(tmp.path())
+        .output()
+        .expect("run fixture setup");
+    assert!(
+        output.status.success(),
+        "fixture setup failed:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let workspace = tmp.path().join("vcs-sample");
+    let mut config = Config::default();
+    config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = config.project_data_dir(&project_id);
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).expect("open sqlite");
+    codecompass_state::schema::create_tables(&conn).expect("create schema");
+
+    let now = "2026-02-25T00:00:00Z".to_string();
+    let project = Project {
+        project_id: project_id.clone(),
+        repo_root: workspace.to_string_lossy().to_string(),
+        display_name: Some("vcs-mcp-test".to_string()),
+        default_ref: "main".to_string(),
+        vcs_mode: true,
+        schema_version: codecompass_core::constants::SCHEMA_VERSION,
+        parser_version: codecompass_core::constants::PARSER_VERSION,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    codecompass_state::project::create_project(&conn, &project).expect("create project");
+
+    (tmp, workspace, config, conn, project_id)
+}
+
+#[cfg(unix)]
+fn git_in_repo(repo_root: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git {:?} failed:\nstdout:{}\nstderr:{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[cfg(unix)]
+fn index_checkout_as_main(
+    repo_root: &std::path::Path,
+    data_dir: &std::path::Path,
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) {
+    use codecompass_indexer::{
+        languages, parser, scanner, snippet_extract, symbol_extract, sync_incremental, writer,
+    };
+    use codecompass_state::manifest;
+    use codecompass_state::tantivy_index::IndexSet;
+
+    let index_set = IndexSet::open(data_dir).expect("open base index");
+    let files = scanner::scan_directory_filtered(
+        repo_root,
+        codecompass_core::constants::MAX_FILE_SIZE,
+        &["rust".to_string()],
+    );
+
+    for file in files {
+        let source = std::fs::read_to_string(&file.path).expect("read source file");
+        let tree = parser::parse_file(&source, &file.language).expect("parse source");
+        let extracted = languages::extract_symbols(&tree, &source, &file.language);
+        let symbols = symbol_extract::build_symbol_records(
+            &extracted,
+            project_id,
+            "main",
+            &file.relative_path,
+            None,
+        );
+        let snippets = snippet_extract::build_snippet_records(
+            &extracted,
+            project_id,
+            "main",
+            &file.relative_path,
+            None,
+        );
+        let record = codecompass_core::types::FileRecord {
+            repo: project_id.to_string(),
+            r#ref: "main".to_string(),
+            commit: None,
+            path: file.relative_path.clone(),
+            filename: file
+                .path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            language: file.language.clone(),
+            content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+            size_bytes: source.len() as u64,
+            updated_at: codecompass_core::time::now_iso8601(),
+            content_head: Some(source.lines().take(20).collect::<Vec<_>>().join("\n")),
+        };
+        writer::write_file_records(&index_set, conn, &symbols, &snippets, &record)
+            .expect("write base records");
+    }
+
+    let head = codecompass_core::vcs::detect_head_commit(repo_root).expect("detect base head");
+    sync_incremental::persist_branch_sync_state(
+        conn,
+        &sync_incremental::BranchSyncStateUpdate {
+            repo: project_id.to_string(),
+            ref_name: "main".to_string(),
+            merge_base_commit: None,
+            last_indexed_commit: head,
+            overlay_dir: None,
+            file_count: manifest::file_count(conn, project_id, "main").expect("base file count")
+                as i64,
+            symbol_count: 0,
+            is_default_branch: true,
+        },
+    )
+    .expect("persist main branch state");
+}
+
+#[cfg(unix)]
+fn sync_vcs_ref(
+    conn: &mut rusqlite::Connection,
+    repo_root: &std::path::Path,
+    data_dir: &std::path::Path,
+    project_id: &str,
+    ref_name: &str,
+    sync_id: &str,
+) {
+    use codecompass_indexer::sync_incremental::{self, IncrementalSyncRequest};
+    let adapter = codecompass_vcs::Git2VcsAdapter;
+    sync_incremental::run_incremental_sync(
+        &adapter,
+        conn,
+        IncrementalSyncRequest {
+            repo_root,
+            data_dir,
+            project_id,
+            ref_name,
+            base_ref: "main",
+            sync_id,
+            last_indexed_commit: None,
+            is_default_branch: false,
+        },
+    )
+    .expect("run incremental sync");
+}
+
+#[cfg(unix)]
+#[test]
+fn t288_mcp_search_code_vcs_ref_includes_source_layer_handles_and_schema_status() {
+    let (_tmp, workspace, config, mut conn, project_id) = setup_vcs_mcp_fixture();
+    let data_dir = config.project_data_dir(&project_id);
+
+    git_in_repo(&workspace, &["checkout", "main"]);
+    index_checkout_as_main(&workspace, &data_dir, &conn, &project_id);
+    let index_set = codecompass_state::tantivy_index::IndexSet::open_existing(&data_dir)
+        .expect("open base index");
+
+    git_in_repo(&workspace, &["checkout", "feat/add-file"]);
+    sync_vcs_ref(
+        &mut conn,
+        &workspace,
+        &data_dir,
+        &project_id,
+        "feat/add-file",
+        "sync-mcp-add-file",
+    );
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "added_branch_file",
+                "ref": "feat/add-file"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response.error.is_none(), "search_code should succeed");
+    let payload = extract_payload_from_response(&response);
+
+    let metadata = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        metadata
+            .get("schema_status")
+            .and_then(|value| value.as_str()),
+        Some("compatible"),
+        "metadata should include schema_status compatibility signal"
+    );
+
+    let results = payload
+        .get("results")
+        .and_then(|value| value.as_array())
+        .expect("results should be present");
+    let added = results
+        .iter()
+        .find(|result| {
+            result.get("path").and_then(|value| value.as_str()) == Some("src/add_file.rs")
+        })
+        .expect("search should include added file result for feature ref");
+    assert_eq!(
+        added.get("source_layer").and_then(|value| value.as_str()),
+        Some("overlay"),
+        "result should expose overlay provenance"
+    );
+    assert!(
+        added
+            .get("symbol_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()),
+        "symbol_id should be present for MCP follow-up calls"
+    );
+    assert!(
+        added
+            .get("symbol_stable_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()),
+        "symbol_stable_id should be present for MCP follow-up calls"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn t288_mcp_locate_symbol_vcs_ref_reports_overlay_handles_and_schema_status() {
+    let (_tmp, workspace, config, mut conn, project_id) = setup_vcs_mcp_fixture();
+    let data_dir = config.project_data_dir(&project_id);
+
+    git_in_repo(&workspace, &["checkout", "main"]);
+    index_checkout_as_main(&workspace, &data_dir, &conn, &project_id);
+    let index_set = codecompass_state::tantivy_index::IndexSet::open_existing(&data_dir)
+        .expect("open base index");
+
+    git_in_repo(&workspace, &["checkout", "feat/modify-sig"]);
+    sync_vcs_ref(
+        &mut conn,
+        &workspace,
+        &data_dir,
+        &project_id,
+        "feat/modify-sig",
+        "sync-mcp-modify-sig",
+    );
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "locate_symbol",
+            "arguments": {
+                "name": "shared",
+                "ref": "feat/modify-sig"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response.error.is_none(), "locate_symbol should succeed");
+    let payload = extract_payload_from_response(&response);
+
+    let metadata = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        metadata
+            .get("schema_status")
+            .and_then(|value| value.as_str()),
+        Some("compatible"),
+        "metadata should include schema_status compatibility signal"
+    );
+
+    let results = payload
+        .get("results")
+        .and_then(|value| value.as_array())
+        .expect("results should be present");
+    let shared = results
+        .iter()
+        .find(|result| result.get("path").and_then(|value| value.as_str()) == Some("src/lib.rs"))
+        .expect("locate should include shared symbol for feature ref");
+    assert_eq!(
+        shared.get("source_layer").and_then(|value| value.as_str()),
+        Some("overlay"),
+        "locate result should expose overlay provenance"
+    );
+    assert!(
+        shared
+            .get("symbol_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()),
+        "locate result should include symbol_id"
+    );
+    assert!(
+        shared
+            .get("symbol_stable_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()),
+        "locate result should include symbol_stable_id"
     );
 }
