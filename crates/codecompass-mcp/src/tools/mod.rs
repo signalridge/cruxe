@@ -1,3 +1,6 @@
+pub mod diff_context;
+pub mod explain_ranking;
+pub mod find_references;
 pub mod find_related_symbols;
 pub mod get_code_context;
 pub mod get_file_outline;
@@ -5,8 +8,10 @@ pub mod get_symbol_hierarchy;
 pub mod health_check;
 pub mod index_repo;
 pub mod index_status;
+pub mod list_refs;
 pub mod locate_symbol;
 pub mod search_code;
+pub mod switch_ref;
 pub mod sync_repo;
 
 use serde::{Deserialize, Serialize};
@@ -33,5 +38,10 @@ pub fn list_tools() -> Vec<ToolDefinition> {
         get_code_context::definition(),
         health_check::definition(),
         index_status::definition(),
+        diff_context::definition(),
+        find_references::definition(),
+        explain_ranking::definition(),
+        list_refs::definition(),
+        switch_ref::definition(),
     ]
 }

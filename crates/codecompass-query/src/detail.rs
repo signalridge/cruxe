@@ -156,9 +156,10 @@ pub fn resolve_related_symbols(
     ) else {
         return Vec::new();
     };
+    let sqlite_limit = i64::try_from(limit).unwrap_or(i64::MAX);
 
     let Ok(rows) = stmt.query_map(
-        rusqlite::params![repo, r#ref, path, exclude_symbol_id, limit as i64],
+        rusqlite::params![repo, r#ref, path, exclude_symbol_id, sqlite_limit],
         |row| {
             Ok(json!({
                 "kind": row.get::<_, String>(0)?,

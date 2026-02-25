@@ -22,7 +22,8 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }
 tantivy = { workspace = true }
+rusqlite = { workspace = true }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-rusqlite = { workspace = true }

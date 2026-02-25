@@ -12,6 +12,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 blake3 = { workspace = true }
+tar = "0.4"
+zstd = "0.13"
+tempfile = { workspace = true }
+fs4 = "0.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }

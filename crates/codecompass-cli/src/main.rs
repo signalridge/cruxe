@@ -120,6 +120,22 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Export/import portable CodeCompass state bundles
+    State {
+        #[command(subcommand)]
+        command: StateCommands,
+    },
+    /// Remove stale overlay indices while preserving active leases
+    #[command(name = "prune-overlays")]
+    PruneOverlays {
+        /// Path to the project root (default: current directory)
+        #[arg(long)]
+        workspace: Option<String>,
+
+        /// Remove overlays not accessed in the last N days
+        #[arg(long = "older-than", default_value = "30")]
+        older_than_days: u64,
+    },
     /// Start MCP server (stdio or HTTP JSON-RPC transport)
     ///
     /// Exposes tools (locate_symbol, search_code, index_status, index_repo,
@@ -163,6 +179,28 @@ enum Commands {
         /// Maximum number of auto-discovered workspaces to keep (LRU eviction).
         #[arg(long, default_value = "10")]
         max_auto_workspaces: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum StateCommands {
+    /// Export state bundle to `.tar.zst`
+    Export {
+        /// Output archive path (for example: /tmp/state.tar.zst)
+        path: String,
+
+        /// Path to the project root (default: current directory)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Import state bundle from `.tar.zst`
+    Import {
+        /// Input archive path
+        path: String,
+
+        /// Path to the project root (default: current directory)
+        #[arg(long)]
+        workspace: Option<String>,
     },
 }
 
@@ -212,6 +250,23 @@ fn main() -> anyhow::Result<()> {
         Commands::Sync { workspace, force } => {
             let path = resolve_path(workspace)?;
             commands::index::run(&path, force, None, config_file)?;
+        }
+        Commands::State { command } => match command {
+            StateCommands::Export { path, workspace } => {
+                let workspace = resolve_path(workspace)?;
+                commands::state_export::run(&workspace, std::path::Path::new(&path), config_file)?;
+            }
+            StateCommands::Import { path, workspace } => {
+                let workspace = resolve_path(workspace)?;
+                commands::state_import::run(&workspace, std::path::Path::new(&path), config_file)?;
+            }
+        },
+        Commands::PruneOverlays {
+            workspace,
+            older_than_days,
+        } => {
+            let workspace = resolve_path(workspace)?;
+            commands::prune_overlays::run(&workspace, older_than_days, config_file)?;
         }
         Commands::ServeMcp {
             workspace,

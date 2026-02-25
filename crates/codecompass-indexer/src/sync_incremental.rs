@@ -450,6 +450,11 @@ pub fn run_incremental_sync<A>(
 where
     A: VcsAdapter<FileChange = FileChangeKind, DiffEntry = DiffEntry> + Clone,
 {
+    let maintenance_op = format!("overlay_sync:{}", request.ref_name);
+    let _maintenance_lock = codecompass_state::maintenance_lock::acquire_project_lock(
+        request.data_dir,
+        &maintenance_op,
+    )?;
     ensure_no_active_sync_for_ref(conn, request.project_id, request.ref_name)?;
     let started = Instant::now();
 

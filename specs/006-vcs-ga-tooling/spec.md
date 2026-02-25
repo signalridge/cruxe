@@ -24,6 +24,13 @@ It delivers:
 
 - `symbol_edges` now has composite forward/reverse type indexes and query-shape
   regression tests to support low-latency `find_references`/graph traversals.
+- Runtime SQLite handle management is now explicitly bounded to avoid
+  unbounded file-descriptor growth in long-lived multi-workspace servers.
+- High-fanout MCP fixture tests now use configurable bounded parallelism
+  (`CODECOMPASS_TEST_FIXTURE_PARALLELISM`) instead of global serial execution.
+- Cross-process maintenance lock (parent-scoped
+  `locks/state-maintenance-<path-hash>.lock`) now coordinates destructive state
+  mutations across import/prune/sync publish paths.
 
 ## User Scenarios & Testing
 
@@ -100,8 +107,8 @@ returned with correct file paths and edge types.
    included alongside base references, and each result carries `source_layer`
    (`base` or `overlay`) metadata.
 4. **Given** a symbol name that does not exist in the index, **When**
-   `find_references` is called, **Then** an empty result set is returned with
-   appropriate status (not an error).
+   `find_references` is called, **Then** a tool-level `symbol_not_found` error
+   is returned with remediation metadata.
 5. **Given** a tooling failure in `find_references` (e.g., corrupted edge data),
    **When** the tool is called, **Then** the failure is returned as a tool-level
    error and does not degrade `search_code` or `locate_symbol` availability.
@@ -112,10 +119,10 @@ returned with correct file paths and edge types.
 
 A maintainer investigating unexpected search result ordering calls
 `explain_ranking` with a query and a specific result entry. The system returns
-a `RankingExplanation` showing the deterministic scoring components: the
-per-index BM25 scores, RRF contribution from each index, definition-first
-boost, and final merged rank. This allows maintainers to diagnose and tune
-search quality.
+a `RankingExplanation` showing deterministic scoring components (`bm25`,
+`exact_match`, `qualified_name`, `path_affinity`, `definition_boost`,
+`kind_match`, `total`) plus per-component explanation strings. This allows
+maintainers to diagnose and tune search quality.
 
 **Why this priority**: Without ranking transparency, debugging search quality
 issues requires guesswork. This tool provides the introspection needed to
@@ -130,8 +137,8 @@ breakdown is byte-identical across invocations.
 1. **Given** a query `"validate_token"` that returns a ranked result list,
    **When** `explain_ranking` is called with the query and one result entry,
    **Then** the response contains a `RankingExplanation` with fields for
-   `symbols_score`, `snippets_score`, `files_score`, `rrf_contribution`,
-   `definition_boost`, and `final_rank`.
+   `bm25`, `exact_match`, `qualified_name`, `path_affinity`,
+   `definition_boost`, `kind_match`, and `total`.
 2. **Given** the same query and index state, **When** `explain_ranking` is
    called twice, **Then** both responses produce identical scoring values
    (deterministic output).
@@ -147,8 +154,8 @@ breakdown is byte-identical across invocations.
 ### User Story 4 - List and Switch Refs (Priority: P2)
 
 An AI agent calls `list_refs` to discover all indexed refs for the current
-project, receiving a list of `RefDescriptor` entries with name, indexed commit
-hash, and freshness metadata. The agent then calls `switch_ref` to set the
+project, receiving a list of `RefDescriptor` entries with ref name, indexed
+commit hash, status, and counts. The agent then calls `switch_ref` to set the
 active ref scope for subsequent queries. These tools provide predictable ref
 lifecycle management for multi-branch workflows.
 
@@ -164,11 +171,11 @@ helpers eliminate ref-related errors in agentic workflows.
 
 1. **Given** a project with refs `main` and `feat/auth` indexed, **When**
    `list_refs` is called, **Then** the response contains two `RefDescriptor`
-   entries, each with `name`, `indexed_commit`, and `freshness` fields.
-2. **Given** `list_refs` returns `main` with `freshness: "fresh"` and
-   `feat/auth` with `freshness: "stale"`, **When** the agent reads the
-   response, **Then** each entry accurately reflects whether the indexed commit
-   matches the current branch HEAD.
+   entries, each with `ref`, `last_indexed_commit`, and `status` fields.
+2. **Given** `list_refs` returns both `main` and `feat/auth`, **When** the
+   agent reads the response metadata, **Then** protocol-level freshness is
+   exposed in `metadata.freshness_status` and can be interpreted independently
+   of per-ref status.
 3. **Given** `switch_ref` is called with `ref: "feat/auth"`, **When** a
    subsequent `search_code` call is made, **Then** results are scoped to the
    `feat/auth` ref.
@@ -235,6 +242,11 @@ match the pre-export state.
   error.
 - `explain_ranking` must remain deterministic even when called concurrently for
   different queries.
+- Multi-workspace MCP servers must remain stable under sustained request
+  concurrency without exhausting process file descriptors.
+- Concurrent state-mutating operations (`state import`, `prune-overlays`,
+  overlay publish during `sync_repo`) must not run simultaneously for the same
+  project data directory.
 
 ## Requirements
 
@@ -250,6 +262,16 @@ match the pre-export state.
 - **FR-507**: System MUST register all VCS GA tooling in MCP `tools/list`.
 - **FR-508**: System MUST provide overlay prune maintenance command with lease-awareness.
 - **FR-509**: Tooling failures MUST degrade gracefully and preserve core query availability.
+- **FR-510**: MCP runtime MUST bound cached SQLite connections using an idle
+  eviction strategy so connection cache growth is finite under multi-workspace
+  traffic.
+- **FR-511**: MCP regression tests that build fixture indices MUST support
+  configurable bounded parallelism and MUST NOT require fully serial test
+  execution for stability.
+- **FR-512**: State-mutating maintenance operations MUST acquire a per-project
+  cross-process lock file and fail fast with retryable guidance when the lock
+  is already held. The lock file location MUST remain stable across state data
+  directory rename-swap operations (for example import commit/rollback).
 
 ### Key Entities
 

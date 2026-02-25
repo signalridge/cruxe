@@ -7,6 +7,9 @@ use codecompass_core::constants;
 use codecompass_core::error::{ProtocolErrorCode, StateError, WorkspaceError};
 use codecompass_core::types::{DetailLevel, SchemaStatus, WorkspaceConfig, generate_project_id};
 use codecompass_query::detail;
+use codecompass_query::diff_context;
+use codecompass_query::explain_ranking;
+use codecompass_query::find_references;
 use codecompass_query::freshness::{
     self, FreshnessResult, PolicyAction, apply_freshness_policy, check_freshness_with_scan_params,
     parse_freshness_policy, trigger_async_sync,
@@ -19,12 +22,13 @@ use codecompass_query::search;
 use codecompass_query::tombstone::TombstoneCache;
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 use self::tool_calls::{ToolCallParams, handle_tool_call};
@@ -36,6 +40,14 @@ pub const PREWARM_COMPLETE: u8 = 2;
 pub const PREWARM_FAILED: u8 = 3;
 pub const PREWARM_SKIPPED: u8 = 4;
 const DEFAULT_WARMSET_CAPACITY: usize = 3;
+const DEFAULT_MAX_OPEN_CONNECTIONS: usize = 32;
+const DEFAULT_SESSION_SCOPE: &str = "default";
+const SESSION_OVERRIDE_MAX_ENTRIES: usize = 4096;
+const SESSION_OVERRIDE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+
+thread_local! {
+    static ACTIVE_SESSION_SCOPE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 /// Convert prewarm status byte to string label.
 pub fn prewarm_status_label(status: u8) -> &'static str {
@@ -137,13 +149,28 @@ pub(crate) fn prewarm_projects(status: Arc<AtomicU8>, config: Config, project_id
 /// Connections are keyed by `db_path` and reused across requests. Callers can
 /// invalidate a path entry to force lazy reopen after failures.
 pub struct ConnectionManager {
-    connections: Mutex<HashMap<std::path::PathBuf, Arc<Mutex<rusqlite::Connection>>>>,
+    connections: Mutex<HashMap<std::path::PathBuf, ManagedConnection>>,
+    max_open_connections: usize,
+}
+
+struct ManagedConnection {
+    connection: Arc<Mutex<rusqlite::Connection>>,
+    last_accessed_at: Instant,
 }
 
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
+            max_open_connections: max_open_connections(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_capacity(max_open_connections: usize) -> Self {
+        Self {
+            connections: Mutex::new(HashMap::new()),
+            max_open_connections: max_open_connections.max(1),
         }
     }
 
@@ -155,13 +182,21 @@ impl ConnectionManager {
             .connections
             .lock()
             .map_err(|e| StateError::sqlite(format!("connection manager lock poisoned: {e}")))?;
-        if let Some(existing) = map.get(db_path) {
-            return Ok(Arc::clone(existing));
+        if let Some(existing) = map.get_mut(db_path) {
+            existing.last_accessed_at = Instant::now();
+            return Ok(Arc::clone(&existing.connection));
         }
 
+        evict_idle_connections(&mut map, self.max_open_connections.saturating_sub(1));
         let conn = codecompass_state::db::open_connection(db_path)?;
         let shared = Arc::new(Mutex::new(conn));
-        map.insert(db_path.to_path_buf(), Arc::clone(&shared));
+        map.insert(
+            db_path.to_path_buf(),
+            ManagedConnection {
+                connection: Arc::clone(&shared),
+                last_accessed_at: Instant::now(),
+            },
+        );
         Ok(shared)
     }
 
@@ -170,11 +205,58 @@ impl ConnectionManager {
             map.remove(db_path);
         }
     }
+
+    #[cfg(test)]
+    fn cached_connection_count(&self) -> usize {
+        self.connections.lock().map(|map| map.len()).unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    fn contains_connection(&self, db_path: &Path) -> bool {
+        self.connections
+            .lock()
+            .map(|map| map.contains_key(db_path))
+            .unwrap_or(false)
+    }
 }
 
 impl Default for ConnectionManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn max_open_connections() -> usize {
+    std::env::var("CODECOMPASS_MAX_OPEN_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_MAX_OPEN_CONNECTIONS)
+}
+
+fn evict_idle_connections(
+    map: &mut HashMap<std::path::PathBuf, ManagedConnection>,
+    target_size: usize,
+) {
+    if map.len() <= target_size {
+        return;
+    }
+    while map.len() > target_size {
+        let candidate = map
+            .iter()
+            .filter(|(_, managed)| {
+                // Best-effort "idle" heuristic:
+                // when only the manager map holds the Arc, no request currently
+                // retains this connection handle.
+                // `strong_count` is intentionally used as a soft signal only.
+                Arc::strong_count(&managed.connection) == 1
+            })
+            .min_by_key(|(_, managed)| managed.last_accessed_at)
+            .map(|(path, _)| path.clone());
+        let Some(path) = candidate else {
+            break;
+        };
+        map.remove(&path);
     }
 }
 
@@ -310,6 +392,9 @@ pub fn run_server(
         let transport = TransportExecutionContext {
             notifier,
             progress_token: progress_token.as_deref(),
+            // stdio serves a single MCP client per process; keep one shared scope
+            // unless transports provide explicit per-session identifiers.
+            session_scope: Some("stdio"),
             transport_label: "stdio",
             log_workspace_resolution_failures: true,
             log_degraded_sqlite_open: true,
@@ -489,6 +574,7 @@ pub struct DispatchRuntime<'a> {
 pub struct TransportExecutionContext<'a> {
     pub notifier: Arc<dyn ProgressNotifier>,
     pub progress_token: Option<&'a str>,
+    pub session_scope: Option<&'a str>,
     pub transport_label: &'static str,
     pub log_workspace_resolution_failures: bool,
     pub log_degraded_sqlite_open: bool,
@@ -584,6 +670,7 @@ pub fn execute_transport_request(
     runtime: &DispatchRuntime<'_>,
     transport: &TransportExecutionContext<'_>,
 ) -> JsonRpcResponse {
+    let _session_scope_guard = set_active_session_scope(transport.session_scope);
     let mut effective_workspace = runtime.workspace.to_path_buf();
     let mut effective_project_id = runtime.project_id.to_string();
     let mut effective_data_dir = runtime.data_dir.to_path_buf();
@@ -1203,13 +1290,128 @@ fn is_project_registered(conn: Option<&rusqlite::Connection>, workspace: &Path) 
     .is_some()
 }
 
+#[derive(Clone)]
+struct SessionRefOverrideEntry {
+    ref_name: String,
+    last_touched_at: Instant,
+}
+
+struct SessionScopeGuard {
+    previous: Option<String>,
+}
+
+impl Drop for SessionScopeGuard {
+    fn drop(&mut self) {
+        ACTIVE_SESSION_SCOPE.with(|scope| {
+            scope.replace(self.previous.take());
+        });
+    }
+}
+
+fn normalize_session_scope(session_scope: Option<&str>) -> Option<String> {
+    session_scope.and_then(|scope| {
+        let trimmed = scope.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn set_active_session_scope(session_scope: Option<&str>) -> SessionScopeGuard {
+    let normalized = normalize_session_scope(session_scope);
+    let previous = ACTIVE_SESSION_SCOPE.with(|scope| scope.replace(normalized));
+    SessionScopeGuard { previous }
+}
+
+fn current_session_scope() -> Option<String> {
+    ACTIVE_SESSION_SCOPE.with(|scope| scope.borrow().clone())
+}
+
+fn session_ref_key(workspace: &Path, project_id: &str) -> String {
+    let scope = current_session_scope().unwrap_or_else(|| DEFAULT_SESSION_SCOPE.to_string());
+    format!("{scope}::{project_id}::{}", workspace.to_string_lossy())
+}
+
+fn session_ref_overrides() -> &'static Mutex<HashMap<String, SessionRefOverrideEntry>> {
+    static SESSION_REF_OVERRIDES: OnceLock<Mutex<HashMap<String, SessionRefOverrideEntry>>> =
+        OnceLock::new();
+    SESSION_REF_OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_session_ref_override(workspace: &Path, project_id: &str) -> Option<String> {
+    let key = session_ref_key(workspace, project_id);
+    let mut guard = session_ref_overrides().lock().ok()?;
+    let now = Instant::now();
+    prune_expired_session_overrides(&mut guard, now);
+    let entry = guard.get_mut(&key)?;
+    entry.last_touched_at = now;
+    Some(entry.ref_name.clone())
+}
+
+pub(crate) fn set_session_ref_override(
+    workspace: &Path,
+    project_id: &str,
+    ref_name: &str,
+) -> Result<(), StateError> {
+    let key = session_ref_key(workspace, project_id);
+    let mut guard = session_ref_overrides()
+        .lock()
+        .map_err(|err| StateError::sqlite(format!("session ref lock poisoned: {err}")))?;
+    let now = Instant::now();
+    prune_expired_session_overrides(&mut guard, now);
+    guard.insert(
+        key,
+        SessionRefOverrideEntry {
+            ref_name: ref_name.to_string(),
+            last_touched_at: now,
+        },
+    );
+    enforce_session_override_capacity(&mut guard);
+    Ok(())
+}
+
+pub(crate) fn clear_session_ref_override(
+    workspace: &Path,
+    project_id: &str,
+) -> Result<(), StateError> {
+    let key = session_ref_key(workspace, project_id);
+    let mut guard = session_ref_overrides()
+        .lock()
+        .map_err(|err| StateError::sqlite(format!("session ref lock poisoned: {err}")))?;
+    guard.remove(&key);
+    Ok(())
+}
+
+fn prune_expired_session_overrides(
+    entries: &mut HashMap<String, SessionRefOverrideEntry>,
+    now: Instant,
+) {
+    entries.retain(|_, entry| now.duration_since(entry.last_touched_at) <= SESSION_OVERRIDE_TTL);
+}
+
+fn enforce_session_override_capacity(entries: &mut HashMap<String, SessionRefOverrideEntry>) {
+    while entries.len() > SESSION_OVERRIDE_MAX_ENTRIES {
+        let oldest_key = entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_touched_at)
+            .map(|(key, _)| key.clone());
+        let Some(oldest_key) = oldest_key else {
+            break;
+        };
+        entries.remove(&oldest_key);
+    }
+}
+
 /// Resolve the effective ref used by MCP tools.
 ///
 /// Priority:
 /// 1. Explicit `ref` argument
-/// 2. Current HEAD branch (if available)
-/// 3. Project default_ref from SQLite metadata
-/// 4. `live` fallback
+/// 2. Session `switch_ref` override (process-local, non-persistent)
+/// 3. Current HEAD branch (if available)
+/// 4. Project default_ref from SQLite metadata
+/// 5. `live` fallback
 fn resolve_tool_ref(
     requested_ref: Option<&str>,
     workspace: &Path,
@@ -1218,6 +1420,9 @@ fn resolve_tool_ref(
 ) -> String {
     if let Some(r) = requested_ref {
         return r.to_string();
+    }
+    if let Some(session_ref) = get_session_ref_override(workspace, project_id) {
+        return session_ref;
     }
     if let Ok(branch) = codecompass_core::vcs::detect_head_branch(workspace) {
         return branch;

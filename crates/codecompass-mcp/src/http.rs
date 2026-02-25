@@ -10,7 +10,7 @@ use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::workspace_router::WorkspaceRouter;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -131,7 +131,11 @@ async fn health_handler(State(state): State<Arc<HttpState>>) -> impl IntoRespons
 }
 
 /// POST / — JSON-RPC MCP handler (T225).
-async fn jsonrpc_handler(State(state): State<Arc<HttpState>>, body: Bytes) -> impl IntoResponse {
+async fn jsonrpc_handler(
+    State(state): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
     let request: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(e) => {
@@ -144,10 +148,11 @@ async fn jsonrpc_handler(State(state): State<Arc<HttpState>>, body: Bytes) -> im
             return (StatusCode::BAD_REQUEST, Json(body)).into_response();
         }
     };
+    let session_scope = session_scope_from_headers(&headers);
 
     let result = tokio::task::spawn_blocking({
         let state = Arc::clone(&state);
-        move || handle_http_request(&state, &request)
+        move || handle_http_request(&state, &request, session_scope.as_deref())
     })
     .await;
 
@@ -158,6 +163,16 @@ async fn jsonrpc_handler(State(state): State<Arc<HttpState>>, body: Bytes) -> im
             Json(resp).into_response()
         }
     }
+}
+
+fn session_scope_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("mcp-session-id")
+        .or_else(|| headers.get("x-codecompass-session"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// Build the /health response.
@@ -283,7 +298,11 @@ fn build_health_response_uncached(state: &HttpState) -> Value {
 
 /// Handle a JSON-RPC request over HTTP by delegating to the same dispatch logic
 /// as the stdio transport.
-fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcResponse {
+fn handle_http_request(
+    state: &HttpState,
+    request: &JsonRpcRequest,
+    session_scope: Option<&str>,
+) -> JsonRpcResponse {
     let runtime = crate::server::DispatchRuntime {
         config: &state.config,
         router: &state.router,
@@ -297,6 +316,7 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
     let transport = crate::server::TransportExecutionContext {
         notifier: Arc::new(NullProgressNotifier) as Arc<dyn ProgressNotifier>,
         progress_token: None,
+        session_scope,
         transport_label: "http",
         log_workspace_resolution_failures: true,
         log_degraded_sqlite_open: true,
@@ -442,6 +462,7 @@ mod tests {
         let transport = crate::server::TransportExecutionContext {
             notifier: Arc::new(NullProgressNotifier),
             progress_token: None,
+            session_scope: Some("stdio-test"),
             transport_label: "stdio-test",
             log_workspace_resolution_failures: false,
             log_degraded_sqlite_open: false,
@@ -539,10 +560,26 @@ mod tests {
             params: json!({}),
         };
 
-        let response = handle_http_request(&state, &request);
+        let response = handle_http_request(&state, &request, None);
         let result = response.result.unwrap();
         let tool_array = result["tools"].as_array().unwrap();
         assert!(!tool_array.is_empty());
+    }
+
+    #[test]
+    fn session_scope_prefers_mcp_session_id_header() {
+        use axum::http::HeaderValue;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-session-id", HeaderValue::from_static("session-abc"));
+        headers.insert(
+            "x-codecompass-session",
+            HeaderValue::from_static("fallback"),
+        );
+        assert_eq!(
+            session_scope_from_headers(&headers).as_deref(),
+            Some("session-abc")
+        );
     }
 
     #[tokio::test]
@@ -579,6 +616,7 @@ mod tests {
 
         let response = jsonrpc_handler(
             State(state),
+            HeaderMap::new(),
             Bytes::from(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#),
         )
         .await
@@ -596,9 +634,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(build_test_state(tmp.path(), Config::default()));
 
-        let response = jsonrpc_handler(State(state), Bytes::from("{invalid-json"))
-            .await
-            .into_response();
+        let response =
+            jsonrpc_handler(State(state), HeaderMap::new(), Bytes::from("{invalid-json"))
+                .await
+                .into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -622,7 +661,7 @@ mod tests {
             method: "unknown/method".into(),
             params: json!({}),
         };
-        let response = handle_http_request(&state, &request);
+        let response = handle_http_request(&state, &request, None);
         let error = response.error.expect("unknown methods should return error");
         assert_eq!(error.code, -32601);
         assert!(error.message.contains("Method not found"));
@@ -674,7 +713,7 @@ mod tests {
                 }
             }),
         };
-        let response = handle_http_request(&state, &request);
+        let response = handle_http_request(&state, &request, None);
         assert!(
             response.error.is_none(),
             "workspace routing failures are reported as tool-level payload errors"
@@ -878,7 +917,7 @@ mod tests {
                 "arguments": { "name": "validate_token" }
             }),
         };
-        let http_response = handle_http_request(&state, &http_request);
+        let http_response = handle_http_request(&state, &http_request, None);
         assert!(
             http_response.error.is_none(),
             "http locate_symbol should succeed"
@@ -927,7 +966,7 @@ mod tests {
             }),
         };
 
-        let http_response = handle_http_request(&state, &request);
+        let http_response = handle_http_request(&state, &request, None);
         let stdio_response = dispatch_stdio_equivalent(&state, &request);
 
         assert_eq!(
@@ -957,7 +996,7 @@ mod tests {
             }),
         };
 
-        let http_response = handle_http_request(&state, &request);
+        let http_response = handle_http_request(&state, &request, None);
         let stdio_response = dispatch_stdio_equivalent(&state, &request);
 
         assert_eq!(

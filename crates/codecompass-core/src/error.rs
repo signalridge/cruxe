@@ -140,6 +140,12 @@ pub enum StateError {
         job_id: String,
     },
 
+    #[error("maintenance lock busy: operation={operation}, lock_path={lock_path}")]
+    MaintenanceLockBusy {
+        operation: String,
+        lock_path: String,
+    },
+
     #[error("ref not indexed: project_id={project_id}, ref={ref_name}")]
     RefNotIndexed {
         project_id: String,
@@ -152,6 +158,16 @@ pub enum StateError {
         ref_name: String,
         reason: String,
     },
+
+    #[error("merge base failed: base_ref={base_ref}, head_ref={head_ref}, reason={reason}")]
+    MergeBaseFailed {
+        base_ref: String,
+        head_ref: String,
+        reason: String,
+    },
+
+    #[error("result not found: path={path}, line_start={line_start}")]
+    ResultNotFound { path: String, line_start: u32 },
 
     #[error("project not found: {project_id}")]
     ProjectNotFound { project_id: String },
@@ -213,6 +229,35 @@ impl StateError {
             project_id: project_id.into(),
             ref_name: ref_name.into(),
             reason: reason.into(),
+        }
+    }
+
+    pub fn merge_base_failed(
+        base_ref: impl Into<String>,
+        head_ref: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::MergeBaseFailed {
+            base_ref: base_ref.into(),
+            head_ref: head_ref.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn result_not_found(path: impl Into<String>, line_start: u32) -> Self {
+        Self::ResultNotFound {
+            path: path.into(),
+            line_start,
+        }
+    }
+
+    pub fn maintenance_lock_busy(
+        operation: impl Into<String>,
+        lock_path: impl Into<String>,
+    ) -> Self {
+        Self::MaintenanceLockBusy {
+            operation: operation.into(),
+            lock_path: lock_path.into(),
         }
     }
 }

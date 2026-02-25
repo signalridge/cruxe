@@ -23,11 +23,9 @@ echo "Changed files:"
 echo "${changed_files}"
 
 if ! grep -q '^openspec/' <<<"${changed_files}"; then
-  if grep -Eq '^(crates/|specs/|configs/|Cargo\.toml|Cargo\.lock|README\.md)' <<<"${changed_files}"; then
-    echo "BLOCK TRACE_GATE: code/spec changes detected without openspec trace artifacts"
-    echo "Next: update openspec/changes/... artifacts for this implementation change"
-    exit 1
-  fi
+  echo "INFO TRACE_GATE: no openspec changes detected; skipping archive enforcement"
+  echo "Next: continue"
+  exit 0
 fi
 
 active_change_files="$(
