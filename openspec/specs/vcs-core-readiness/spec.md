@@ -1,7 +1,14 @@
 # vcs-core-readiness Specification
 
 ## Purpose
-TBD - created by archiving change harden-001-004-maintainability. Update Purpose after archive.
+Capture the readiness contract for VCS core delivery and keep implementation
+traceability for `005-vcs-core` without introducing a new active
+`openspec/changes/*` workflow.
+
+## Status
+- **State**: implemented
+- **Tracked By**: `feat/005-vcs-core` (PR #8)
+- **Last Updated**: 2026-02-25
 ## Requirements
 ### Requirement: VCS adapter boundary skeleton MUST exist before 005 full implementation
 The codebase MUST define a dedicated VCS adapter boundary that isolates VCS
@@ -24,4 +31,3 @@ of ad-hoc tuple/string concatenation in local call sites.
 #### Scenario: Base and overlay entries with same logical identity resolve deterministically
 - **WHEN** base and overlay records represent the same logical entity
 - **THEN** merge logic MUST use the unified merge key domain type and produce deterministic overlay-wins behavior
-

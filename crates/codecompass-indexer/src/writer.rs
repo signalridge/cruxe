@@ -5,8 +5,49 @@ use codecompass_core::types::{FileRecord, SnippetRecord, SymbolRecord};
 use codecompass_state::tantivy_index::{self, IndexSet};
 use codecompass_state::{edges, manifest, symbols};
 use rusqlite::Connection;
+use std::path::{Path, PathBuf};
 use tantivy::{IndexWriter, Term, doc};
 use tracing::{debug, info};
+
+/// Destination for index writes in VCS mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteTarget<'a> {
+    /// Shared immutable default branch index at `<data_dir>/base`.
+    Base,
+    /// Ref-scoped overlay at `<data_dir>/overlay/<normalized_ref>`.
+    Overlay { branch: &'a str },
+    /// Sync-local staging area at `<data_dir>/staging/<sync_id>`.
+    Staging { sync_id: &'a str },
+}
+
+impl WriteTarget<'_> {
+    /// Resolve the concrete index root path for this write target.
+    pub fn index_root(self, data_dir: &Path) -> PathBuf {
+        match self {
+            Self::Base => data_dir.join("base"),
+            Self::Overlay { branch } => crate::overlay::overlay_dir_for_ref(data_dir, branch),
+            Self::Staging { sync_id } => crate::staging::staging_dir(data_dir, sync_id),
+        }
+    }
+}
+
+/// Open/create an index set for the specified write target.
+pub fn open_index_set_for_target(
+    data_dir: &Path,
+    target: WriteTarget<'_>,
+) -> Result<IndexSet, StateError> {
+    let root = target.index_root(data_dir);
+    IndexSet::open_at(&root)
+}
+
+/// Open an existing index set for the specified write target.
+pub fn open_existing_index_set_for_target(
+    data_dir: &Path,
+    target: WriteTarget<'_>,
+) -> Result<IndexSet, StateError> {
+    let root = target.index_root(data_dir);
+    IndexSet::open_existing_at(&root)
+}
 
 /// Batch writer that holds a single IndexWriter per index.
 /// Documents are accumulated and committed together for performance.
@@ -453,4 +494,63 @@ fn write_file_to_tantivy(index: &tantivy::Index, file: &FileRecord) -> Result<()
 
     writer.commit().map_err(StateError::tantivy)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn write_target_resolves_expected_paths() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path();
+
+        let base = WriteTarget::Base.index_root(data_dir);
+        assert_eq!(base, data_dir.join("base"));
+
+        let overlay = WriteTarget::Overlay {
+            branch: "feat/auth#2",
+        }
+        .index_root(data_dir);
+        assert_eq!(overlay, data_dir.join("overlay").join("feat-auth%232"));
+
+        let staging = WriteTarget::Staging { sync_id: "sync-1" }.index_root(data_dir);
+        assert_eq!(staging, data_dir.join("staging").join("sync-1"));
+    }
+
+    #[test]
+    fn open_index_set_for_target_initializes_overlay_and_staging() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path();
+
+        let _overlay = open_index_set_for_target(
+            data_dir,
+            WriteTarget::Overlay {
+                branch: "feat/auth",
+            },
+        )
+        .unwrap();
+        let overlay_root = WriteTarget::Overlay {
+            branch: "feat/auth",
+        }
+        .index_root(data_dir);
+        assert!(overlay_root.join("symbols").exists());
+        assert!(overlay_root.join("snippets").exists());
+        assert!(overlay_root.join("files").exists());
+
+        let _staging =
+            open_index_set_for_target(data_dir, WriteTarget::Staging { sync_id: "sync-42" })
+                .unwrap();
+        let staging_root = WriteTarget::Staging { sync_id: "sync-42" }.index_root(data_dir);
+        assert!(staging_root.join("symbols").exists());
+        assert!(staging_root.join("snippets").exists());
+        assert!(staging_root.join("files").exists());
+
+        let _existing = open_existing_index_set_for_target(
+            data_dir,
+            WriteTarget::Staging { sync_id: "sync-42" },
+        )
+        .unwrap();
+    }
 }

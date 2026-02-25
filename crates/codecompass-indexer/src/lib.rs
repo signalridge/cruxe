@@ -1,7 +1,10 @@
 pub mod import_extract;
 pub mod languages;
+pub mod overlay;
 pub mod parser;
 pub mod scanner;
 pub mod snippet_extract;
+pub mod staging;
 pub mod symbol_extract;
+pub mod sync_incremental;
 pub mod writer;

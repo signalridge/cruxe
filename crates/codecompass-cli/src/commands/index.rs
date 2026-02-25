@@ -6,11 +6,14 @@ use codecompass_core::time::now_iso8601;
 use codecompass_core::types::{FileRecord, JobStatus, generate_project_id};
 use codecompass_core::vcs;
 use codecompass_indexer::{
-    import_extract, languages, parser, scanner, snippet_extract, symbol_extract, writer,
+    import_extract, languages, parser, scanner, snippet_extract, symbol_extract,
+    sync_incremental::{self, IncrementalSyncRequest},
+    writer,
 };
 use codecompass_state::{
     branch_state, db, edges, jobs, manifest, project, schema, symbols, tantivy_index,
 };
+use codecompass_vcs::Git2VcsAdapter;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
@@ -33,7 +36,7 @@ pub fn run(
 
     // Open SQLite with configured pragmas
     let db_path = data_dir.join(constants::STATE_DB_FILE);
-    let conn = db::open_connection_with_config(
+    let mut conn = db::open_connection_with_config(
         &db_path,
         config.storage.busy_timeout_ms,
         config.storage.cache_size,
@@ -57,6 +60,42 @@ pub fn run(
             proj.default_ref.clone()
         }
     });
+
+    // VCS mode non-default refs use spec-005 overlay incremental sync path.
+    if proj.vcs_mode && effective_ref != proj.default_ref {
+        let last_indexed_commit =
+            branch_state::get_branch_state(&conn, &project_id, &effective_ref)?
+                .map(|state| state.last_indexed_commit);
+        let sync_id = format!("sync-{}", new_job_id());
+        let adapter = Git2VcsAdapter;
+        println!(
+            "Syncing overlay {} (base: {}) ...",
+            effective_ref, proj.default_ref
+        );
+        let started = Instant::now();
+        let stats = sync_incremental::run_incremental_sync(
+            &adapter,
+            &mut conn,
+            IncrementalSyncRequest {
+                repo_root: &repo_root,
+                data_dir: &data_dir,
+                project_id: &project_id,
+                ref_name: &effective_ref,
+                base_ref: &proj.default_ref,
+                sync_id: &sync_id,
+                last_indexed_commit: last_indexed_commit.as_deref(),
+                is_default_branch: false,
+            },
+        )?;
+        println!();
+        println!("Overlay sync complete!");
+        println!("  Changed files:  {}", stats.changed_files);
+        println!("  Processed files: {}", stats.processed_files);
+        println!("  Symbols written: {}", stats.symbols_written);
+        println!("  Rebuild:        {}", stats.rebuild_triggered);
+        println!("  Duration:       {:.1}s", started.elapsed().as_secs_f64());
+        return Ok(());
+    }
 
     // Create job (allow MCP wrapper to inject a stable job id)
     let job_id = std::env::var("CODECOMPASS_JOB_ID")
@@ -337,6 +376,10 @@ pub fn run(
             last_indexed_commit: indexed_commit,
             overlay_dir: None,
             file_count: file_count as i64,
+            symbol_count: symbol_count as i64,
+            is_default_branch: effective_ref == proj.default_ref,
+            status: "active".to_string(),
+            eviction_eligible_at: None,
             created_at: now.clone(),
             last_accessed_at: now,
         };

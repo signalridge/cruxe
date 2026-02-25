@@ -13,6 +13,7 @@ codecompass-state = { workspace = true }
 codecompass-indexer = { workspace = true }
 codecompass-query = { workspace = true }
 codecompass-mcp = { workspace = true }
+codecompass-vcs = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true }
 tracing = { workspace = true }

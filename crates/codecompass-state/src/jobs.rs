@@ -1,6 +1,6 @@
 use codecompass_core::error::StateError;
 use codecompass_core::types::JobStatus;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, ErrorCode, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct IndexJob {
 
 /// Create a new index job.
 pub fn create_job(conn: &Connection, job: &IndexJob) -> Result<(), StateError> {
-    conn.execute(
+    match conn.execute(
         "INSERT INTO index_jobs (job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, progress_token, files_scanned, files_indexed, symbols_extracted, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
@@ -48,8 +48,24 @@ pub fn create_job(conn: &Connection, job: &IndexJob) -> Result<(), StateError> {
             job.created_at,
             job.updated_at,
         ],
-    ).map_err(StateError::sqlite)?;
-    Ok(())
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == ErrorCode::ConstraintViolation =>
+        {
+            if let Some(active) = get_active_job_for_ref(conn, &job.project_id, &job.r#ref)? {
+                return Err(StateError::sync_in_progress(
+                    &job.project_id,
+                    &job.r#ref,
+                    active.job_id,
+                ));
+            }
+            Err(StateError::Sqlite(
+                "index_jobs constraint violation while creating job".to_string(),
+            ))
+        }
+        Err(e) => Err(StateError::sqlite(e)),
+    }
 }
 
 /// Update job status.
@@ -85,6 +101,31 @@ pub fn get_active_job(conn: &Connection, project_id: &str) -> Result<Option<Inde
     ).map_err(StateError::sqlite)?;
 
     let result = stmt.query_row(params![project_id], row_to_job);
+
+    match result {
+        Ok(job) => Ok(Some(job)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(StateError::sqlite(e)),
+    }
+}
+
+/// Get the active (queued/running/validating) job for a specific `(project_id, ref)`.
+pub fn get_active_job_for_ref(
+    conn: &Connection,
+    project_id: &str,
+    ref_name: &str,
+) -> Result<Option<IndexJob>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, progress_token, files_scanned, files_indexed, symbols_extracted, created_at, updated_at
+             FROM index_jobs
+             WHERE project_id = ?1 AND \"ref\" = ?2 AND status IN ('queued', 'running', 'validating')
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .map_err(StateError::sqlite)?;
+
+    let result = stmt.query_row(params![project_id, ref_name], row_to_job);
 
     match result {
         Ok(job) => Ok(Some(job)),
@@ -305,6 +346,62 @@ mod tests {
     }
 
     #[test]
+    fn test_get_active_job_for_ref_filters_by_ref() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let mut main_job = sample_job("proj_1");
+        main_job.job_id = "job_main".to_string();
+        main_job.r#ref = "main".to_string();
+        main_job.created_at = "2026-01-01T00:00:01Z".to_string();
+        main_job.updated_at = "2026-01-01T00:00:01Z".to_string();
+        create_job(&conn, &main_job).unwrap();
+
+        let mut feat_job = sample_job("proj_1");
+        feat_job.job_id = "job_feat".to_string();
+        feat_job.r#ref = "feat/auth".to_string();
+        feat_job.created_at = "2026-01-01T00:00:02Z".to_string();
+        feat_job.updated_at = "2026-01-01T00:00:02Z".to_string();
+        create_job(&conn, &feat_job).unwrap();
+
+        let active_main = get_active_job_for_ref(&conn, "proj_1", "main")
+            .unwrap()
+            .unwrap();
+        assert_eq!(active_main.job_id, "job_main");
+
+        let active_feat = get_active_job_for_ref(&conn, "proj_1", "feat/auth")
+            .unwrap()
+            .unwrap();
+        assert_eq!(active_feat.job_id, "job_feat");
+
+        let missing = get_active_job_for_ref(&conn, "proj_1", "missing").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_create_job_rejects_second_active_job_for_same_ref() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let mut first = sample_job("proj_1");
+        first.job_id = "job_active_1".to_string();
+        first.r#ref = "feat/auth".to_string();
+        first.status = JobStatus::Running.as_str().to_string();
+        create_job(&conn, &first).unwrap();
+
+        let mut second = sample_job("proj_1");
+        second.job_id = "job_active_2".to_string();
+        second.r#ref = "feat/auth".to_string();
+        second.status = JobStatus::Queued.as_str().to_string();
+
+        let err = create_job(&conn, &second).unwrap_err();
+        assert!(
+            matches!(err, StateError::SyncInProgress { .. }),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_update_job_status() {
         let conn = setup_test_db();
         insert_test_project(&conn, "proj_1");
@@ -425,6 +522,7 @@ mod tests {
             let mut job = sample_job("proj_1");
             job.job_id = format!("job_{:03}", i);
             job.created_at = format!("2026-01-0{}T00:00:00Z", i + 1);
+            job.status = JobStatus::Published.as_str().to_string();
             create_job(&conn, &job).unwrap();
         }
 
@@ -509,6 +607,7 @@ mod tests {
 
         let mut job2 = sample_job("proj_1");
         job2.job_id = "job_new".to_string();
+        job2.r#ref = "feat/auth".to_string();
         job2.created_at = "2026-01-02T00:00:00Z".to_string();
         create_job(&conn, &job2).unwrap();
 

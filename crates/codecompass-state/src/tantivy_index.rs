@@ -293,12 +293,22 @@ pub struct IndexSet {
 
 impl IndexSet {
     /// Open all three indices from a project data directory.
+    ///
+    /// This resolves to `<data_dir>/base`.
     pub fn open(base_dir: &Path) -> Result<Self, StateError> {
         let base = base_dir.join("base");
+        Self::open_at(&base)
+    }
+
+    /// Open all three indices from an explicit index root directory.
+    ///
+    /// `index_root` must be the directory that directly contains
+    /// `symbols/`, `snippets/`, and `files/`.
+    pub fn open_at(index_root: &Path) -> Result<Self, StateError> {
         Ok(Self {
-            symbols: open_symbols_index(&base)?,
-            snippets: open_snippets_index(&base)?,
-            files: open_files_index(&base)?,
+            symbols: open_symbols_index(index_root)?,
+            snippets: open_snippets_index(index_root)?,
+            files: open_files_index(index_root)?,
         })
     }
 
@@ -307,18 +317,29 @@ impl IndexSet {
     /// Used by query paths to enforce explicit index compatibility handling.
     pub fn open_existing(base_dir: &Path) -> Result<Self, StateError> {
         let base = base_dir.join("base");
+        Self::open_existing_at(&base)
+    }
+
+    /// Open existing indices from an explicit index root directory.
+    ///
+    /// Unlike `open_at`, this does not create missing indices.
+    pub fn open_existing_at(index_root: &Path) -> Result<Self, StateError> {
         Ok(Self {
             symbols: open_existing_index(
-                &base.join(SYMBOLS_INDEX),
+                &index_root.join(SYMBOLS_INDEX),
                 REQUIRED_SYMBOL_FIELDS,
                 SYMBOLS_INDEX,
             )?,
             snippets: open_existing_index(
-                &base.join(SNIPPETS_INDEX),
+                &index_root.join(SNIPPETS_INDEX),
                 REQUIRED_SNIPPET_FIELDS,
                 SNIPPETS_INDEX,
             )?,
-            files: open_existing_index(&base.join(FILES_INDEX), REQUIRED_FILE_FIELDS, FILES_INDEX)?,
+            files: open_existing_index(
+                &index_root.join(FILES_INDEX),
+                REQUIRED_FILE_FIELDS,
+                FILES_INDEX,
+            )?,
         })
     }
 }
@@ -435,5 +456,17 @@ mod tests {
         // IndexSet::open creates under base/
         let set = IndexSet::open(dir.path()).unwrap();
         assert!(set.symbols.schema().get_field("symbol_exact").is_ok());
+    }
+
+    #[test]
+    fn test_index_set_open_at_explicit_root() {
+        let dir = tempdir().unwrap();
+        let overlay = dir.path().join("overlay").join("feat-auth");
+        std::fs::create_dir_all(&overlay).unwrap();
+        let set = IndexSet::open_at(&overlay).unwrap();
+        assert!(set.symbols.schema().get_field("symbol_exact").is_ok());
+        assert!(overlay.join("symbols").exists());
+        assert!(overlay.join("snippets").exists());
+        assert!(overlay.join("files").exists());
     }
 }

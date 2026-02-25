@@ -320,6 +320,7 @@ dependencies = [
  "codecompass-mcp",
  "codecompass-query",
  "codecompass-state",
+ "codecompass-vcs",
  "rusqlite",
  "serde_json",
  "tantivy",
@@ -351,6 +352,7 @@ dependencies = [
  "blake3",
  "codecompass-core",
  "codecompass-state",
+ "codecompass-vcs",
  "ignore",
  "rusqlite",
  "serde",
@@ -375,6 +377,7 @@ dependencies = [
  "codecompass-indexer",
  "codecompass-query",
  "codecompass-state",
+ "codecompass-vcs",
  "rusqlite",
  "serde",
  "serde_json",
@@ -392,6 +395,7 @@ dependencies = [
  "codecompass-core",
  "codecompass-indexer",
  "codecompass-state",
+ "codecompass-vcs",
  "rusqlite",
  "serde",
  "serde_json",
@@ -413,6 +417,19 @@ dependencies = [
  "tantivy",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "codecompass-vcs"
+version = "0.1.0"
+dependencies = [
+ "codecompass-core",
+ "codecompass-state",
+ "git2",
+ "rusqlite",
+ "serde",
+ "tempfile",
  "tracing",
 ]
 

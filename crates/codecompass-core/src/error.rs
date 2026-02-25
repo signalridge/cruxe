@@ -130,6 +130,29 @@ pub enum StateError {
     #[error("tantivy error: {0}")]
     Tantivy(String),
 
+    #[error("vcs error: {0}")]
+    Vcs(String),
+
+    #[error("sync in progress: project_id={project_id}, ref={ref_name}, job_id={job_id}")]
+    SyncInProgress {
+        project_id: String,
+        ref_name: String,
+        job_id: String,
+    },
+
+    #[error("ref not indexed: project_id={project_id}, ref={ref_name}")]
+    RefNotIndexed {
+        project_id: String,
+        ref_name: String,
+    },
+
+    #[error("overlay not ready: project_id={project_id}, ref={ref_name}, reason={reason}")]
+    OverlayNotReady {
+        project_id: String,
+        ref_name: String,
+        reason: String,
+    },
+
     #[error("project not found: {project_id}")]
     ProjectNotFound { project_id: String },
 
@@ -155,6 +178,42 @@ impl StateError {
     /// Convenience constructor for Tantivy errors — use with `.map_err(StateError::tantivy)`.
     pub fn tantivy<E: std::fmt::Display>(e: E) -> Self {
         Self::Tantivy(e.to_string())
+    }
+
+    /// Convenience constructor for VCS errors — use with `.map_err(StateError::vcs)`.
+    pub fn vcs<E: std::fmt::Display>(e: E) -> Self {
+        Self::Vcs(e.to_string())
+    }
+
+    pub fn sync_in_progress(
+        project_id: impl Into<String>,
+        ref_name: impl Into<String>,
+        job_id: impl Into<String>,
+    ) -> Self {
+        Self::SyncInProgress {
+            project_id: project_id.into(),
+            ref_name: ref_name.into(),
+            job_id: job_id.into(),
+        }
+    }
+
+    pub fn ref_not_indexed(project_id: impl Into<String>, ref_name: impl Into<String>) -> Self {
+        Self::RefNotIndexed {
+            project_id: project_id.into(),
+            ref_name: ref_name.into(),
+        }
+    }
+
+    pub fn overlay_not_ready(
+        project_id: impl Into<String>,
+        ref_name: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::OverlayNotReady {
+            project_id: project_id.into(),
+            ref_name: ref_name.into(),
+            reason: reason.into(),
+        }
     }
 }
 

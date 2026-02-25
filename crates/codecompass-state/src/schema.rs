@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -71,6 +71,141 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                      ON symbol_edges(repo, \"ref\", from_symbol_id, edge_type);
                  CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
                      ON symbol_edges(repo, \"ref\", to_symbol_id, edge_type);",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V4: extend branch metadata and add worktree lease tracking.
+        |conn| {
+            let has_symbol_count: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('branch_state') WHERE name = 'symbol_count'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_symbol_count {
+                conn.execute_batch(
+                    "ALTER TABLE branch_state ADD COLUMN symbol_count INTEGER DEFAULT 0;
+                     ALTER TABLE branch_state ADD COLUMN is_default_branch INTEGER NOT NULL DEFAULT 0;
+                     ALTER TABLE branch_state ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+                     ALTER TABLE branch_state ADD COLUMN eviction_eligible_at TEXT;",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+
+            let has_tombstone_type: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('branch_tombstones') WHERE name = 'tombstone_type'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_tombstone_type {
+                conn.execute_batch(
+                    "ALTER TABLE branch_tombstones ADD COLUMN tombstone_type TEXT NOT NULL DEFAULT 'deleted';
+                     ALTER TABLE branch_tombstones ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'));",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS worktree_leases (
+                    repo TEXT NOT NULL,
+                    \"ref\" TEXT NOT NULL,
+                    worktree_path TEXT NOT NULL,
+                    owner_pid INTEGER NOT NULL,
+                    refcount INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(repo, \"ref\")
+                );
+                CREATE INDEX IF NOT EXISTS idx_worktree_leases_status_updated
+                    ON worktree_leases(status, updated_at);",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V5: enforce at most one active job per (project, ref) for race-safe sync locking.
+        |conn| {
+            conn.execute_batch(
+                "UPDATE index_jobs
+                 SET status = 'interrupted',
+                     error_message = COALESCE(error_message, 'interrupted_by_active_job_uniqueness_migration'),
+                     updated_at = datetime('now')
+                 WHERE status IN ('queued', 'running', 'validating')
+                   AND EXISTS (
+                     SELECT 1
+                     FROM index_jobs newer
+                     WHERE newer.project_id = index_jobs.project_id
+                       AND newer.\"ref\" = index_jobs.\"ref\"
+                       AND newer.status IN ('queued', 'running', 'validating')
+                       AND (
+                         newer.created_at > index_jobs.created_at
+                         OR (newer.created_at = index_jobs.created_at AND newer.rowid > index_jobs.rowid)
+                       )
+                   );
+
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_project_ref
+                     ON index_jobs(project_id, \"ref\")
+                     WHERE status IN ('queued', 'running', 'validating');",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V6: add eviction candidate lookup index for branch_state lifecycle operations.
+        |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_branch_state_eviction
+                     ON branch_state(repo, status, last_accessed_at);",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V7: align worktree lease lifecycle columns with spec contract.
+        |conn| {
+            let has_last_used_at: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('worktree_leases') WHERE name = 'last_used_at'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_last_used_at {
+                conn.execute_batch("ALTER TABLE worktree_leases ADD COLUMN last_used_at TEXT;")
+                    .map_err(StateError::sqlite)?;
+            }
+            conn.execute_batch(
+                "UPDATE worktree_leases
+                 SET status = CASE status
+                                WHEN 'in_use' THEN 'active'
+                                WHEN 'released' THEN 'stale'
+                                ELSE status
+                              END;
+                 UPDATE worktree_leases
+                 SET last_used_at = COALESCE(last_used_at, updated_at, created_at, datetime('now'));
+                 CREATE INDEX IF NOT EXISTS idx_worktree_leases_status_last_used
+                    ON worktree_leases(status, last_used_at);",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V8: normalize worktree lease lifecycle states and align index naming with spec.
+        |conn| {
+            conn.execute_batch(
+                "UPDATE worktree_leases
+                 SET status = CASE status
+                                WHEN 'active' THEN 'active'
+                                WHEN 'stale' THEN 'stale'
+                                WHEN 'removing' THEN 'removing'
+                                ELSE 'stale'
+                              END;
+                 UPDATE worktree_leases
+                 SET last_used_at = COALESCE(last_used_at, updated_at, created_at, datetime('now'));
+                 CREATE INDEX IF NOT EXISTS idx_worktree_leases_status
+                    ON worktree_leases(status, last_used_at);",
             )
             .map_err(StateError::sqlite)?;
             Ok(())
@@ -168,17 +303,45 @@ CREATE TABLE IF NOT EXISTS branch_state (
     last_indexed_commit TEXT NOT NULL,
     overlay_dir TEXT,
     file_count INTEGER DEFAULT 0,
+    symbol_count INTEGER DEFAULT 0,
+    is_default_branch INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    eviction_eligible_at TEXT,
     created_at TEXT NOT NULL,
     last_accessed_at TEXT NOT NULL,
     PRIMARY KEY(repo, "ref")
 );
+CREATE INDEX IF NOT EXISTS idx_branch_state_eviction
+    ON branch_state(repo, status, last_accessed_at);
 
 CREATE TABLE IF NOT EXISTS branch_tombstones (
     repo TEXT NOT NULL,
     "ref" TEXT NOT NULL,
     path TEXT NOT NULL,
+    tombstone_type TEXT NOT NULL DEFAULT 'deleted',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY(repo, "ref", path)
 );
+
+CREATE TABLE IF NOT EXISTS worktree_leases (
+    repo TEXT NOT NULL,
+    "ref" TEXT NOT NULL,
+    worktree_path TEXT NOT NULL,
+    owner_pid INTEGER NOT NULL,
+    refcount INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(repo, "ref")
+);
+
+CREATE INDEX IF NOT EXISTS idx_worktree_leases_status_updated
+    ON worktree_leases(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_worktree_leases_status_last_used
+    ON worktree_leases(status, last_used_at);
+CREATE INDEX IF NOT EXISTS idx_worktree_leases_status
+    ON worktree_leases(status, last_used_at);
 
 CREATE TABLE IF NOT EXISTS index_jobs (
     job_id TEXT PRIMARY KEY,
@@ -203,6 +366,9 @@ CREATE TABLE IF NOT EXISTS index_jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON index_jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_project_status_created
     ON index_jobs(project_id, status, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_project_ref
+    ON index_jobs(project_id, "ref")
+    WHERE status IN ('queued', 'running', 'validating');
 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to
     ON symbol_edges(repo, "ref", to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
@@ -246,8 +412,84 @@ mod tests {
         assert!(tables.contains(&"symbol_edges".to_string()));
         assert!(tables.contains(&"branch_state".to_string()));
         assert!(tables.contains(&"branch_tombstones".to_string()));
+        assert!(tables.contains(&"worktree_leases".to_string()));
         assert!(tables.contains(&"index_jobs".to_string()));
         assert!(tables.contains(&"known_workspaces".to_string()));
+    }
+
+    #[test]
+    fn test_schema_contains_vcs_core_columns() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("test.db")).unwrap();
+        create_tables(&conn).unwrap();
+
+        let branch_state_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('branch_state') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(branch_state_cols.contains(&"symbol_count".to_string()));
+        assert!(branch_state_cols.contains(&"is_default_branch".to_string()));
+        assert!(branch_state_cols.contains(&"status".to_string()));
+        assert!(branch_state_cols.contains(&"eviction_eligible_at".to_string()));
+        let branch_state_eviction_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_branch_state_eviction'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(branch_state_eviction_idx, 1);
+
+        let tombstone_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('branch_tombstones') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(tombstone_cols.contains(&"tombstone_type".to_string()));
+        assert!(tombstone_cols.contains(&"created_at".to_string()));
+
+        let worktree_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('worktree_leases') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(worktree_cols.contains(&"last_used_at".to_string()));
+        let worktree_last_used_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_worktree_leases_status_last_used'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(worktree_last_used_idx, 1);
+        let worktree_status_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_worktree_leases_status'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(worktree_status_idx, 1);
+
+        let active_job_unique_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_jobs_active_project_ref'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_job_unique_idx, 1);
     }
 
     #[test]

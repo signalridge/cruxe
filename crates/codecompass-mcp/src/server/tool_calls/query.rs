@@ -1,4 +1,175 @@
 use super::*;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use tracing::warn;
+
+struct VcsOverlayContext {
+    default_ref: String,
+    overlay_index_set: IndexSet,
+    tombstones: HashSet<String>,
+}
+
+struct QueryExecutionContext<'a> {
+    index_set: &'a IndexSet,
+    conn: Option<&'a rusqlite::Connection>,
+    config: &'a Config,
+    project_id: &'a str,
+    effective_ref: &'a str,
+}
+
+fn resolve_vcs_overlay_context(
+    conn: Option<&rusqlite::Connection>,
+    config: &Config,
+    project_id: &str,
+    effective_ref: &str,
+) -> Result<Option<VcsOverlayContext>, StateError> {
+    let Some(conn) = conn else {
+        return Ok(None);
+    };
+
+    let Some(project) = codecompass_state::project::get_by_id(conn, project_id)? else {
+        return Ok(None);
+    };
+    if !project.vcs_mode || effective_ref == project.default_ref {
+        return Ok(None);
+    }
+
+    let Some(branch_state) =
+        codecompass_state::branch_state::get_branch_state(conn, project_id, effective_ref)?
+    else {
+        return Err(StateError::ref_not_indexed(project_id, effective_ref));
+    };
+
+    if matches!(
+        branch_state.status.as_str(),
+        "syncing" | "rebuilding" | "indexing"
+    ) {
+        return Err(StateError::overlay_not_ready(
+            project_id,
+            effective_ref,
+            format!("status={}", branch_state.status),
+        ));
+    }
+
+    let data_dir = config.project_data_dir(project_id);
+    let overlay_dir = branch_state
+        .overlay_dir
+        .map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { data_dir.join(p) })
+        .unwrap_or_else(|| {
+            codecompass_indexer::overlay::overlay_dir_for_ref(&data_dir, effective_ref)
+        });
+    let overlay_index_set =
+        codecompass_state::tantivy_index::IndexSet::open_existing_at(&overlay_dir).map_err(
+            |err| StateError::overlay_not_ready(project_id, effective_ref, format!("error={err}")),
+        )?;
+
+    let mut tombstone_cache = TombstoneCache::new(Some(conn));
+    let tombstones = match tombstone_cache.load_paths(project_id, effective_ref) {
+        Ok(paths) => paths.clone(),
+        Err(err) => {
+            warn!(
+                project_id = %project_id,
+                ref_name = %effective_ref,
+                error = %err,
+                "Failed to load tombstones; continuing without suppression"
+            );
+            HashSet::new()
+        }
+    };
+
+    Ok(Some(VcsOverlayContext {
+        default_ref: project.default_ref,
+        overlay_index_set,
+        tombstones,
+    }))
+}
+
+fn execute_locate_with_optional_overlay(
+    ctx: QueryExecutionContext<'_>,
+    name: &str,
+    kind: Option<&str>,
+    language: Option<&str>,
+    limit: usize,
+) -> Result<(Vec<locate::LocateResult>, usize), StateError> {
+    let QueryExecutionContext {
+        index_set,
+        conn,
+        config,
+        project_id,
+        effective_ref,
+    } = ctx;
+
+    if let Some(vcs) = resolve_vcs_overlay_context(conn, config, project_id, effective_ref)? {
+        return locate::locate_symbol_vcs_merged(
+            locate::VcsLocateContext {
+                base_index: &index_set.symbols,
+                overlay_index: &vcs.overlay_index_set.symbols,
+                tombstones: &vcs.tombstones,
+                base_ref: &vcs.default_ref,
+                target_ref: effective_ref,
+            },
+            name,
+            kind,
+            language,
+            limit,
+        );
+    }
+
+    let results = locate::locate_symbol(
+        &index_set.symbols,
+        name,
+        kind,
+        language,
+        Some(effective_ref),
+        limit,
+    )?;
+    let total_candidates = results.len();
+    Ok((results, total_candidates))
+}
+
+fn execute_search_with_optional_overlay(
+    ctx: QueryExecutionContext<'_>,
+    query: &str,
+    language: Option<&str>,
+    limit: usize,
+    debug_ranking: bool,
+) -> Result<search::SearchResponse, StateError> {
+    let QueryExecutionContext {
+        index_set,
+        conn,
+        config,
+        project_id,
+        effective_ref,
+    } = ctx;
+
+    if let Some(vcs) = resolve_vcs_overlay_context(conn, config, project_id, effective_ref)? {
+        return search::search_code_vcs_merged(
+            search::VcsSearchContext {
+                base_index_set: index_set,
+                overlay_index_set: &vcs.overlay_index_set,
+                tombstones: &vcs.tombstones,
+                base_ref: &vcs.default_ref,
+                target_ref: effective_ref,
+            },
+            conn,
+            query,
+            language,
+            limit,
+            debug_ranking,
+        );
+    }
+
+    search::search_code(
+        index_set,
+        conn,
+        query,
+        Some(effective_ref),
+        language,
+        limit,
+        debug_ranking,
+    )
+}
 
 pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcResponse {
     let QueryToolParams {
@@ -90,16 +261,20 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
     }
     let mut metadata = freshness.metadata;
 
-    match locate::locate_symbol(
-        &index_set.symbols,
+    match execute_locate_with_optional_overlay(
+        QueryExecutionContext {
+            index_set,
+            conn,
+            config,
+            project_id,
+            effective_ref: &effective_ref,
+        },
         name,
         kind,
         language,
-        Some(&effective_ref),
         limit,
     ) {
-        Ok(results) => {
-            let total_candidates = results.len();
+        Ok((results, total_candidates)) => {
             let (results, suppressed_duplicate_count) = dedup_locate_results(results);
             if suppressed_duplicate_count > 0 {
                 metadata.suppressed_duplicate_count = Some(suppressed_duplicate_count);
@@ -250,11 +425,15 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
     let mut metadata = freshness.metadata;
 
     let debug_ranking = ranking_explain_level != codecompass_core::types::RankingExplainLevel::Off;
-    match search::search_code(
-        index_set,
-        conn,
+    match execute_search_with_optional_overlay(
+        QueryExecutionContext {
+            index_set,
+            conn,
+            config,
+            project_id,
+            effective_ref: &effective_ref,
+        },
         query,
-        Some(&effective_ref),
         language,
         limit,
         debug_ranking,

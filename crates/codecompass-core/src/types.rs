@@ -270,6 +270,64 @@ impl OverlayMergeKey {
             path: path.into(),
         }
     }
+
+    pub fn symbol(
+        repo: impl Into<String>,
+        symbol_stable_id: impl AsRef<str>,
+        kind: impl AsRef<str>,
+    ) -> Self {
+        Self::new(
+            repo,
+            "symbol",
+            format!("{}:{}", symbol_stable_id.as_ref(), kind.as_ref()),
+        )
+    }
+
+    pub fn snippet(
+        repo: impl Into<String>,
+        path: impl AsRef<str>,
+        chunk_type: impl AsRef<str>,
+        line_start: u32,
+        line_end: u32,
+    ) -> Self {
+        Self::new(
+            repo,
+            "snippet",
+            format!(
+                "{}:{}:{}:{}",
+                path.as_ref(),
+                chunk_type.as_ref(),
+                line_start,
+                line_end
+            ),
+        )
+    }
+
+    pub fn file(repo: impl Into<String>, path: impl Into<String>) -> Self {
+        Self::new(repo, "file", path)
+    }
+
+    pub fn fallback(
+        repo: impl Into<String>,
+        result_type: impl Into<String>,
+        path: impl AsRef<str>,
+        line_start: u32,
+        line_end: u32,
+    ) -> Self {
+        Self::new(
+            repo,
+            result_type,
+            format!("{}:{}:{}", path.as_ref(), line_start, line_end),
+        )
+    }
+}
+
+/// Origin of a VCS-mode query result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceLayer {
+    Base,
+    Overlay,
 }
 
 /// Freshness status of the index.

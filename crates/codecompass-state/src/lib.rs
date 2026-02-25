@@ -8,4 +8,6 @@ pub mod schema;
 pub mod symbols;
 pub mod tantivy_index;
 pub mod tokenizers;
+pub mod tombstones;
 pub mod workspace;
+pub mod worktree_leases;

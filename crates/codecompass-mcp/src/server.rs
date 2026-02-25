@@ -16,6 +16,7 @@ use codecompass_query::locate;
 use codecompass_query::ranking;
 use codecompass_query::related;
 use codecompass_query::search;
+use codecompass_query::tombstone::TombstoneCache;
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
