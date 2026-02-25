@@ -56,6 +56,7 @@ mod context;
 mod health;
 mod index;
 mod query;
+mod refs;
 mod shared;
 mod status;
 mod structure;
@@ -128,6 +129,61 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             project_id,
         }),
         "get_code_context" => context::handle_get_code_context(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "diff_context" => query::handle_diff_context(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "find_references" => query::handle_find_references(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "explain_ranking" => query::handle_explain_ranking(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "list_refs" => refs::handle_list_refs(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "switch_ref" => refs::handle_switch_ref(QueryToolParams {
             id,
             arguments,
             config,

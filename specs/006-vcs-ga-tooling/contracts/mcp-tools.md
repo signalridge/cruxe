@@ -66,6 +66,16 @@ symbols with before/after signatures. No equivalent exists in any open-source co
   "head_ref": "feat/oauth2",
   "merge_base_commit": "abc123def456",
   "affected_files": 5,
+  "file_changes": [
+    {
+      "path": "src/auth/oauth.rs",
+      "change_type": "modified"
+    },
+    {
+      "path": "src/auth/legacy.rs",
+      "change_type": "deleted"
+    }
+  ],
   "changes": [
     {
       "symbol": "refresh_token",
@@ -137,6 +147,9 @@ symbols with before/after signatures. No equivalent exists in any open-source co
   }
 }
 ```
+
+`file_changes` provides file-level add/modify/delete summaries and complements
+symbol-level `changes`.
 
 ### Symbol Diff Classification
 
@@ -284,7 +297,9 @@ contribution of each ranking factor, enabling debugging and transparency.
   "query": "validate token",
   "result_path": "src/auth/jwt.rs",
   "result_line_start": 87,
-  "ref": "main"
+  "ref": "main",
+  "language": "rust",
+  "limit": 200
 }
 ```
 
@@ -294,6 +309,8 @@ contribution of each ranking factor, enabling debugging and transparency.
 | `result_path` | string | yes | File path of the result to explain. |
 | `result_line_start` | int | yes | Start line of the result to explain. |
 | `ref` | string | no | Branch/ref scope. Default: current HEAD or `"live"`. |
+| `language` | string | no | Language filter used when replaying ranking context (for example `"rust"`). |
+| `limit` | int | no | Candidate limit used when replaying ranking context. Default: 200. |
 
 ### Output
 

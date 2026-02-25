@@ -7,6 +7,7 @@ edition.workspace = true
 codecompass-core = { workspace = true }
 codecompass-indexer = { workspace = true }
 codecompass-state = { workspace = true }
+codecompass-vcs = { workspace = true }
 tantivy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -17,4 +18,3 @@ rusqlite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-codecompass-vcs = { workspace = true }

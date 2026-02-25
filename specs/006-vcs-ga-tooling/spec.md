@@ -24,6 +24,13 @@ It delivers:
 
 - `symbol_edges` now has composite forward/reverse type indexes and query-shape
   regression tests to support low-latency `find_references`/graph traversals.
+- Runtime SQLite handle management is now explicitly bounded to avoid
+  unbounded file-descriptor growth in long-lived multi-workspace servers.
+- High-fanout MCP fixture tests now use configurable bounded parallelism
+  (`CODECOMPASS_TEST_FIXTURE_PARALLELISM`) instead of global serial execution.
+- Cross-process maintenance lock (parent-scoped
+  `locks/state-maintenance-<path-hash>.lock`) now coordinates destructive state
+  mutations across import/prune/sync publish paths.
 
 ## User Scenarios & Testing
 
@@ -100,8 +107,8 @@ returned with correct file paths and edge types.
    included alongside base references, and each result carries `source_layer`
    (`base` or `overlay`) metadata.
 4. **Given** a symbol name that does not exist in the index, **When**
-   `find_references` is called, **Then** an empty result set is returned with
-   appropriate status (not an error).
+   `find_references` is called, **Then** a tool-level `symbol_not_found` error
+   is returned with remediation metadata.
 5. **Given** a tooling failure in `find_references` (e.g., corrupted edge data),
    **When** the tool is called, **Then** the failure is returned as a tool-level
    error and does not degrade `search_code` or `locate_symbol` availability.
@@ -235,6 +242,11 @@ match the pre-export state.
   error.
 - `explain_ranking` must remain deterministic even when called concurrently for
   different queries.
+- Multi-workspace MCP servers must remain stable under sustained request
+  concurrency without exhausting process file descriptors.
+- Concurrent state-mutating operations (`state import`, `prune-overlays`,
+  overlay publish during `sync_repo`) must not run simultaneously for the same
+  project data directory.
 
 ## Requirements
 
@@ -250,6 +262,16 @@ match the pre-export state.
 - **FR-507**: System MUST register all VCS GA tooling in MCP `tools/list`.
 - **FR-508**: System MUST provide overlay prune maintenance command with lease-awareness.
 - **FR-509**: Tooling failures MUST degrade gracefully and preserve core query availability.
+- **FR-510**: MCP runtime MUST bound cached SQLite connections using an idle
+  eviction strategy so connection cache growth is finite under multi-workspace
+  traffic.
+- **FR-511**: MCP regression tests that build fixture indices MUST support
+  configurable bounded parallelism and MUST NOT require fully serial test
+  execution for stability.
+- **FR-512**: State-mutating maintenance operations MUST acquire a per-project
+  cross-process lock file and fail fast with retryable guidance when the lock
+  is already held. The lock file location MUST remain stable across state data
+  directory rename-swap operations (for example import commit/rollback).
 
 ### Key Entities
 

@@ -99,6 +99,32 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
+fn write_test_config(config_path: &Path, data_root: &Path) {
+    let config = format!(
+        "[storage]\ndata_dir = \"{}\"\n",
+        data_root.to_string_lossy()
+    );
+    std::fs::write(config_path, config).expect("write test config");
+}
+
+fn run_codecompass(args: &[String]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_codecompass"))
+        .args(args)
+        .output()
+        .expect("run codecompass command")
+}
+
+fn run_codecompass_checked(args: &[String]) {
+    let output = run_codecompass(args);
+    assert!(
+        output.status.success(),
+        "codecompass {:?} failed:\nstdout:{}\nstderr:{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn index_repo_with_import_edges(
     repo_root: &Path,
     project_id: &str,
@@ -1831,6 +1857,410 @@ fn t081_relevance_benchmark_top1_precision() {
         total,
         failure_report,
     );
+}
+
+// ===========================================================================
+// T316/T317/T321 -- State Portability + Overlay Prune
+// ===========================================================================
+
+#[test]
+fn t316_state_export_import_roundtrip_preserves_search_results() {
+    let fixture = fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    copy_dir_recursive(&fixture, &workspace);
+
+    let data_root = tmp.path().join("cc-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let config_path = tmp.path().join("config.toml");
+    write_test_config(&config_path, &data_root);
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "init".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "index".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let workspace_canonical = std::fs::canonicalize(&workspace).unwrap();
+    let project_id =
+        codecompass_core::types::generate_project_id(&workspace_canonical.to_string_lossy());
+    let data_dir = data_root.join("data").join(&project_id);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+    let before = codecompass_query::search::search_code(
+        &index_set,
+        Some(&conn),
+        "validate_token",
+        Some(codecompass_core::constants::REF_LIVE),
+        Some("rust"),
+        10,
+        false,
+    )
+    .unwrap();
+    let before_keys: Vec<(String, u32, Option<String>)> = before
+        .results
+        .iter()
+        .map(|row| (row.path.clone(), row.line_start, row.name.clone()))
+        .collect();
+
+    let bundle_path = tmp.path().join("state.tar.zst");
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "state".to_string(),
+        "export".to_string(),
+        bundle_path.to_string_lossy().to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    std::fs::remove_dir_all(&data_dir).unwrap();
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "state".to_string(),
+        "import".to_string(),
+        bundle_path.to_string_lossy().to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let conn_after = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set_after = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+    let after = codecompass_query::search::search_code(
+        &index_set_after,
+        Some(&conn_after),
+        "validate_token",
+        Some(codecompass_core::constants::REF_LIVE),
+        Some("rust"),
+        10,
+        false,
+    )
+    .unwrap();
+    let after_keys: Vec<(String, u32, Option<String>)> = after
+        .results
+        .iter()
+        .map(|row| (row.path.clone(), row.line_start, row.name.clone()))
+        .collect();
+
+    assert_eq!(before_keys, after_keys);
+}
+
+#[test]
+fn t317_import_stale_state_sync_reindexes_only_delta() {
+    let fixture = fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    copy_dir_recursive(&fixture, &workspace);
+
+    let data_root = tmp.path().join("cc-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let config_path = tmp.path().join("config.toml");
+    write_test_config(&config_path, &data_root);
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "init".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "index".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let workspace_canonical = std::fs::canonicalize(&workspace).unwrap();
+    let project_id =
+        codecompass_core::types::generate_project_id(&workspace_canonical.to_string_lossy());
+    let data_dir = data_root.join("data").join(&project_id);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let bundle_path = tmp.path().join("stale.tar.zst");
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "state".to_string(),
+        "export".to_string(),
+        bundle_path.to_string_lossy().to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    // Make workspace newer than imported bundle.
+    let target_file = workspace.join("src/lib.rs");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&target_file)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b"\n// stale-import-delta\n"))
+        .expect("append delta to source");
+
+    std::fs::remove_dir_all(&data_dir).unwrap();
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "state".to_string(),
+        "import".to_string(),
+        bundle_path.to_string_lossy().to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "sync".to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let (mode, changed_files): (String, i64) = conn
+        .query_row(
+            "SELECT mode, changed_files
+             FROM index_jobs
+             ORDER BY rowid DESC
+             LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(mode, "incremental");
+    assert_eq!(changed_files, 1);
+}
+
+#[test]
+fn t330_state_import_fails_fast_when_maintenance_lock_is_held() {
+    let fixture = fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    copy_dir_recursive(&fixture, &workspace);
+
+    let data_root = tmp.path().join("cc-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let config_path = tmp.path().join("config.toml");
+    write_test_config(&config_path, &data_root);
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "init".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "index".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let bundle_path = tmp.path().join("state.tar.zst");
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "state".to_string(),
+        "export".to_string(),
+        bundle_path.to_string_lossy().to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let workspace_canonical = std::fs::canonicalize(&workspace).unwrap();
+    let project_id =
+        codecompass_core::types::generate_project_id(&workspace_canonical.to_string_lossy());
+    let data_dir = data_root.join("data").join(project_id);
+    let _lock = codecompass_state::maintenance_lock::acquire_project_lock(&data_dir, "test_hold")
+        .expect("acquire lock");
+
+    let output = run_codecompass(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "state".to_string(),
+        "import".to_string(),
+        bundle_path.to_string_lossy().to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+    assert!(
+        !output.status.success(),
+        "state import should fail fast when maintenance lock is held:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("maintenance lock busy"),
+        "expected maintenance lock busy error, stderr:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn t321_prune_overlays_removes_stale_overlay_dirs() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let data_root = tmp.path().join("cc-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let config_path = tmp.path().join("config.toml");
+    write_test_config(&config_path, &data_root);
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "init".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let workspace_canonical = std::fs::canonicalize(&workspace).unwrap();
+    let project_id =
+        codecompass_core::types::generate_project_id(&workspace_canonical.to_string_lossy());
+    let data_dir = data_root.join("data").join(&project_id);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+
+    let stale_overlay_rel = "overlays/feat-stale";
+    let recent_overlay_rel = "overlays/feat-recent";
+    std::fs::create_dir_all(data_dir.join(stale_overlay_rel)).unwrap();
+    std::fs::create_dir_all(data_dir.join(recent_overlay_rel)).unwrap();
+
+    let stale = codecompass_state::branch_state::BranchState {
+        repo: project_id.clone(),
+        r#ref: "feat/stale".to_string(),
+        merge_base_commit: None,
+        last_indexed_commit: "deadbeef".to_string(),
+        overlay_dir: Some(stale_overlay_rel.to_string()),
+        file_count: 1,
+        symbol_count: 1,
+        is_default_branch: false,
+        status: "active".to_string(),
+        eviction_eligible_at: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        last_accessed_at: "2025-01-01T00:00:00Z".to_string(),
+    };
+    let recent = codecompass_state::branch_state::BranchState {
+        repo: project_id.clone(),
+        r#ref: "feat/recent".to_string(),
+        merge_base_commit: None,
+        last_indexed_commit: "cafebabe".to_string(),
+        overlay_dir: Some(recent_overlay_rel.to_string()),
+        file_count: 1,
+        symbol_count: 1,
+        is_default_branch: false,
+        status: "active".to_string(),
+        eviction_eligible_at: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        last_accessed_at: "2026-02-24T00:00:00Z".to_string(),
+    };
+    codecompass_state::branch_state::upsert_branch_state(&conn, &stale).unwrap();
+    codecompass_state::branch_state::upsert_branch_state(&conn, &recent).unwrap();
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "prune-overlays".to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+        "--older-than".to_string(),
+        "30".to_string(),
+    ]);
+
+    assert!(!data_dir.join(stale_overlay_rel).exists());
+    assert!(data_dir.join(recent_overlay_rel).exists());
+
+    let stale_after =
+        codecompass_state::branch_state::get_branch_state(&conn, &project_id, "feat/stale")
+            .unwrap()
+            .expect("stale branch row");
+    let recent_after =
+        codecompass_state::branch_state::get_branch_state(&conn, &project_id, "feat/recent")
+            .unwrap()
+            .expect("recent branch row");
+    assert_eq!(stale_after.status, "evicted");
+    assert_eq!(recent_after.status, "active");
+}
+
+#[test]
+fn t321_prune_overlays_skips_paths_outside_project_data_dir() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let data_root = tmp.path().join("cc-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let config_path = tmp.path().join("config.toml");
+    write_test_config(&config_path, &data_root);
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "init".to_string(),
+        "--path".to_string(),
+        workspace.to_string_lossy().to_string(),
+    ]);
+
+    let workspace_canonical = std::fs::canonicalize(&workspace).unwrap();
+    let project_id =
+        codecompass_core::types::generate_project_id(&workspace_canonical.to_string_lossy());
+    let data_dir = data_root.join("data").join(&project_id);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+
+    let outside_overlay = tmp.path().join("outside-overlay");
+    std::fs::create_dir_all(&outside_overlay).unwrap();
+    std::fs::write(outside_overlay.join("marker.txt"), b"keep").unwrap();
+
+    let stale_outside = codecompass_state::branch_state::BranchState {
+        repo: project_id.clone(),
+        r#ref: "feat/outside".to_string(),
+        merge_base_commit: None,
+        last_indexed_commit: "feedface".to_string(),
+        overlay_dir: Some(outside_overlay.to_string_lossy().to_string()),
+        file_count: 1,
+        symbol_count: 1,
+        is_default_branch: false,
+        status: "active".to_string(),
+        eviction_eligible_at: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        last_accessed_at: "2025-01-01T00:00:00Z".to_string(),
+    };
+    codecompass_state::branch_state::upsert_branch_state(&conn, &stale_outside).unwrap();
+
+    run_codecompass_checked(&[
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "prune-overlays".to_string(),
+        "--workspace".to_string(),
+        workspace.to_string_lossy().to_string(),
+        "--older-than".to_string(),
+        "30".to_string(),
+    ]);
+
+    assert!(
+        outside_overlay.exists(),
+        "external directory must not be removed by prune-overlays"
+    );
+    let outside_after =
+        codecompass_state::branch_state::get_branch_state(&conn, &project_id, "feat/outside")
+            .unwrap()
+            .expect("outside branch row");
+    assert_eq!(outside_after.status, "active");
 }
 
 // ---------------------------------------------------------------------------

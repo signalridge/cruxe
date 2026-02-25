@@ -1,5 +1,8 @@
 pub mod context;
 pub mod detail;
+pub mod diff_context;
+pub mod explain_ranking;
+pub mod find_references;
 pub mod freshness;
 pub mod hierarchy;
 pub mod intent;

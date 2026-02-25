@@ -117,7 +117,10 @@ impl WorkspaceRouter {
             })?
         {
             // Case 2: Known workspace
-            let on_demand_indexing = ws.project_id.is_none() && ws.index_status == "indexing";
+            // If a known workspace has no bound project yet, it is in bootstrap discovery
+            // and callers should receive on-demand semantics even before the indexing claim
+            // flips `index_status` to `indexing`.
+            let on_demand_indexing = ws.project_id.is_none();
             let project_id = ws
                 .project_id
                 .unwrap_or_else(|| generate_project_id(&canonical_str));

@@ -8,6 +8,7 @@ codecompass-core = { workspace = true }
 codecompass-state = { workspace = true }
 codecompass-indexer = { workspace = true }
 codecompass-query = { workspace = true }
+codecompass-vcs = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
@@ -19,4 +20,3 @@ rusqlite = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 blake3 = { workspace = true }
-codecompass-vcs = { workspace = true }

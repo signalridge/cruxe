@@ -336,6 +336,19 @@ pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, O
                 "remediation": "Poll index_status and retry sync_repo after the active sync completes.",
             })),
         ),
+        StateError::MaintenanceLockBusy {
+            operation,
+            lock_path,
+        } => (
+            ProtocolErrorCode::SyncInProgress,
+            "Project maintenance is already in progress.".to_string(),
+            Some(json!({
+                "details": format!(
+                    "maintenance_lock_busy: operation={operation}, lock_path={lock_path}"
+                ),
+                "remediation": "Retry after the active maintenance operation completes.",
+            })),
+        ),
         StateError::RefNotIndexed {
             project_id,
             ref_name,
@@ -361,6 +374,30 @@ pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, O
                     "overlay_not_ready: project_id={project_id}, ref={ref_name}, {reason}"
                 ),
                 "remediation": "Poll index_status until indexing finishes, then retry.",
+            })),
+        ),
+        StateError::MergeBaseFailed {
+            base_ref,
+            head_ref,
+            reason,
+        } => (
+            ProtocolErrorCode::MergeBaseFailed,
+            "Unable to compute merge-base for the requested refs.".to_string(),
+            Some(json!({
+                "details": format!(
+                    "merge_base_failed: base_ref={base_ref}, head_ref={head_ref}, reason={reason}"
+                ),
+                "remediation": "Validate the refs and repository integrity, then retry.",
+            })),
+        ),
+        StateError::ResultNotFound { path, line_start } => (
+            ProtocolErrorCode::ResultNotFound,
+            "Requested result target was not found.".to_string(),
+            Some(json!({
+                "details": format!(
+                    "result_not_found: path={path}, line_start={line_start}"
+                ),
+                "remediation": "Re-run the query and select a valid result from the returned list.",
             })),
         ),
         StateError::SchemaMigrationRequired { current, required } => (

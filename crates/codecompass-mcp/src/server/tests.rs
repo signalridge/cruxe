@@ -2,11 +2,76 @@ use super::*;
 use codecompass_core::config::Config;
 use codecompass_core::types::{Project, WorkspaceConfig, generate_project_id};
 use serde_json::json;
+use std::ops::Deref;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+struct FixtureIndexLimiter {
+    active_handles: Mutex<usize>,
+    cv: Condvar,
+    max_handles: usize,
+}
+
+struct FixtureIndexPermit {
+    limiter: &'static FixtureIndexLimiter,
+}
+
+struct FixtureIndex {
+    _permit: FixtureIndexPermit,
+    index_set: IndexSet,
+}
+
+impl Deref for FixtureIndex {
+    type Target = IndexSet;
+
+    fn deref(&self) -> &Self::Target {
+        &self.index_set
+    }
+}
+
+impl Drop for FixtureIndexPermit {
+    fn drop(&mut self) {
+        let mut guard = self
+            .limiter
+            .active_handles
+            .lock()
+            .expect("fixture index limiter lock");
+        *guard = guard.saturating_sub(1);
+        self.limiter.cv.notify_one();
+    }
+}
+
+fn fixture_index_limiter() -> &'static FixtureIndexLimiter {
+    static LIMITER: OnceLock<FixtureIndexLimiter> = OnceLock::new();
+    LIMITER.get_or_init(|| FixtureIndexLimiter {
+        active_handles: Mutex::new(0),
+        cv: Condvar::new(),
+        max_handles: fixture_index_parallelism_limit(),
+    })
+}
+
+fn fixture_index_parallelism_limit() -> usize {
+    std::env::var("CODECOMPASS_TEST_FIXTURE_PARALLELISM")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2)
+}
+
+fn acquire_fixture_index_permit() -> FixtureIndexPermit {
+    let limiter = fixture_index_limiter();
+    let mut guard = limiter
+        .active_handles
+        .lock()
+        .expect("fixture index limiter lock");
+    while *guard >= limiter.max_handles {
+        guard = limiter.cv.wait(guard).expect("fixture index wait");
+    }
+    *guard += 1;
+    FixtureIndexPermit { limiter }
+}
 
 /// Default prewarm status for tests (complete).
 fn test_prewarm_status() -> AtomicU8 {
@@ -151,6 +216,56 @@ fn resolve_tool_ref_falls_back_to_project_default_when_head_unavailable() {
     assert_eq!(explicit, "feat/auth");
 }
 
+#[test]
+fn resolve_tool_ref_scopes_overrides_by_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path();
+
+    let db_path = tmp.path().join("state.db");
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+
+    let project_id = "proj_session_scoped";
+    let project = Project {
+        project_id: project_id.to_string(),
+        repo_root: workspace.to_string_lossy().to_string(),
+        display_name: Some("session-scoped".to_string()),
+        default_ref: "main".to_string(),
+        vcs_mode: true,
+        schema_version: 1,
+        parser_version: 1,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    codecompass_state::project::create_project(&conn, &project).unwrap();
+
+    {
+        let _scope = set_active_session_scope(Some("session-a"));
+        set_session_ref_override(workspace, project_id, "feat/auth").unwrap();
+    }
+
+    let session_a_ref = {
+        let _scope = set_active_session_scope(Some("session-a"));
+        resolve_tool_ref(None, workspace, Some(&conn), project_id)
+    };
+    let session_b_ref = {
+        let _scope = set_active_session_scope(Some("session-b"));
+        resolve_tool_ref(None, workspace, Some(&conn), project_id)
+    };
+    assert_eq!(session_a_ref, "feat/auth");
+    assert_eq!(session_b_ref, "main");
+
+    {
+        let _scope = set_active_session_scope(Some("session-a"));
+        clear_session_ref_override(workspace, project_id).unwrap();
+    }
+    let after_clear = {
+        let _scope = set_active_session_scope(Some("session-a"));
+        resolve_tool_ref(None, workspace, Some(&conn), project_id)
+    };
+    assert_eq!(after_clear, "main");
+}
+
 // ------------------------------------------------------------------
 // T065: tools/list returns all registered tools
 // ------------------------------------------------------------------
@@ -188,7 +303,7 @@ fn t065_tools_list_returns_all_registered_tools() {
         .as_array()
         .expect("'tools' should be an array");
 
-    assert_eq!(tools.len(), 10, "expected 10 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 15, "expected 15 tools, got {}", tools.len());
 
     let tool_names: Vec<&str> = tools
         .iter()
@@ -200,6 +315,11 @@ fn t065_tools_list_returns_all_registered_tools() {
         "sync_repo",
         "search_code",
         "locate_symbol",
+        "diff_context",
+        "find_references",
+        "explain_ranking",
+        "list_refs",
+        "switch_ref",
         "get_file_outline",
         "get_symbol_hierarchy",
         "find_related_symbols",
@@ -286,6 +406,7 @@ fn t462_transport_contexts_produce_same_tools_list_semantics() {
     let stdio_transport = TransportExecutionContext {
         notifier: Arc::new(NullProgressNotifier),
         progress_token: None,
+        session_scope: Some("stdio-test"),
         transport_label: "stdio-test",
         log_workspace_resolution_failures: false,
         log_degraded_sqlite_open: false,
@@ -293,6 +414,7 @@ fn t462_transport_contexts_produce_same_tools_list_semantics() {
     let http_transport = TransportExecutionContext {
         notifier: Arc::new(NullProgressNotifier),
         progress_token: None,
+        session_scope: Some("http-test"),
         transport_label: "http-test",
         log_workspace_resolution_failures: false,
         log_degraded_sqlite_open: false,
@@ -326,6 +448,7 @@ fn t463_transport_contexts_match_for_validation_and_compatibility_errors() {
     let stdio_transport = TransportExecutionContext {
         notifier: Arc::new(NullProgressNotifier),
         progress_token: None,
+        session_scope: Some("stdio-test"),
         transport_label: "stdio-test",
         log_workspace_resolution_failures: false,
         log_degraded_sqlite_open: false,
@@ -333,6 +456,7 @@ fn t463_transport_contexts_match_for_validation_and_compatibility_errors() {
     let http_transport = TransportExecutionContext {
         notifier: Arc::new(NullProgressNotifier),
         progress_token: None,
+        session_scope: Some("http-test"),
         transport_label: "http-test",
         log_workspace_resolution_failures: false,
         log_degraded_sqlite_open: false,
@@ -376,11 +500,12 @@ fn t463_transport_contexts_match_for_validation_and_compatibility_errors() {
 // T066: locate_symbol via JSON-RPC with an indexed fixture
 // ------------------------------------------------------------------
 
-fn build_fixture_index(tmp_dir: &std::path::Path) -> IndexSet {
+fn build_fixture_index(tmp_dir: &std::path::Path) -> FixtureIndex {
     use codecompass_indexer::{
         import_extract, languages, parser, scanner, snippet_extract, symbol_extract, writer,
     };
     use codecompass_state::{db, schema, tantivy_index::IndexSet};
+    let permit = acquire_fixture_index_permit();
 
     let fixture_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../testdata/fixtures/rust-sample");
@@ -462,7 +587,10 @@ fn build_fixture_index(tmp_dir: &std::path::Path) -> IndexSet {
         writer::replace_import_edges_for_file(&conn, repo, r#ref, &path, raw_imports).unwrap();
     }
 
-    index_set
+    FixtureIndex {
+        _permit: permit,
+        index_set,
+    }
 }
 
 #[test]
@@ -848,10 +976,10 @@ fn t097_search_code_detail_level_context() {
 }
 
 // ------------------------------------------------------------------
-// Helper: build fixture index and return both IndexSet and DB path
+// Helper: build fixture index and return both fixture handle and DB path
 // ------------------------------------------------------------------
 
-fn build_fixture_index_with_db(tmp_dir: &std::path::Path) -> (IndexSet, std::path::PathBuf) {
+fn build_fixture_index_with_db(tmp_dir: &std::path::Path) -> (FixtureIndex, std::path::PathBuf) {
     let index_set = build_fixture_index(tmp_dir);
     let db_path = tmp_dir.join("data").join("state.db");
     (index_set, db_path)
@@ -3124,6 +3252,333 @@ fn t134_tools_list_schema_verification() {
     assert!(context_required.contains(&json!("query")));
 }
 
+#[test]
+fn t319_tools_list_includes_vcs_ga_tool_schemas() {
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "fake_project_id";
+    let request = make_request("tools/list", json!({}));
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response.error.is_none(), "tools/list should succeed");
+    let result = response.result.unwrap();
+    let tools = result.get("tools").unwrap().as_array().unwrap();
+
+    for tool_name in [
+        "diff_context",
+        "find_references",
+        "explain_ranking",
+        "list_refs",
+        "switch_ref",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|item| item.get("name").and_then(|v| v.as_str()) == Some(tool_name))
+            .unwrap_or_else(|| panic!("{tool_name} should be present in tools/list"));
+        let schema = tool.get("inputSchema").unwrap();
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|v| v.get("workspace"))
+                .is_some(),
+            "{tool_name} should expose workspace in input schema"
+        );
+    }
+}
+
+fn setup_vcs_project_for_ref_tools(
+    workspace: &Path,
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) {
+    ensure_git_workspace_with_refs(workspace);
+
+    let now = "2026-02-25T00:00:00Z".to_string();
+    let project = Project {
+        project_id: project_id.to_string(),
+        repo_root: workspace.to_string_lossy().to_string(),
+        display_name: Some("ref-tools".to_string()),
+        default_ref: "main".to_string(),
+        vcs_mode: true,
+        schema_version: 1,
+        parser_version: 1,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    codecompass_state::project::create_project(conn, &project).unwrap();
+    codecompass_state::branch_state::upsert_branch_state(
+        conn,
+        &codecompass_state::branch_state::BranchState {
+            repo: project_id.to_string(),
+            r#ref: "main".to_string(),
+            merge_base_commit: None,
+            last_indexed_commit: "abc123".to_string(),
+            overlay_dir: None,
+            file_count: 10,
+            symbol_count: 30,
+            is_default_branch: true,
+            status: "active".to_string(),
+            eviction_eligible_at: None,
+            created_at: now.clone(),
+            last_accessed_at: now.clone(),
+        },
+    )
+    .unwrap();
+    codecompass_state::branch_state::upsert_branch_state(
+        conn,
+        &codecompass_state::branch_state::BranchState {
+            repo: project_id.to_string(),
+            r#ref: "feat/auth".to_string(),
+            merge_base_commit: Some("abc123".to_string()),
+            last_indexed_commit: "def456".to_string(),
+            overlay_dir: Some("overlay/feat-auth".to_string()),
+            file_count: 4,
+            symbol_count: 9,
+            is_default_branch: false,
+            status: "active".to_string(),
+            eviction_eligible_at: None,
+            created_at: now.clone(),
+            last_accessed_at: now,
+        },
+    )
+    .unwrap();
+}
+
+fn ensure_git_workspace_with_refs(workspace: &Path) {
+    if workspace.join(".git").exists() {
+        return;
+    }
+    std::fs::create_dir_all(workspace).unwrap();
+
+    run_git(workspace, &["init"]);
+    run_git(workspace, &["config", "user.email", "tests@example.com"]);
+    run_git(workspace, &["config", "user.name", "CodeCompass Tests"]);
+
+    std::fs::write(workspace.join("README.md"), "vcs tool test fixture\n").unwrap();
+    run_git(workspace, &["add", "."]);
+    run_git(workspace, &["commit", "-m", "fixture init"]);
+
+    let head = run_git_capture(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    if head != "main" {
+        run_git(workspace, &["branch", "-m", "main"]);
+    }
+    run_git(workspace, &["branch", "feat/auth"]);
+}
+
+fn run_git(workspace: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_git_capture(workspace: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn t309_list_refs_returns_branch_state_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = Config::default();
+    config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = config.project_data_dir(&project_id);
+    let conn = codecompass_state::db::open_connection(
+        &data_dir.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+    setup_vcs_project_for_ref_tools(&workspace, &conn, &project_id);
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "list_refs",
+            "arguments": {}
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "list_refs should succeed");
+    let payload = extract_payload_from_response(&response);
+    let refs = payload.get("refs").unwrap().as_array().unwrap();
+    assert_eq!(refs.len(), 2);
+    assert!(
+        refs.iter()
+            .any(|value| value.get("ref") == Some(&json!("main")))
+    );
+    assert!(
+        refs.iter()
+            .any(|value| value.get("ref") == Some(&json!("feat/auth")))
+    );
+}
+
+#[test]
+fn t310_switch_ref_updates_session_ref_without_mutating_project_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = Config::default();
+    config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = config.project_data_dir(&project_id);
+    let conn = codecompass_state::db::open_connection(
+        &data_dir.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+    setup_vcs_project_for_ref_tools(&workspace, &conn, &project_id);
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "switch_ref",
+            "arguments": {
+                "ref": "feat/auth"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response.error.is_none(), "switch_ref should succeed");
+
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(payload.get("ref"), Some(&json!("feat/auth")));
+    assert_eq!(payload.get("previous_ref"), Some(&json!("main")));
+
+    let project_row = codecompass_state::project::get_by_id(&conn, &project_id)
+        .unwrap()
+        .expect("project should exist");
+    assert_eq!(project_row.default_ref, "main");
+    assert_eq!(
+        resolve_tool_ref(None, &workspace, Some(&conn), &project_id),
+        "feat/auth"
+    );
+}
+
+#[test]
+fn t311_switch_ref_rejects_unindexed_ref_with_guidance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = Config::default();
+    config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = config.project_data_dir(&project_id);
+    let conn = codecompass_state::db::open_connection(
+        &data_dir.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+    setup_vcs_project_for_ref_tools(&workspace, &conn, &project_id);
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "switch_ref",
+            "arguments": {
+                "ref": "feat/missing"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(
+        response.error.is_none(),
+        "switch_ref returns tool-level error envelope"
+    );
+    let payload = extract_payload_from_response(&response);
+    let error = payload.get("error").expect("error payload should exist");
+    assert_eq!(error.get("code"), Some(&json!("ref_not_indexed")));
+    assert!(
+        error
+            .get("data")
+            .and_then(|value| value.get("remediation"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.contains("sync_repo")),
+        "expected remediation guidance"
+    );
+}
+
 // ------------------------------------------------------------------
 // T207: Contract guard – all query/path tools expose `workspace` param
 // ------------------------------------------------------------------
@@ -3160,7 +3615,7 @@ fn t207_all_tools_expose_workspace_parameter() {
         .as_array()
         .expect("'tools' should be an array");
 
-    // All 10 tools must expose a `workspace` property in their inputSchema
+    // All tools must expose a `workspace` property in their inputSchema
     for tool in tools {
         let name = tool.get("name").unwrap().as_str().unwrap();
         let schema = tool
@@ -4555,6 +5010,59 @@ fn t467_connection_manager_reopens_after_failure_and_invalidate() {
     let conn = second.lock().expect("lock re-opened sqlite");
     let one: i64 = conn.query_row("SELECT 1", [], |row| row.get(0)).unwrap();
     assert_eq!(one, 1);
+}
+
+#[test]
+fn t468_connection_manager_evicts_oldest_idle_entry_when_at_capacity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db1 = tmp.path().join("db1.sqlite");
+    let db2 = tmp.path().join("db2.sqlite");
+    let db3 = tmp.path().join("db3.sqlite");
+    let manager = ConnectionManager::with_capacity(2);
+
+    drop(manager.get_or_open(&db1).expect("open db1"));
+    std::thread::sleep(Duration::from_millis(5));
+    drop(manager.get_or_open(&db2).expect("open db2"));
+    assert!(manager.contains_connection(&db1));
+    assert!(manager.contains_connection(&db2));
+
+    drop(manager.get_or_open(&db3).expect("open db3"));
+
+    assert_eq!(
+        manager.cached_connection_count(),
+        2,
+        "manager should enforce bounded cache size for idle connections"
+    );
+    assert!(
+        !manager.contains_connection(&db1),
+        "oldest idle connection should be evicted first"
+    );
+    assert!(manager.contains_connection(&db2));
+    assert!(manager.contains_connection(&db3));
+}
+
+#[test]
+fn t469_connection_manager_keeps_in_use_entries_even_when_over_capacity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db1 = tmp.path().join("db1.sqlite");
+    let db2 = tmp.path().join("db2.sqlite");
+    let manager = ConnectionManager::with_capacity(1);
+
+    let held = manager.get_or_open(&db1).expect("open db1");
+    let second = manager.get_or_open(&db2).expect("open db2");
+
+    assert!(
+        manager.contains_connection(&db1),
+        "in-use entry should remain cached"
+    );
+    assert!(manager.contains_connection(&db2));
+    assert!(
+        manager.cached_connection_count() >= 2,
+        "manager may temporarily exceed capacity when all older entries are in use"
+    );
+
+    drop(second);
+    drop(held);
 }
 
 // ------------------------------------------------------------------

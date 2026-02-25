@@ -19,6 +19,7 @@ release/
 .codex/
 .serena/
 .specify/
+.worktrees/
 
 # Linter caches
 .ruff_cache/
