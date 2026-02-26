@@ -1,7 +1,7 @@
 use crate::import_extract::{self, RawImport};
 use codecompass_core::error::StateError;
 use codecompass_core::time::now_iso8601;
-use codecompass_core::types::{FileRecord, SnippetRecord, SymbolRecord};
+use codecompass_core::types::{CallEdge, FileRecord, SnippetRecord, SymbolRecord};
 use codecompass_state::tantivy_index::{self, IndexSet};
 use codecompass_state::{edges, manifest, symbols};
 use rusqlite::Connection;
@@ -296,6 +296,32 @@ impl BatchWriter {
         self::replace_import_edges_for_file(conn, repo, ref_name, file_path, raw_imports)
     }
 
+    /// Replace call edges for a file atomically.
+    ///
+    /// Existing call edges emitted from `file_path` are deleted first, then
+    /// `call_edges` are inserted for the same `(repo, ref)` scope.
+    pub fn replace_call_edges_for_file(
+        &self,
+        conn: &Connection,
+        repo: &str,
+        ref_name: &str,
+        file_path: &str,
+        call_edges: Vec<CallEdge>,
+    ) -> Result<(), StateError> {
+        self::replace_call_edges_for_file(conn, repo, ref_name, file_path, call_edges)
+    }
+
+    /// Replace call edges for multiple files atomically.
+    pub fn replace_call_edges_for_files(
+        &self,
+        conn: &Connection,
+        repo: &str,
+        ref_name: &str,
+        edges_by_file: Vec<(String, Vec<CallEdge>)>,
+    ) -> Result<(), StateError> {
+        self::replace_call_edges_for_files(conn, repo, ref_name, edges_by_file)
+    }
+
     /// Commit all three index writers at once.
     pub fn commit(mut self) -> Result<(), StateError> {
         self.symbol_writer.commit().map_err(StateError::tantivy)?;
@@ -361,6 +387,32 @@ pub fn replace_import_edges_for_file(
         resolved,
     )?;
     Ok(())
+}
+
+/// Replace call edges for a file atomically within a transaction.
+pub fn replace_call_edges_for_file(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    file_path: &str,
+    call_edges: Vec<CallEdge>,
+) -> Result<(), StateError> {
+    edges::delete_call_edges_for_file(conn, repo, ref_name, file_path)?;
+    if call_edges.is_empty() {
+        return Ok(());
+    }
+    edges::insert_call_edges(conn, repo, ref_name, &call_edges)?;
+    Ok(())
+}
+
+/// Replace call edges for multiple files atomically.
+pub fn replace_call_edges_for_files(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    edges_by_file: Vec<(String, Vec<CallEdge>)>,
+) -> Result<(), StateError> {
+    edges::replace_call_edges_for_files(conn, repo, ref_name, &edges_by_file)
 }
 
 fn write_symbols_to_tantivy(

@@ -193,6 +193,26 @@ fn execute_search_with_optional_overlay(
     )
 }
 
+fn merge_freshness_status(
+    left: codecompass_core::types::FreshnessStatus,
+    right: codecompass_core::types::FreshnessStatus,
+) -> codecompass_core::types::FreshnessStatus {
+    use codecompass_core::types::FreshnessStatus;
+    match (left, right) {
+        (FreshnessStatus::Syncing, _) | (_, FreshnessStatus::Syncing) => FreshnessStatus::Syncing,
+        (FreshnessStatus::Stale, _) | (_, FreshnessStatus::Stale) => FreshnessStatus::Stale,
+        _ => FreshnessStatus::Fresh,
+    }
+}
+
+fn freshness_status_label(status: codecompass_core::types::FreshnessStatus) -> &'static str {
+    match status {
+        codecompass_core::types::FreshnessStatus::Fresh => "fresh",
+        codecompass_core::types::FreshnessStatus::Stale => "stale",
+        codecompass_core::types::FreshnessStatus::Syncing => "syncing",
+    }
+}
+
 pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcResponse {
     let QueryToolParams {
         id,
@@ -751,6 +771,462 @@ pub(super) fn handle_find_references(params: QueryToolParams<'_>) -> JsonRpcResp
             tool_error_response(id, code, message, data, metadata)
         }
     }
+}
+
+pub(super) fn handle_get_call_graph(params: QueryToolParams<'_>) -> JsonRpcResponse {
+    let QueryToolParams {
+        id,
+        arguments,
+        config,
+        schema_status,
+        compatibility_reason,
+        conn,
+        workspace,
+        project_id,
+        ..
+    } = params;
+
+    let symbol_name = arguments
+        .get("symbol_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let path = arguments.get("path").and_then(|value| value.as_str());
+    let requested_ref = arguments.get("ref").and_then(|value| value.as_str());
+    let direction_raw = arguments
+        .get("direction")
+        .and_then(|value| value.as_str())
+        .unwrap_or("both");
+    let requested_depth = arguments
+        .get("depth")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1) as u32;
+    let limit = arguments
+        .get("limit")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(20) as usize;
+    let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
+    let base_metadata = validation_metadata(&effective_ref, schema_status);
+
+    if symbol_name.trim().is_empty() {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameter `symbol_name` is required.",
+            None,
+            base_metadata,
+        );
+    }
+
+    let Some(direction) = call_graph::CallGraphDirection::parse(direction_raw) else {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameter `direction` must be one of: callers, callees, both.",
+            Some(json!({ "direction": direction_raw })),
+            base_metadata,
+        );
+    };
+
+    if schema_status != SchemaStatus::Compatible {
+        return tool_compatibility_error(ToolCompatibilityParams {
+            id,
+            schema_status,
+            compatibility_reason,
+            config,
+            conn,
+            workspace,
+            project_id,
+            ref_name: &effective_ref,
+        });
+    }
+    let Some(c) = conn else {
+        return tool_compatibility_error(ToolCompatibilityParams {
+            id,
+            schema_status,
+            compatibility_reason,
+            config,
+            conn,
+            workspace,
+            project_id,
+            ref_name: &effective_ref,
+        });
+    };
+
+    match codecompass_state::branch_state::get_branch_state(c, project_id, &effective_ref) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return tool_error_response(
+                id,
+                ProtocolErrorCode::RefNotIndexed,
+                "The requested ref has no indexed state yet.",
+                Some(json!({
+                    "ref": effective_ref,
+                    "remediation": "Run sync_repo for this ref before querying.",
+                })),
+                validation_metadata(&effective_ref, schema_status),
+            );
+        }
+        Err(err) => {
+            let (code, message, data) = map_state_error(&err);
+            return tool_error_response(
+                id,
+                code,
+                message,
+                data,
+                validation_metadata(&effective_ref, schema_status),
+            );
+        }
+    }
+
+    let freshness = check_and_enforce_freshness(
+        id.clone(),
+        arguments,
+        config,
+        conn,
+        workspace,
+        project_id,
+        &effective_ref,
+        schema_status,
+    );
+    if let Some(block) = freshness.block_response {
+        return block;
+    }
+    let mut metadata = freshness.metadata;
+    let mut warnings = Vec::new();
+    if requested_depth == 0 {
+        warnings.push("Depth 0 is invalid; using depth=1.".to_string());
+    }
+    if requested_depth > call_graph::MAX_CALL_GRAPH_DEPTH {
+        warnings.push(format!(
+            "Requested depth {} exceeds max {}; clamped.",
+            requested_depth,
+            call_graph::MAX_CALL_GRAPH_DEPTH
+        ));
+    }
+    if !warnings.is_empty() {
+        metadata.warnings = Some(warnings);
+    }
+
+    match call_graph::get_call_graph(
+        c,
+        project_id,
+        &effective_ref,
+        &call_graph::CallGraphRequest {
+            symbol_name,
+            path,
+            direction,
+            depth: requested_depth,
+            limit,
+        },
+    ) {
+        Ok(result) => {
+            if result.truncated {
+                metadata.result_completeness =
+                    codecompass_core::types::ResultCompleteness::Truncated;
+            }
+            let mut payload = match serde_json::to_value(result) {
+                Ok(value) => value,
+                Err(err) => {
+                    return tool_error_response(
+                        id,
+                        ProtocolErrorCode::InternalError,
+                        "Failed to serialize get_call_graph payload.",
+                        Some(json!({ "error": err.to_string() })),
+                        metadata.clone(),
+                    );
+                }
+            };
+            if let Value::Object(object) = &mut payload {
+                object.insert("metadata".to_string(), json!(metadata));
+            }
+            tool_text_response(id, payload)
+        }
+        Err(call_graph::CallGraphError::SymbolNotFound) => tool_error_response(
+            id,
+            ProtocolErrorCode::SymbolNotFound,
+            "No symbol matching the requested name was found.",
+            Some(json!({
+                "symbol_name": symbol_name,
+                "path": path,
+                "ref": effective_ref,
+            })),
+            metadata,
+        ),
+        Err(call_graph::CallGraphError::State(err)) => {
+            let (code, message, data) = map_state_error(&err);
+            tool_error_response(id, code, message, data, metadata)
+        }
+    }
+}
+
+pub(super) fn handle_compare_symbol_between_commits(
+    params: QueryToolParams<'_>,
+) -> JsonRpcResponse {
+    let QueryToolParams {
+        id,
+        arguments,
+        config,
+        schema_status,
+        compatibility_reason,
+        conn,
+        workspace,
+        project_id,
+        ..
+    } = params;
+
+    let symbol_name = arguments
+        .get("symbol_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let path = arguments.get("path").and_then(|value| value.as_str());
+    let base_ref = arguments
+        .get("base_ref")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let head_ref = arguments
+        .get("head_ref")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let base_metadata = validation_metadata(head_ref, schema_status);
+
+    if symbol_name.trim().is_empty() || base_ref.trim().is_empty() || head_ref.trim().is_empty() {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameters `symbol_name`, `base_ref`, and `head_ref` are required.",
+            None,
+            base_metadata,
+        );
+    }
+
+    if schema_status != SchemaStatus::Compatible {
+        return tool_compatibility_error(ToolCompatibilityParams {
+            id,
+            schema_status,
+            compatibility_reason,
+            config,
+            conn,
+            workspace,
+            project_id,
+            ref_name: head_ref,
+        });
+    }
+    let Some(c) = conn else {
+        return tool_compatibility_error(ToolCompatibilityParams {
+            id,
+            schema_status,
+            compatibility_reason,
+            config,
+            conn,
+            workspace,
+            project_id,
+            ref_name: head_ref,
+        });
+    };
+
+    for ref_name in [base_ref, head_ref] {
+        match codecompass_state::branch_state::get_branch_state(c, project_id, ref_name) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::RefNotIndexed,
+                    "The requested ref has no indexed state yet.",
+                    Some(json!({
+                        "ref": ref_name,
+                        "remediation": "Run sync_repo for this ref before querying.",
+                    })),
+                    validation_metadata(ref_name, schema_status),
+                );
+            }
+            Err(err) => {
+                let (code, message, data) = map_state_error(&err);
+                return tool_error_response(
+                    id,
+                    code,
+                    message,
+                    data,
+                    validation_metadata(ref_name, schema_status),
+                );
+            }
+        }
+    }
+    let base_freshness = check_and_enforce_freshness(
+        id.clone(),
+        arguments,
+        config,
+        conn,
+        workspace,
+        project_id,
+        base_ref,
+        schema_status,
+    );
+    if let Some(block) = base_freshness.block_response {
+        return block;
+    }
+    let head_freshness = check_and_enforce_freshness(
+        id.clone(),
+        arguments,
+        config,
+        conn,
+        workspace,
+        project_id,
+        head_ref,
+        schema_status,
+    );
+    if let Some(block) = head_freshness.block_response {
+        return block;
+    }
+
+    let mut metadata = head_freshness.metadata;
+    let merged_freshness = merge_freshness_status(
+        metadata.freshness_status,
+        base_freshness.metadata.freshness_status,
+    );
+    if base_freshness.metadata.freshness_status != codecompass_core::types::FreshnessStatus::Fresh {
+        metadata.freshness_status = merged_freshness;
+        let warnings = metadata.warnings.get_or_insert_with(Vec::new);
+        warnings.push(format!(
+            "Base ref `{}` freshness_status is `{}`.",
+            base_ref,
+            freshness_status_label(base_freshness.metadata.freshness_status)
+        ));
+    }
+
+    match symbol_compare::compare_symbol_between_refs(
+        c,
+        project_id,
+        symbol_name,
+        path,
+        base_ref,
+        head_ref,
+    ) {
+        Ok(result) => {
+            let mut payload = match serde_json::to_value(result) {
+                Ok(value) => value,
+                Err(err) => {
+                    return tool_error_response(
+                        id,
+                        ProtocolErrorCode::InternalError,
+                        "Failed to serialize compare_symbol_between_commits payload.",
+                        Some(json!({ "error": err.to_string() })),
+                        metadata.clone(),
+                    );
+                }
+            };
+            if let Value::Object(object) = &mut payload {
+                object.insert("metadata".to_string(), json!(metadata));
+            }
+            tool_text_response(id, payload)
+        }
+        Err(symbol_compare::SymbolCompareError::SymbolNotFound) => tool_error_response(
+            id,
+            ProtocolErrorCode::SymbolNotFound,
+            "No symbol matching the requested name was found.",
+            Some(json!({
+                "symbol_name": symbol_name,
+                "path": path,
+                "base_ref": base_ref,
+                "head_ref": head_ref,
+            })),
+            metadata.clone(),
+        ),
+        Err(symbol_compare::SymbolCompareError::State(err)) => {
+            let (code, message, data) = map_state_error(&err);
+            tool_error_response(id, code, message, data, metadata)
+        }
+    }
+}
+
+pub(super) fn handle_suggest_followup_queries(params: QueryToolParams<'_>) -> JsonRpcResponse {
+    let QueryToolParams {
+        id,
+        arguments,
+        conn,
+        workspace,
+        project_id,
+        schema_status,
+        ..
+    } = params;
+
+    let requested_ref = arguments.get("ref").and_then(|value| value.as_str());
+    let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
+    let metadata = validation_metadata(&effective_ref, schema_status);
+
+    let Some(previous_query) = arguments
+        .get("previous_query")
+        .and_then(|value| value.as_object())
+    else {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameter `previous_query` is required and must be an object.",
+            None,
+            metadata,
+        );
+    };
+    let previous_query_tool = previous_query
+        .get("tool")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if previous_query_tool.trim().is_empty() {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameter `previous_query.tool` is required.",
+            None,
+            metadata,
+        );
+    }
+    let previous_query_params = previous_query
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let Some(previous_results) = arguments.get("previous_results") else {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameter `previous_results` is required.",
+            None,
+            metadata,
+        );
+    };
+    if !previous_results.is_object() {
+        return tool_error_response(
+            id,
+            ProtocolErrorCode::InvalidInput,
+            "Parameter `previous_results` must be an object.",
+            None,
+            metadata,
+        );
+    }
+    let confidence_threshold = arguments
+        .get("confidence_threshold")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.5);
+
+    let request = followup::FollowupRequest {
+        previous_query_tool: previous_query_tool.to_string(),
+        previous_query_params,
+        previous_results: previous_results.clone(),
+        confidence_threshold,
+    };
+    let mut payload = match serde_json::to_value(followup::suggest_followup_queries(&request)) {
+        Ok(value) => value,
+        Err(err) => {
+            return tool_error_response(
+                id,
+                ProtocolErrorCode::InternalError,
+                "Failed to serialize suggest_followup_queries payload.",
+                Some(json!({ "error": err.to_string() })),
+                metadata.clone(),
+            );
+        }
+    };
+    if let Value::Object(object) = &mut payload {
+        object.insert("metadata".to_string(), json!(metadata));
+    }
+    tool_text_response(id, payload)
 }
 
 pub(super) fn handle_explain_ranking(params: QueryToolParams<'_>) -> JsonRpcResponse {

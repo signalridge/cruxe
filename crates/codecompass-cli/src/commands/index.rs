@@ -6,7 +6,7 @@ use codecompass_core::time::now_iso8601;
 use codecompass_core::types::{FileRecord, JobStatus, generate_project_id};
 use codecompass_core::vcs;
 use codecompass_indexer::{
-    import_extract, languages, parser, scanner, snippet_extract, symbol_extract,
+    call_extract, import_extract, languages, parser, scanner, snippet_extract, symbol_extract,
     sync_incremental::{self, IncrementalSyncRequest},
     writer,
 };
@@ -14,12 +14,14 @@ use codecompass_state::{
     branch_state, db, edges, jobs, manifest, project, schema, symbols, tantivy_index,
 };
 use codecompass_vcs::Git2VcsAdapter;
-use std::collections::HashSet;
+use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 use tracing::{info, warn};
 
 const PROGRESS_UPDATE_EVERY: u64 = 100;
+const INDEX_PARALLELISM_ENV: &str = "CODECOMPASS_INDEX_PARALLELISM";
 
 pub fn run(
     repo_root: &Path,
@@ -192,10 +194,29 @@ pub fn run(
         println!("Found {} source files", files.len());
 
         let scanned_paths: HashSet<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        let existing_manifest_entries = if force {
+            Vec::new()
+        } else {
+            manifest::get_all_entries(&conn, &project_id, &effective_ref)?
+        };
+        let existing_hashes: HashMap<String, String> = existing_manifest_entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.content_hash.clone()))
+            .collect();
+
         let mut removed_count = 0u64;
         if !force {
-            for entry in manifest::get_all_entries(&conn, &project_id, &effective_ref)? {
+            for entry in &existing_manifest_entries {
                 if !scanned_paths.contains(entry.path.as_str()) {
+                    let deleted_symbol_ids: Vec<String> = symbols::list_symbols_in_file(
+                        &conn,
+                        &project_id,
+                        &effective_ref,
+                        &entry.path,
+                    )?
+                    .into_iter()
+                    .map(|symbol| symbol.symbol_stable_id)
+                    .collect();
                     batch.delete_file_docs(&index_set, &project_id, &effective_ref, &entry.path);
                     symbols::delete_symbols_for_file(
                         &conn,
@@ -210,6 +231,18 @@ pub fn run(
                         &effective_ref,
                         vec![source_edge_id.as_str()],
                     )?;
+                    edges::delete_call_edges_for_file(
+                        &conn,
+                        &project_id,
+                        &effective_ref,
+                        &entry.path,
+                    )?;
+                    edges::delete_call_edges_to_symbols(
+                        &conn,
+                        &project_id,
+                        &effective_ref,
+                        &deleted_symbol_ids,
+                    )?;
                     manifest::delete_manifest(&conn, &project_id, &effective_ref, &entry.path)?;
                     removed_count += 1;
                 }
@@ -220,124 +253,100 @@ pub fn run(
         let mut symbol_count = 0u64;
         let mut skipped = 0u64;
         let mut pending_imports: Vec<(String, Vec<import_extract::RawImport>)> = Vec::new();
+        let mut pending_call_edges: Vec<(String, Vec<codecompass_core::types::CallEdge>)> =
+            Vec::new();
 
-        for file in &files {
-            // Read file content
-            let content = match std::fs::read_to_string(&file.path) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(path = %file.relative_path, error = %e, "Failed to read file");
-                    skipped += 1;
-                    continue;
-                }
-            };
+        let parallelism = resolve_index_parallelism();
+        let chunk_size = std::cmp::max(parallelism * 8, PROGRESS_UPDATE_EVERY as usize);
+        let worker_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(parallelism)
+            .thread_name(|idx| format!("codecompass-index-{idx}"))
+            .build()
+            .context("Failed to initialize index worker pool")?;
 
-            // Compute content hash for incremental
-            let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        println!(
+            "Using {} indexing worker(s) for read/parse/extract",
+            parallelism
+        );
 
-            // Check if file changed (incremental mode)
-            if !force {
-                if let Ok(Some(existing_hash)) = manifest::get_content_hash(
-                    &conn,
-                    &project_id,
-                    &effective_ref,
-                    &file.relative_path,
-                ) && existing_hash == content_hash
-                {
-                    continue; // File unchanged, skip
-                }
+        for file_chunk in files.chunks(chunk_size) {
+            let prepared_chunk: Vec<PreparedIndexOutcome> = worker_pool.install(|| {
+                file_chunk
+                    .par_iter()
+                    .map(|file| {
+                        prepare_file_for_indexing(
+                            file,
+                            &project_id,
+                            &effective_ref,
+                            force,
+                            existing_hashes.get(&file.relative_path).map(String::as_str),
+                        )
+                    })
+                    .collect()
+            });
 
-                // File changed in incremental mode: delete stale Tantivy docs for this file
-                batch.delete_file_docs(
-                    &index_set,
-                    &project_id,
-                    &effective_ref,
-                    &file.relative_path,
-                );
-            }
+            for prepared in prepared_chunk {
+                match prepared {
+                    PreparedIndexOutcome::Unchanged => {}
+                    PreparedIndexOutcome::SkippedRead { path, error } => {
+                        warn!(path = %path, error = %error, "Failed to read file");
+                        skipped += 1;
+                    }
+                    PreparedIndexOutcome::Ready(prepared) => {
+                        if let Some(parse_error) = prepared.parse_error.as_deref() {
+                            warn!(
+                                path = %prepared.file_record.path,
+                                error = %parse_error,
+                                "Parse failed"
+                            );
+                        }
 
-            // Parse with tree-sitter if supported
-            let (extracted, raw_imports) = if parser::is_language_supported(&file.language) {
-                match parser::parse_file(&content, &file.language) {
-                    Ok(tree) => (
-                        languages::extract_symbols(&tree, &content, &file.language),
-                        import_extract::extract_imports(
-                            &tree,
-                            &content,
-                            &file.language,
-                            &file.relative_path,
-                        ),
-                    ),
-                    Err(e) => {
-                        warn!(path = %file.relative_path, error = %e, "Parse failed");
-                        (Vec::new(), Vec::new())
+                        if !force {
+                            batch.delete_file_docs(
+                                &index_set,
+                                &project_id,
+                                &effective_ref,
+                                &prepared.file_record.path,
+                            );
+                        }
+
+                        symbols::delete_symbols_for_file(
+                            &conn,
+                            &project_id,
+                            &effective_ref,
+                            &prepared.file_record.path,
+                        )?;
+                        batch.add_symbols(&index_set.symbols, &prepared.symbols_for_file)?;
+                        batch.add_snippets(&index_set.snippets, &prepared.snippets)?;
+                        batch.add_file(&index_set.files, &prepared.file_record)?;
+                        batch.write_sqlite(
+                            &conn,
+                            &prepared.symbols_for_file,
+                            &prepared.file_record,
+                            prepared.mtime_ns,
+                        )?;
+
+                        let symbol_delta = prepared.symbols_for_file.len() as u64;
+                        pending_imports
+                            .push((prepared.file_record.path.clone(), prepared.raw_imports));
+                        pending_call_edges
+                            .push((prepared.file_record.path.clone(), prepared.call_edges));
+
+                        symbol_count += symbol_delta;
+                        indexed_count += 1;
+                        if indexed_count.is_multiple_of(PROGRESS_UPDATE_EVERY)
+                            && let Err(err) = jobs::update_progress(
+                                &conn,
+                                &job_id,
+                                total_scanned,
+                                indexed_count as i64,
+                                symbol_count as i64,
+                            )
+                        {
+                            warn!(job_id = %job_id, "Failed to update index progress: {}", err);
+                        }
                     }
                 }
-            } else {
-                (Vec::new(), Vec::new())
-            };
-
-            // Build records
-            let symbols_for_file = symbol_extract::build_symbol_records(
-                &extracted,
-                &project_id,
-                &effective_ref,
-                &file.relative_path,
-                None,
-            );
-            let snippets = snippet_extract::build_snippet_records(
-                &extracted,
-                &project_id,
-                &effective_ref,
-                &file.relative_path,
-                None,
-            );
-            let file_record = FileRecord {
-                repo: project_id.clone(),
-                r#ref: effective_ref.clone(),
-                commit: None,
-                path: file.relative_path.clone(),
-                filename: file
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                language: file.language.clone(),
-                content_hash: content_hash.clone(),
-                size_bytes: content.len() as u64,
-                updated_at: now_iso8601(),
-                content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
-            };
-            let mtime_ns = file_mtime_ns(&file.path);
-
-            // Delete old SQLite records for this file
-            symbols::delete_symbols_for_file(
-                &conn,
-                &project_id,
-                &effective_ref,
-                &file.relative_path,
-            )?;
-            // Add to Tantivy batch (no commit yet)
-            batch.add_symbols(&index_set.symbols, &symbols_for_file)?;
-            batch.add_snippets(&index_set.snippets, &snippets)?;
-            batch.add_file(&index_set.files, &file_record)?;
-
-            // Write to SQLite (symbols + manifest)
-            batch.write_sqlite(&conn, &symbols_for_file, &file_record, mtime_ns)?;
-            pending_imports.push((file.relative_path.clone(), raw_imports));
-
-            symbol_count += symbols_for_file.len() as u64;
-            indexed_count += 1;
-            if indexed_count.is_multiple_of(PROGRESS_UPDATE_EVERY)
-                && let Err(err) = jobs::update_progress(
-                    &conn,
-                    &job_id,
-                    total_scanned,
-                    indexed_count as i64,
-                    symbol_count as i64,
-                )
-            {
-                warn!(job_id = %job_id, "Failed to update index progress: {}", err);
             }
         }
 
@@ -352,6 +361,18 @@ pub fn run(
                 raw_imports,
             )?;
         }
+        if !pending_call_edges.is_empty() {
+            let lookup = call_extract::load_symbol_lookup(&conn, &project_id, &effective_ref)?;
+            for (_, call_edges) in pending_call_edges.iter_mut() {
+                call_extract::resolve_call_targets_with_lookup(&lookup, call_edges);
+            }
+            batch.replace_call_edges_for_files(
+                &conn,
+                &project_id,
+                &effective_ref,
+                pending_call_edges,
+            )?;
+        }
 
         // Commit Tantivy segment updates.
         match batch.commit() {
@@ -363,6 +384,7 @@ pub fn run(
 
         let changed_files = indexed_count + removed_count;
         let file_count = manifest::file_count(&conn, &project_id, &effective_ref)?;
+        let total_symbol_count = symbols::symbol_count(&conn, &project_id, &effective_ref)?;
         let now = now_iso8601();
         let indexed_commit = if vcs::is_git_repo(&repo_root) {
             vcs::detect_head_commit(&repo_root).unwrap_or_else(|_| effective_ref.clone())
@@ -376,7 +398,7 @@ pub fn run(
             last_indexed_commit: indexed_commit,
             overlay_dir: None,
             file_count: file_count as i64,
-            symbol_count: symbol_count as i64,
+            symbol_count: total_symbol_count as i64,
             is_default_branch: effective_ref == proj.default_ref,
             status: "active".to_string(),
             eviction_eligible_at: None,
@@ -451,4 +473,127 @@ fn file_mtime_ns(path: &Path) -> Option<i64> {
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos() as i64)
+}
+
+struct PreparedIndexFile {
+    symbols_for_file: Vec<codecompass_core::types::SymbolRecord>,
+    snippets: Vec<codecompass_core::types::SnippetRecord>,
+    raw_imports: Vec<import_extract::RawImport>,
+    call_edges: Vec<codecompass_core::types::CallEdge>,
+    file_record: FileRecord,
+    mtime_ns: Option<i64>,
+    parse_error: Option<String>,
+}
+
+enum PreparedIndexOutcome {
+    Unchanged,
+    SkippedRead { path: String, error: String },
+    Ready(Box<PreparedIndexFile>),
+}
+
+fn prepare_file_for_indexing(
+    file: &scanner::ScannedFile,
+    project_id: &str,
+    effective_ref: &str,
+    force: bool,
+    existing_hash: Option<&str>,
+) -> PreparedIndexOutcome {
+    let content = match std::fs::read_to_string(&file.path) {
+        Ok(c) => c,
+        Err(err) => {
+            return PreparedIndexOutcome::SkippedRead {
+                path: file.relative_path.clone(),
+                error: err.to_string(),
+            };
+        }
+    };
+
+    let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    if !force && existing_hash == Some(content_hash.as_str()) {
+        return PreparedIndexOutcome::Unchanged;
+    }
+
+    let (parsed_tree, extracted, raw_imports, parse_error) =
+        if parser::is_language_supported(&file.language) {
+            match parser::parse_file(&content, &file.language) {
+                Ok(tree) => {
+                    let extracted = languages::extract_symbols(&tree, &content, &file.language);
+                    let raw_imports = import_extract::extract_imports(
+                        &tree,
+                        &content,
+                        &file.language,
+                        &file.relative_path,
+                    );
+                    (Some(tree), extracted, raw_imports, None)
+                }
+                Err(err) => (None, Vec::new(), Vec::new(), Some(err.to_string())),
+            }
+        } else {
+            (None, Vec::new(), Vec::new(), None)
+        };
+
+    let symbols_for_file = symbol_extract::build_symbol_records(
+        &extracted,
+        project_id,
+        effective_ref,
+        &file.relative_path,
+        None,
+    );
+    let snippets = snippet_extract::build_snippet_records(
+        &extracted,
+        project_id,
+        effective_ref,
+        &file.relative_path,
+        None,
+    );
+    let call_edges = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
+        call_extract::extract_call_edges_for_file(
+            tree,
+            &content,
+            &file.language,
+            &file.relative_path,
+            &symbols_for_file,
+            project_id,
+            effective_ref,
+        )
+    });
+
+    let file_record = FileRecord {
+        repo: project_id.to_string(),
+        r#ref: effective_ref.to_string(),
+        commit: None,
+        path: file.relative_path.clone(),
+        filename: file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        language: file.language.clone(),
+        content_hash,
+        size_bytes: content.len() as u64,
+        updated_at: now_iso8601(),
+        content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
+    };
+
+    PreparedIndexOutcome::Ready(Box::new(PreparedIndexFile {
+        symbols_for_file,
+        snippets,
+        raw_imports,
+        call_edges,
+        file_record,
+        mtime_ns: file_mtime_ns(&file.path),
+        parse_error,
+    }))
+}
+
+fn resolve_index_parallelism() -> usize {
+    std::env::var(INDEX_PARALLELISM_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(1)
+        })
 }

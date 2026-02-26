@@ -24,6 +24,7 @@ blake3 = { workspace = true }
 tantivy = { workspace = true }
 rusqlite = { workspace = true }
 time = { version = "0.3", features = ["parsing", "formatting"] }
+rayon = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
