@@ -18,6 +18,8 @@ pub struct ProtocolMetadata {
     pub suppressed_duplicate_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_limit_applied: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 impl ProtocolMetadata {
@@ -33,6 +35,7 @@ impl ProtocolMetadata {
             ranking_reasons: None,
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
+            warnings: None,
         }
     }
 
@@ -48,6 +51,7 @@ impl ProtocolMetadata {
             ranking_reasons: None,
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
+            warnings: None,
         }
     }
 
@@ -63,6 +67,7 @@ impl ProtocolMetadata {
             ranking_reasons: None,
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
+            warnings: None,
         }
     }
 
@@ -78,6 +83,7 @@ impl ProtocolMetadata {
             ranking_reasons: None,
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
+            warnings: None,
         }
     }
 
@@ -93,6 +99,7 @@ impl ProtocolMetadata {
             ranking_reasons: None,
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
+            warnings: None,
         }
     }
 

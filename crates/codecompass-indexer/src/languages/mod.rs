@@ -20,6 +20,14 @@ pub struct ExtractedSymbol {
     pub body: Option<String>,
 }
 
+/// Extracted call-site from tree-sitter source traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedCallSite {
+    pub callee_name: String,
+    pub line: u32,
+    pub confidence: String,
+}
+
 /// Extract symbols from a parsed tree for a given language.
 pub fn extract_symbols(
     tree: &tree_sitter::Tree,
@@ -31,6 +39,21 @@ pub fn extract_symbols(
         "typescript" => typescript::extract(tree, source),
         "python" => python::extract(tree, source),
         "go" => go::extract(tree, source),
+        _ => Vec::new(),
+    }
+}
+
+/// Extract call-sites from a parsed tree for a given language.
+pub fn extract_call_sites(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    language: &str,
+) -> Vec<ExtractedCallSite> {
+    match language {
+        "rust" => rust::extract_call_sites(tree, source),
+        "typescript" => typescript::extract_call_sites(tree, source),
+        "python" => python::extract_call_sites(tree, source),
+        "go" => go::extract_call_sites(tree, source),
         _ => Vec::new(),
     }
 }

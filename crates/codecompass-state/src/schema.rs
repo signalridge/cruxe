@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -210,6 +210,77 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
             .map_err(StateError::sqlite)?;
             Ok(())
         },
+        // V9: extend symbol_edges for call-graph payloads (nullable callee, call-site metadata).
+        |conn| {
+            let has_to_name: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('symbol_edges') WHERE name = 'to_name'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_to_name {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS symbol_edges_v9 (
+                        repo TEXT NOT NULL,
+                        \"ref\" TEXT NOT NULL,
+                        from_symbol_id TEXT NOT NULL,
+                        to_symbol_id TEXT,
+                        to_name TEXT,
+                        edge_type TEXT NOT NULL,
+                        confidence TEXT DEFAULT 'static',
+                        source_file TEXT,
+                        source_line INTEGER,
+                        CHECK (to_symbol_id IS NOT NULL OR to_name IS NOT NULL)
+                    );
+                    INSERT INTO symbol_edges_v9
+                        (repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence)
+                    SELECT repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence
+                    FROM symbol_edges;
+                    DROP TABLE symbol_edges;
+                    ALTER TABLE symbol_edges_v9 RENAME TO symbol_edges;",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_edges_unique
+                    ON symbol_edges(
+                        repo,
+                        \"ref\",
+                        from_symbol_id,
+                        edge_type,
+                        COALESCE(to_symbol_id, ''),
+                        COALESCE(to_name, ''),
+                        COALESCE(source_file, ''),
+                        COALESCE(source_line, -1)
+                    );
+                 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to
+                    ON symbol_edges(repo, \"ref\", to_symbol_id);
+                 CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
+                    ON symbol_edges(repo, \"ref\", from_symbol_id, edge_type);
+                 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
+                    ON symbol_edges(repo, \"ref\", to_symbol_id, edge_type);
+                 CREATE INDEX IF NOT EXISTS idx_symbol_edges_source_file
+                    ON symbol_edges(repo, \"ref\", source_file, edge_type);",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V10: persist symbol content snapshots for cross-ref body diff accuracy.
+        |conn| {
+            let has_content: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('symbol_relations') WHERE name = 'content'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_content {
+                conn.execute_batch("ALTER TABLE symbol_relations ADD COLUMN content TEXT;")
+                    .map_err(StateError::sqlite)?;
+            }
+            Ok(())
+        },
     ];
 
     for version in (current + 1)..=(CURRENT_SCHEMA_VERSION) {
@@ -270,6 +341,7 @@ CREATE TABLE IF NOT EXISTS symbol_relations (
     signature TEXT,
     parent_symbol_id TEXT,
     visibility TEXT,
+    content TEXT,
     content_hash TEXT NOT NULL,
     UNIQUE(repo, "ref", path, qualified_name, kind, line_start),
     UNIQUE(repo, "ref", symbol_stable_id, kind)
@@ -290,10 +362,13 @@ CREATE TABLE IF NOT EXISTS symbol_edges (
     repo TEXT NOT NULL,
     "ref" TEXT NOT NULL,
     from_symbol_id TEXT NOT NULL,
-    to_symbol_id TEXT NOT NULL,
+    to_symbol_id TEXT,
+    to_name TEXT,
     edge_type TEXT NOT NULL,
     confidence TEXT DEFAULT 'static',
-    PRIMARY KEY(repo, "ref", from_symbol_id, to_symbol_id, edge_type)
+    source_file TEXT,
+    source_line INTEGER,
+    CHECK (to_symbol_id IS NOT NULL OR to_name IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS branch_state (
@@ -369,12 +444,25 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project_status_created
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_project_ref
     ON index_jobs(project_id, "ref")
     WHERE status IN ('queued', 'running', 'validating');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_edges_unique
+    ON symbol_edges(
+        repo,
+        "ref",
+        from_symbol_id,
+        edge_type,
+        COALESCE(to_symbol_id, ''),
+        COALESCE(to_name, ''),
+        COALESCE(source_file, ''),
+        COALESCE(source_line, -1)
+    );
 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to
     ON symbol_edges(repo, "ref", to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
     ON symbol_edges(repo, "ref", from_symbol_id, edge_type);
 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
     ON symbol_edges(repo, "ref", to_symbol_id, edge_type);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_source_file
+    ON symbol_edges(repo, "ref", source_file, edge_type);
 
 CREATE TABLE IF NOT EXISTS known_workspaces (
     workspace_path TEXT PRIMARY KEY,
@@ -490,6 +578,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active_job_unique_idx, 1);
+
+        let symbol_edge_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('symbol_edges') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(symbol_edge_cols.contains(&"to_name".to_string()));
+        assert!(symbol_edge_cols.contains(&"source_file".to_string()));
+        assert!(symbol_edge_cols.contains(&"source_line".to_string()));
+        let symbol_edge_unique_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_symbol_edges_unique'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(symbol_edge_unique_idx, 1);
+
+        let symbol_relation_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('symbol_relations') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(symbol_relation_cols.contains(&"content".to_string()));
     }
 
     #[test]

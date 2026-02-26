@@ -38,6 +38,18 @@ jobs:
       - name: Test suite
         run: cargo test --workspace
 
+  test-fixture-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Run fixture integration harness tests (serial)
+        run: |
+          cargo test -p codecompass --test integration_test -- --ignored --test-threads=1 --skip benchmark_t359_call_edge_extraction_overhead_under_20_percent
+
   build:
     strategy:
       fail-fast: false

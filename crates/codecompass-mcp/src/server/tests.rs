@@ -303,7 +303,7 @@ fn t065_tools_list_returns_all_registered_tools() {
         .as_array()
         .expect("'tools' should be an array");
 
-    assert_eq!(tools.len(), 15, "expected 15 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 18, "expected 18 tools, got {}", tools.len());
 
     let tool_names: Vec<&str> = tools
         .iter()
@@ -315,9 +315,12 @@ fn t065_tools_list_returns_all_registered_tools() {
         "sync_repo",
         "search_code",
         "locate_symbol",
+        "get_call_graph",
+        "compare_symbol_between_commits",
         "diff_context",
         "find_references",
         "explain_ranking",
+        "suggest_followup_queries",
         "list_refs",
         "switch_ref",
         "get_file_outline",
@@ -353,6 +356,210 @@ fn t065_tools_list_returns_all_registered_tools() {
             "inputSchema should be an object: {tool:?}"
         );
     }
+}
+
+#[test]
+fn t340_compare_symbol_between_commits_returns_modified_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace_dir = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+
+    let db_path = tmp.path().join("state.db");
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+
+    let project_id = "compare-project";
+    let now = "2026-02-26T00:00:00Z".to_string();
+    let project = Project {
+        project_id: project_id.to_string(),
+        repo_root: workspace_dir.to_string_lossy().to_string(),
+        display_name: Some("compare-project".to_string()),
+        default_ref: "main".to_string(),
+        vcs_mode: true,
+        schema_version: 1,
+        parser_version: 1,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    codecompass_state::project::create_project(&conn, &project).unwrap();
+
+    for ref_name in ["main", "feat/auth"] {
+        codecompass_state::branch_state::upsert_branch_state(
+            &conn,
+            &codecompass_state::branch_state::BranchState {
+                repo: project_id.to_string(),
+                r#ref: ref_name.to_string(),
+                merge_base_commit: None,
+                last_indexed_commit: "abc123".to_string(),
+                overlay_dir: None,
+                file_count: 1,
+                symbol_count: 1,
+                is_default_branch: ref_name == "main",
+                status: "active".to_string(),
+                eviction_eligible_at: None,
+                created_at: now.clone(),
+                last_accessed_at: now.clone(),
+            },
+        )
+        .unwrap();
+    }
+
+    let base_symbol = codecompass_core::types::SymbolRecord {
+        repo: project_id.to_string(),
+        r#ref: "main".to_string(),
+        commit: None,
+        path: "src/lib.rs".to_string(),
+        symbol_id: "main::process_request".to_string(),
+        symbol_stable_id: "stable::process_request".to_string(),
+        name: "process_request".to_string(),
+        qualified_name: "crate::process_request".to_string(),
+        kind: codecompass_core::types::SymbolKind::Function,
+        language: "rust".to_string(),
+        line_start: 10,
+        line_end: 15,
+        signature: Some("fn process_request(req: &Request) -> Response".to_string()),
+        parent_symbol_id: None,
+        visibility: Some("pub".to_string()),
+        content: Some("validate();".to_string()),
+    };
+    let head_symbol = codecompass_core::types::SymbolRecord {
+        repo: project_id.to_string(),
+        r#ref: "feat/auth".to_string(),
+        commit: None,
+        path: "src/lib.rs".to_string(),
+        symbol_id: "feat/auth::process_request".to_string(),
+        symbol_stable_id: "stable::process_request".to_string(),
+        name: "process_request".to_string(),
+        qualified_name: "crate::process_request".to_string(),
+        kind: codecompass_core::types::SymbolKind::Function,
+        language: "rust".to_string(),
+        line_start: 10,
+        line_end: 19,
+        signature: Some(
+            "fn process_request(req: &Request, ctx: &Ctx) -> Result<Response>".to_string(),
+        ),
+        parent_symbol_id: None,
+        visibility: Some("pub".to_string()),
+        content: Some("validate();\nauthorize(ctx);".to_string()),
+    };
+    codecompass_state::symbols::insert_symbol(&conn, &base_symbol).unwrap();
+    codecompass_state::symbols::insert_symbol(&conn, &head_symbol).unwrap();
+
+    let config = Config::default();
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "compare_symbol_between_commits",
+            "arguments": {
+                "symbol_name": "process_request",
+                "path": "src/lib.rs",
+                "base_ref": "main",
+                "head_ref": "feat/auth"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: workspace_dir.as_path(),
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "expected success: {:?}",
+        response.error
+    );
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload
+            .get("diff_summary")
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str()),
+        Some("modified")
+    );
+    assert!(
+        payload
+            .get("base_version")
+            .is_some_and(|value| value.is_object())
+    );
+    assert!(
+        payload
+            .get("head_version")
+            .is_some_and(|value| value.is_object())
+    );
+}
+
+#[test]
+fn t353_suggest_followup_queries_low_confidence_returns_suggestions() {
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "fake_project_id";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "suggest_followup_queries",
+            "arguments": {
+                "previous_query": {
+                    "tool": "search_code",
+                    "params": {
+                        "query": "where is rate limiting implemented"
+                    }
+                },
+                "previous_results": {
+                    "query_intent": "natural_language",
+                    "top_score": 0.21,
+                    "total_candidates": 2
+                },
+                "confidence_threshold": 0.5
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "expected success: {:?}",
+        response.error
+    );
+    let payload = extract_payload_from_response(&response);
+    let suggestions = payload
+        .get("suggestions")
+        .and_then(|value| value.as_array())
+        .expect("suggestions array should exist");
+    assert!(!suggestions.is_empty(), "suggestions should not be empty");
+    assert!(
+        suggestions
+            .iter()
+            .any(|item| item.get("tool").and_then(|value| value.as_str()) == Some("locate_symbol")),
+        "expected locate_symbol suggestion; got: {suggestions:?}"
+    );
 }
 
 fn build_dispatch_runtime_fixture(
@@ -1827,6 +2034,326 @@ fn t191_new_tools_error_codes_follow_protocol_registry() {
         assert!(metadata.get("result_completeness").is_some());
         assert!(metadata.get("ref").is_some());
     }
+}
+
+#[test]
+fn t357_call_graph_feature_tools_error_codes_are_machine_stable() {
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "fake_project_id";
+
+    let cases = vec![
+        (
+            "get_call_graph",
+            json!({
+                "direction": "both"
+            }),
+            "invalid_input",
+        ),
+        (
+            "compare_symbol_between_commits",
+            json!({
+                "symbol_name": "process_request",
+                "head_ref": "feat/auth"
+            }),
+            "invalid_input",
+        ),
+        (
+            "suggest_followup_queries",
+            json!({
+                "previous_results": {
+                    "top_score": 0.1
+                }
+            }),
+            "invalid_input",
+        ),
+    ];
+
+    for (tool, arguments, expected_code) in cases {
+        let request = make_request(
+            "tools/call",
+            json!({
+                "name": tool,
+                "arguments": arguments
+            }),
+        );
+        let response = handle_request_with_ctx(
+            &request,
+            &RequestContext {
+                config: &config,
+                index_set: None,
+                schema_status: SchemaStatus::Compatible,
+                compatibility_reason: None,
+                conn: None,
+                workspace,
+                project_id,
+                prewarm_status: &test_prewarm_status(),
+                server_start: &test_server_start(),
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
+            },
+        );
+        assert!(
+            response.error.is_none(),
+            "tool {tool} should return payload envelope"
+        );
+        let payload = extract_payload_from_response(&response);
+        let code = payload
+            .get("error")
+            .and_then(|value| value.get("code"))
+            .and_then(|value| value.as_str());
+        assert_eq!(
+            code,
+            Some(expected_code),
+            "tool {tool} should emit stable error code"
+        );
+    }
+}
+
+#[test]
+fn t357_get_call_graph_returns_ref_not_indexed_for_unindexed_ref() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace_dir = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+
+    let db_path = tmp.path().join("state.db");
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+
+    let project_id = "call-graph-ref-not-indexed";
+    let now = "2026-02-26T00:00:00Z".to_string();
+    let project = Project {
+        project_id: project_id.to_string(),
+        repo_root: workspace_dir.to_string_lossy().to_string(),
+        display_name: Some("call-graph-ref-not-indexed".to_string()),
+        default_ref: "main".to_string(),
+        vcs_mode: true,
+        schema_version: 1,
+        parser_version: 1,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    codecompass_state::project::create_project(&conn, &project).unwrap();
+
+    let config = Config::default();
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "get_call_graph",
+            "arguments": {
+                "symbol_name": "validate_token",
+                "ref": "feat/missing"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: workspace_dir.as_path(),
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "MCP tool errors are in content");
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|value| value.get("code"))
+            .and_then(|value| value.as_str()),
+        Some("ref_not_indexed")
+    );
+    assert_eq!(
+        payload
+            .get("metadata")
+            .and_then(|value| value.get("ref"))
+            .and_then(|value| value.as_str()),
+        Some("feat/missing")
+    );
+}
+
+#[test]
+fn t357_get_call_graph_truncated_sets_metadata_result_completeness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace_dir = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+
+    let db_path = tmp.path().join("state.db");
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    codecompass_state::schema::create_tables(&conn).unwrap();
+
+    let project_id = "call-graph-truncated";
+    let now = "2026-02-26T00:00:00Z".to_string();
+    let project = Project {
+        project_id: project_id.to_string(),
+        repo_root: workspace_dir.to_string_lossy().to_string(),
+        display_name: Some("call-graph-truncated".to_string()),
+        default_ref: "main".to_string(),
+        vcs_mode: true,
+        schema_version: 1,
+        parser_version: 1,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    codecompass_state::project::create_project(&conn, &project).unwrap();
+    codecompass_state::branch_state::upsert_branch_state(
+        &conn,
+        &codecompass_state::branch_state::BranchState {
+            repo: project_id.to_string(),
+            r#ref: "main".to_string(),
+            merge_base_commit: None,
+            last_indexed_commit: "abc123".to_string(),
+            overlay_dir: None,
+            file_count: 1,
+            symbol_count: 3,
+            is_default_branch: true,
+            status: "active".to_string(),
+            eviction_eligible_at: None,
+            created_at: now.clone(),
+            last_accessed_at: now,
+        },
+    )
+    .unwrap();
+
+    let symbols = vec![
+        codecompass_core::types::SymbolRecord {
+            repo: project_id.to_string(),
+            r#ref: "main".to_string(),
+            commit: None,
+            path: "src/lib.rs".to_string(),
+            language: "rust".to_string(),
+            symbol_id: "sym::a".to_string(),
+            symbol_stable_id: "stable::a".to_string(),
+            name: "a".to_string(),
+            qualified_name: "a".to_string(),
+            kind: codecompass_core::types::SymbolKind::Function,
+            signature: Some("fn a()".to_string()),
+            line_start: 1,
+            line_end: 3,
+            parent_symbol_id: None,
+            visibility: Some("pub".to_string()),
+            content: Some("b();\nc();".to_string()),
+        },
+        codecompass_core::types::SymbolRecord {
+            repo: project_id.to_string(),
+            r#ref: "main".to_string(),
+            commit: None,
+            path: "src/lib.rs".to_string(),
+            language: "rust".to_string(),
+            symbol_id: "sym::b".to_string(),
+            symbol_stable_id: "stable::b".to_string(),
+            name: "b".to_string(),
+            qualified_name: "b".to_string(),
+            kind: codecompass_core::types::SymbolKind::Function,
+            signature: Some("fn b()".to_string()),
+            line_start: 5,
+            line_end: 7,
+            parent_symbol_id: None,
+            visibility: Some("pub".to_string()),
+            content: Some("{}".to_string()),
+        },
+        codecompass_core::types::SymbolRecord {
+            repo: project_id.to_string(),
+            r#ref: "main".to_string(),
+            commit: None,
+            path: "src/lib.rs".to_string(),
+            language: "rust".to_string(),
+            symbol_id: "sym::c".to_string(),
+            symbol_stable_id: "stable::c".to_string(),
+            name: "c".to_string(),
+            qualified_name: "c".to_string(),
+            kind: codecompass_core::types::SymbolKind::Function,
+            signature: Some("fn c()".to_string()),
+            line_start: 9,
+            line_end: 11,
+            parent_symbol_id: None,
+            visibility: Some("pub".to_string()),
+            content: Some("{}".to_string()),
+        },
+    ];
+    for symbol in &symbols {
+        codecompass_state::symbols::insert_symbol(&conn, symbol).unwrap();
+    }
+
+    let edges = [
+        codecompass_core::types::CallEdge {
+            repo: project_id.to_string(),
+            ref_name: "main".to_string(),
+            from_symbol_id: "stable::a".to_string(),
+            to_symbol_id: Some("stable::b".to_string()),
+            to_name: None,
+            edge_type: "calls".to_string(),
+            confidence: "static".to_string(),
+            source_file: "src/lib.rs".to_string(),
+            source_line: 2,
+        },
+        codecompass_core::types::CallEdge {
+            repo: project_id.to_string(),
+            ref_name: "main".to_string(),
+            from_symbol_id: "stable::a".to_string(),
+            to_symbol_id: Some("stable::c".to_string()),
+            to_name: None,
+            edge_type: "calls".to_string(),
+            confidence: "static".to_string(),
+            source_file: "src/lib.rs".to_string(),
+            source_line: 3,
+        },
+    ];
+    codecompass_state::edges::insert_call_edges(&conn, project_id, "main", &edges).unwrap();
+
+    let config = Config::default();
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "get_call_graph",
+            "arguments": {
+                "symbol_name": "a",
+                "path": "src/lib.rs",
+                "direction": "callees",
+                "depth": 1,
+                "limit": 1
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: workspace_dir.as_path(),
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload.get("truncated").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        payload
+            .get("metadata")
+            .and_then(|value| value.get("result_completeness"))
+            .and_then(|value| value.as_str()),
+        Some("truncated")
+    );
 }
 
 #[test]
@@ -4553,6 +5080,139 @@ fn t132_search_code_strict_policy_stale_index_blocks() {
     assert_eq!(
         meta.get("freshness_status").unwrap().as_str().unwrap(),
         "stale"
+    );
+}
+
+#[test]
+fn t470_compare_symbol_between_commits_strict_policy_stale_index_blocks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_index_set, conn, branch_name) = build_fixture_index_in_git_repo(tmp.path());
+    let workspace = tmp.path().join("workspace");
+
+    // Make the index stale
+    make_workspace_stale(&workspace);
+
+    let config = Config::default();
+    let project_id = "test-repo";
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "compare_symbol_between_commits",
+            "arguments": {
+                "symbol_name": "validate_token",
+                "base_ref": branch_name,
+                "head_ref": branch_name,
+                "freshness_policy": "strict"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "should be JSON-RPC success (error is in payload)"
+    );
+    let payload = extract_payload_from_response(&response);
+    let error = payload
+        .get("error")
+        .expect("payload should have 'error' for strict+stale compare");
+    assert_eq!(
+        error.get("code").and_then(|value| value.as_str()),
+        Some("index_stale")
+    );
+}
+
+#[test]
+fn t471_compare_symbol_between_commits_strict_policy_stale_base_ref_blocks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_index_set, conn, base_ref) = build_fixture_index_in_git_repo(tmp.path());
+    let workspace = tmp.path().join("workspace");
+
+    // Make current branch stale. This affects `base_ref`.
+    make_workspace_stale(&workspace);
+
+    // Register a second indexed ref so the compare precheck passes for both refs.
+    // This ref is not the checked-out branch, so freshness check treats it as fresh.
+    let head_ref = "feat/fresh";
+    let head_commit = codecompass_core::vcs::detect_head_commit(&workspace).unwrap();
+    codecompass_state::branch_state::upsert_branch_state(
+        &conn,
+        &codecompass_state::branch_state::BranchState {
+            repo: "test-repo".to_string(),
+            r#ref: head_ref.to_string(),
+            merge_base_commit: None,
+            last_indexed_commit: head_commit,
+            overlay_dir: None,
+            file_count: 0,
+            symbol_count: 0,
+            is_default_branch: false,
+            status: "active".to_string(),
+            eviction_eligible_at: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_accessed_at: "2026-01-01T00:00:00Z".to_string(),
+        },
+    )
+    .unwrap();
+
+    let config = Config::default();
+    let project_id = "test-repo";
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "compare_symbol_between_commits",
+            "arguments": {
+                "symbol_name": "validate_token",
+                "base_ref": base_ref,
+                "head_ref": head_ref,
+                "freshness_policy": "strict"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "should be JSON-RPC success (error is in payload)"
+    );
+    let payload = extract_payload_from_response(&response);
+    let error = payload
+        .get("error")
+        .expect("payload should have 'error' for strict+stale base ref");
+    assert_eq!(
+        error.get("code").and_then(|value| value.as_str()),
+        Some("index_stale")
     );
 }
 
