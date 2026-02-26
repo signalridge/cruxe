@@ -1,4 +1,4 @@
-use super::ExtractedSymbol;
+use super::{ExtractedCallSite, ExtractedSymbol};
 use crate::import_extract::RawImport;
 use codecompass_core::types::SymbolKind;
 
@@ -182,6 +182,65 @@ fn make_qualified(parent: Option<&str>, name: &str) -> String {
 
 fn node_text(node: tree_sitter::Node, source: &str) -> String {
     source[node.byte_range()].to_string()
+}
+
+/// Extract Rust call-sites using `call_expression` and `method_call_expression` nodes.
+pub fn extract_call_sites(tree: &tree_sitter::Tree, source: &str) -> Vec<ExtractedCallSite> {
+    let mut calls = Vec::new();
+    collect_call_sites(tree.root_node(), source, &mut calls);
+    calls
+}
+
+fn collect_call_sites(node: tree_sitter::Node, source: &str, calls: &mut Vec<ExtractedCallSite>) {
+    match node.kind() {
+        "call_expression" | "method_call_expression" => {
+            if let Some(call) = parse_call_node(node, source) {
+                calls.push(call);
+            }
+        }
+        _ => {}
+    }
+    for idx in 0..node.child_count() {
+        if let Some(child) = node.child(idx) {
+            collect_call_sites(child, source, calls);
+        }
+    }
+}
+
+fn parse_call_node(node: tree_sitter::Node, source: &str) -> Option<ExtractedCallSite> {
+    let text = node_text(node, source);
+    let prefix = text.split('(').next()?.trim();
+    let normalized = normalize_call_target(prefix)?;
+    let confidence =
+        if node.kind() == "method_call_expression" || prefix.contains('.') || prefix.contains("->")
+        {
+            "heuristic"
+        } else {
+            "static"
+        };
+    Some(ExtractedCallSite {
+        callee_name: normalized,
+        line: node.start_position().row as u32 + 1,
+        confidence: confidence.to_string(),
+    })
+}
+
+fn normalize_call_target(prefix: &str) -> Option<String> {
+    let mut value = prefix
+        .trim()
+        .trim_start_matches('&')
+        .trim_start_matches('*');
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = value.strip_prefix("self.") {
+        value = stripped;
+    }
+    let value = value.trim_end_matches('!').trim_end_matches('?').trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// Extract Rust `use` imports from source text.

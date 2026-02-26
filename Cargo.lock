@@ -321,6 +321,7 @@ dependencies = [
  "codecompass-query",
  "codecompass-state",
  "codecompass-vcs",
+ "rayon",
  "rusqlite",
  "serde_json",
  "tantivy",

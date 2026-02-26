@@ -138,6 +138,23 @@ pub struct SymbolEdge {
     pub confidence: String,
 }
 
+/// A call edge extracted from source code.
+///
+/// `to_symbol_id` is `None` when the callee cannot be resolved to an indexed symbol.
+/// In that case `to_name` carries the best-effort callee text from the call site.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallEdge {
+    pub repo: String,
+    pub ref_name: String,
+    pub from_symbol_id: String,
+    pub to_symbol_id: Option<String>,
+    pub to_name: Option<String>,
+    pub edge_type: String,
+    pub confidence: String,
+    pub source_file: String,
+    pub source_line: u32,
+}
+
 /// Detail level for response verbosity control.
 /// Controls how many fields are included in search/locate results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

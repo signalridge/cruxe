@@ -25,6 +25,15 @@ fn fixture_repo_path() -> PathBuf {
         .expect("fixture repo must exist at testdata/fixtures/rust-sample")
 }
 
+/// Return the absolute path to the mixed-language call-graph fixture.
+fn call_graph_fixture_repo_path() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .join("../../testdata/fixtures/call-graph-sample")
+        .canonicalize()
+        .expect("fixture repo must exist at testdata/fixtures/call-graph-sample")
+}
+
 /// Perform the "init" lifecycle at a library level:
 ///   1. Create the data directory under `data_root`.
 ///   2. Open SQLite and create schema.
@@ -96,6 +105,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
                 )
             });
         }
+    }
+}
+
+fn create_synthetic_rust_repo(repo_root: &Path, file_count: usize) {
+    let src = repo_root.join("src");
+    std::fs::create_dir_all(&src).expect("create synthetic src directory");
+
+    for idx in 0..file_count {
+        let next = (idx + 1) % file_count.max(1);
+        let content =
+            format!("pub fn func_{idx}() {{\n    func_{next}();\n    external::noop();\n}}\n");
+        std::fs::write(src.join(format!("file_{idx:05}.rs")), content)
+            .expect("write synthetic file");
     }
 }
 
@@ -223,6 +245,401 @@ fn index_repo_with_import_edges(
         )
         .expect("replace import edges for file");
     }
+}
+
+fn index_repo_with_import_and_call_edges(
+    repo_root: &Path,
+    project_id: &str,
+    effective_ref: &str,
+    index_set: &codecompass_state::tantivy_index::IndexSet,
+    conn: &rusqlite::Connection,
+) {
+    let files = codecompass_indexer::scanner::scan_directory(
+        repo_root,
+        codecompass_core::constants::MAX_FILE_SIZE,
+    );
+    let mut pending_imports = Vec::new();
+    let mut pending_call_edges = Vec::new();
+
+    for file in &files {
+        let content = std::fs::read_to_string(&file.path).expect("read fixture file");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+        let (parsed_tree, extracted, raw_imports) =
+            if codecompass_indexer::parser::is_language_supported(&file.language) {
+                match codecompass_indexer::parser::parse_file(&content, &file.language) {
+                    Ok(tree) => {
+                        let extracted = codecompass_indexer::languages::extract_symbols(
+                            &tree,
+                            &content,
+                            &file.language,
+                        );
+                        let raw_imports = codecompass_indexer::import_extract::extract_imports(
+                            &tree,
+                            &content,
+                            &file.language,
+                            &file.relative_path,
+                        );
+                        (Some(tree), extracted, raw_imports)
+                    }
+                    Err(_) => (None, Vec::new(), Vec::new()),
+                }
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+
+        let symbols = codecompass_indexer::symbol_extract::build_symbol_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let snippets = codecompass_indexer::snippet_extract::build_snippet_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+
+        let call_edges = if let Some(tree) = parsed_tree {
+            codecompass_indexer::call_extract::extract_call_edges_for_file(
+                &tree,
+                &content,
+                &file.language,
+                &file.relative_path,
+                &symbols,
+                project_id,
+                effective_ref,
+            )
+        } else {
+            Vec::new()
+        };
+
+        let file_record = codecompass_core::types::FileRecord {
+            repo: project_id.to_string(),
+            r#ref: effective_ref.to_string(),
+            commit: None,
+            path: file.relative_path.clone(),
+            filename: file
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            language: file.language.clone(),
+            content_hash,
+            size_bytes: content.len() as u64,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
+        };
+
+        codecompass_state::symbols::delete_symbols_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+        )
+        .expect("delete symbols for file");
+        codecompass_indexer::writer::write_file_records(
+            index_set,
+            conn,
+            &symbols,
+            &snippets,
+            &file_record,
+        )
+        .expect("write indexed file records");
+
+        pending_imports.push((file.relative_path.clone(), raw_imports));
+        pending_call_edges.push((file.relative_path.clone(), call_edges));
+    }
+
+    for (path, raw_imports) in pending_imports {
+        codecompass_indexer::writer::replace_import_edges_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &path,
+            raw_imports,
+        )
+        .expect("replace import edges for file");
+    }
+
+    if !pending_call_edges.is_empty() {
+        let lookup =
+            codecompass_indexer::call_extract::load_symbol_lookup(conn, project_id, effective_ref)
+                .expect("load symbol lookup");
+        for (_, call_edges) in pending_call_edges.iter_mut() {
+            codecompass_indexer::call_extract::resolve_call_targets_with_lookup(
+                &lookup, call_edges,
+            );
+        }
+        codecompass_indexer::writer::replace_call_edges_for_files(
+            conn,
+            project_id,
+            effective_ref,
+            pending_call_edges,
+        )
+        .expect("replace call edges for files");
+    }
+}
+
+/// Batched variant used by T359 benchmark to isolate call-edge overhead from
+/// per-file Tantivy commit costs.
+fn index_repo_with_import_edges_batched(
+    repo_root: &Path,
+    project_id: &str,
+    effective_ref: &str,
+    index_set: &codecompass_state::tantivy_index::IndexSet,
+    conn: &rusqlite::Connection,
+) {
+    let files = codecompass_indexer::scanner::scan_directory(
+        repo_root,
+        codecompass_core::constants::MAX_FILE_SIZE,
+    );
+    let batch = codecompass_indexer::writer::BatchWriter::new(index_set).expect("create batch");
+    let mut pending_imports = Vec::new();
+
+    for file in &files {
+        let content = std::fs::read_to_string(&file.path).expect("read fixture file");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+        let (extracted, raw_imports) =
+            if codecompass_indexer::parser::is_language_supported(&file.language) {
+                match codecompass_indexer::parser::parse_file(&content, &file.language) {
+                    Ok(tree) => (
+                        codecompass_indexer::languages::extract_symbols(
+                            &tree,
+                            &content,
+                            &file.language,
+                        ),
+                        codecompass_indexer::import_extract::extract_imports(
+                            &tree,
+                            &content,
+                            &file.language,
+                            &file.relative_path,
+                        ),
+                    ),
+                    Err(_) => (Vec::new(), Vec::new()),
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+        let symbols = codecompass_indexer::symbol_extract::build_symbol_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let snippets = codecompass_indexer::snippet_extract::build_snippet_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let file_record = codecompass_core::types::FileRecord {
+            repo: project_id.to_string(),
+            r#ref: effective_ref.to_string(),
+            commit: None,
+            path: file.relative_path.clone(),
+            filename: file
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            language: file.language.clone(),
+            content_hash,
+            size_bytes: content.len() as u64,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
+        };
+
+        codecompass_state::symbols::delete_symbols_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+        )
+        .expect("delete symbols for file");
+
+        batch
+            .add_symbols(&index_set.symbols, &symbols)
+            .expect("batch add symbols");
+        batch
+            .add_snippets(&index_set.snippets, &snippets)
+            .expect("batch add snippets");
+        batch
+            .add_file(&index_set.files, &file_record)
+            .expect("batch add file");
+        batch
+            .write_sqlite(conn, &symbols, &file_record, None)
+            .expect("batch write sqlite records");
+
+        pending_imports.push((file.relative_path.clone(), raw_imports));
+    }
+
+    for (path, raw_imports) in pending_imports {
+        codecompass_indexer::writer::replace_import_edges_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &path,
+            raw_imports,
+        )
+        .expect("replace import edges for file");
+    }
+
+    batch.commit().expect("commit batch");
+}
+
+/// Batched variant used by T359 benchmark to isolate call-edge overhead from
+/// per-file Tantivy commit costs.
+fn index_repo_with_import_and_call_edges_batched(
+    repo_root: &Path,
+    project_id: &str,
+    effective_ref: &str,
+    index_set: &codecompass_state::tantivy_index::IndexSet,
+    conn: &rusqlite::Connection,
+) {
+    let files = codecompass_indexer::scanner::scan_directory(
+        repo_root,
+        codecompass_core::constants::MAX_FILE_SIZE,
+    );
+    let batch = codecompass_indexer::writer::BatchWriter::new(index_set).expect("create batch");
+    let mut pending_imports = Vec::new();
+    let mut pending_call_edges = Vec::new();
+
+    for file in &files {
+        let content = std::fs::read_to_string(&file.path).expect("read fixture file");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+        let (parsed_tree, extracted, raw_imports) =
+            if codecompass_indexer::parser::is_language_supported(&file.language) {
+                match codecompass_indexer::parser::parse_file(&content, &file.language) {
+                    Ok(tree) => {
+                        let extracted = codecompass_indexer::languages::extract_symbols(
+                            &tree,
+                            &content,
+                            &file.language,
+                        );
+                        let raw_imports = codecompass_indexer::import_extract::extract_imports(
+                            &tree,
+                            &content,
+                            &file.language,
+                            &file.relative_path,
+                        );
+                        (Some(tree), extracted, raw_imports)
+                    }
+                    Err(_) => (None, Vec::new(), Vec::new()),
+                }
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+
+        let symbols = codecompass_indexer::symbol_extract::build_symbol_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let snippets = codecompass_indexer::snippet_extract::build_snippet_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+
+        let call_edges = if let Some(tree) = parsed_tree {
+            codecompass_indexer::call_extract::extract_call_edges_for_file(
+                &tree,
+                &content,
+                &file.language,
+                &file.relative_path,
+                &symbols,
+                project_id,
+                effective_ref,
+            )
+        } else {
+            Vec::new()
+        };
+
+        let file_record = codecompass_core::types::FileRecord {
+            repo: project_id.to_string(),
+            r#ref: effective_ref.to_string(),
+            commit: None,
+            path: file.relative_path.clone(),
+            filename: file
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            language: file.language.clone(),
+            content_hash,
+            size_bytes: content.len() as u64,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
+        };
+
+        codecompass_state::symbols::delete_symbols_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+        )
+        .expect("delete symbols for file");
+
+        batch
+            .add_symbols(&index_set.symbols, &symbols)
+            .expect("batch add symbols");
+        batch
+            .add_snippets(&index_set.snippets, &snippets)
+            .expect("batch add snippets");
+        batch
+            .add_file(&index_set.files, &file_record)
+            .expect("batch add file");
+        batch
+            .write_sqlite(conn, &symbols, &file_record, None)
+            .expect("batch write sqlite records");
+
+        pending_imports.push((file.relative_path.clone(), raw_imports));
+        pending_call_edges.push((file.relative_path.clone(), call_edges));
+    }
+
+    for (path, raw_imports) in pending_imports {
+        codecompass_indexer::writer::replace_import_edges_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &path,
+            raw_imports,
+        )
+        .expect("replace import edges for file");
+    }
+
+    if !pending_call_edges.is_empty() {
+        let lookup =
+            codecompass_indexer::call_extract::load_symbol_lookup(conn, project_id, effective_ref)
+                .expect("load symbol lookup");
+        for (_, call_edges) in pending_call_edges.iter_mut() {
+            codecompass_indexer::call_extract::resolve_call_targets_with_lookup(
+                &lookup, call_edges,
+            );
+        }
+        codecompass_indexer::writer::replace_call_edges_for_files(
+            conn,
+            project_id,
+            effective_ref,
+            pending_call_edges,
+        )
+        .expect("replace call edges for files");
+    }
+
+    batch.commit().expect("commit batch");
 }
 
 // ===========================================================================
@@ -1677,6 +2094,335 @@ fn t158_reindex_replaces_import_edges_without_stale_rows() {
     );
 }
 
+fn symbol_stable_id_for_name(
+    conn: &rusqlite::Connection,
+    repo: &str,
+    ref_name: &str,
+    name: &str,
+    path: &str,
+) -> String {
+    let symbols =
+        codecompass_state::symbols::find_symbols_by_name(conn, repo, ref_name, name, Some(path))
+            .unwrap_or_else(|e| panic!("query symbol {name} in {path} failed: {e}"));
+    assert_eq!(
+        symbols.len(),
+        1,
+        "expected unique symbol '{}' in '{}', got {}",
+        name,
+        path,
+        symbols.len()
+    );
+    symbols[0].symbol_stable_id.clone()
+}
+
+fn call_graph_golden_path(file_name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/golden")
+        .join(file_name)
+}
+
+fn call_graph_summary_json(
+    result: &codecompass_query::call_graph::CallGraphResult,
+) -> serde_json::Value {
+    let mut callers: Vec<String> = result
+        .callers
+        .iter()
+        .map(|edge| edge.symbol.name.clone())
+        .collect();
+    let mut callees: Vec<String> = result
+        .callees
+        .iter()
+        .map(|edge| edge.symbol.name.clone())
+        .collect();
+    callers.sort();
+    callers.dedup();
+    callees.sort();
+    callees.dedup();
+    serde_json::json!({
+        "symbol": result.symbol.name,
+        "depth_applied": result.depth_applied,
+        "callers": callers,
+        "callees": callees,
+        "total_edges": result.total_edges,
+        "truncated": result.truncated
+    })
+}
+
+// ===========================================================================
+// T337/T342/T343/T349/T356 -- Call Graph + Compare + Follow-up integration
+// ===========================================================================
+
+#[test]
+#[ignore = "fixture integration harness"]
+fn t337_index_call_graph_fixture_populates_expected_call_edges() {
+    let fixture = call_graph_fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+
+    let (project_id, data_dir) = do_init(&fixture, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    index_repo_with_import_and_call_edges(&fixture, &project_id, effective_ref, &index_set, &conn);
+
+    let rust_process = symbol_stable_id_for_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "rust_process",
+        "rust/main.rs",
+    );
+    let rust_validate = symbol_stable_id_for_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "rust_validate",
+        "rust/main.rs",
+    );
+    let rust_method = symbol_stable_id_for_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "rust_method",
+        "rust/main.rs",
+    );
+    let ts_process =
+        symbol_stable_id_for_name(&conn, &project_id, effective_ref, "tsProcess", "ts/main.ts");
+    let ts_helper =
+        symbol_stable_id_for_name(&conn, &project_id, effective_ref, "tsHelper", "ts/util.ts");
+    let py_recurse = symbol_stable_id_for_name(
+        &conn,
+        &project_id,
+        effective_ref,
+        "py_recurse",
+        "python/app.py",
+    );
+
+    let rust_callees =
+        codecompass_state::edges::get_callees(&conn, &project_id, effective_ref, &rust_process)
+            .unwrap();
+    assert!(
+        rust_callees.iter().any(|edge| edge.to_symbol_id.as_deref()
+            == Some(rust_validate.as_str())
+            && edge.confidence == "static"),
+        "rust_process should statically call rust_validate"
+    );
+    assert!(
+        rust_callees.iter().any(
+            |edge| edge.to_symbol_id.as_deref() == Some(rust_method.as_str())
+                && edge.confidence == "heuristic"
+        ),
+        "rust_process should heuristically call rust_method via method call"
+    );
+
+    let ts_callees =
+        codecompass_state::edges::get_callees(&conn, &project_id, effective_ref, &ts_process)
+            .unwrap();
+    assert!(
+        ts_callees.iter().any(
+            |edge| edge.to_symbol_id.as_deref() == Some(ts_helper.as_str())
+                && edge.confidence == "static"
+        ),
+        "tsProcess should resolve cross-file call to tsHelper"
+    );
+    assert!(
+        ts_callees.iter().any(|edge| {
+            edge.to_symbol_id.is_none()
+                && edge.to_name.as_deref() == Some("Math.max")
+                && edge.confidence == "heuristic"
+        }),
+        "tsProcess should keep unresolved external call Math.max as heuristic"
+    );
+
+    let py_callees =
+        codecompass_state::edges::get_callees(&conn, &project_id, effective_ref, &py_recurse)
+            .unwrap();
+    assert!(
+        py_callees
+            .iter()
+            .any(|edge| edge.to_symbol_id.as_deref() == Some(py_recurse.as_str())),
+        "py_recurse should contain a recursive self-edge"
+    );
+}
+
+#[test]
+#[ignore = "fixture integration harness"]
+fn t342_get_call_graph_depth1_matches_golden() {
+    let fixture = call_graph_fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+
+    let (project_id, data_dir) = do_init(&fixture, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    index_repo_with_import_and_call_edges(&fixture, &project_id, effective_ref, &index_set, &conn);
+
+    let graph = codecompass_query::call_graph::get_call_graph(
+        &conn,
+        &project_id,
+        effective_ref,
+        &codecompass_query::call_graph::CallGraphRequest {
+            symbol_name: "rust_entry",
+            path: Some("rust/main.rs"),
+            direction: codecompass_query::call_graph::CallGraphDirection::Both,
+            depth: 1,
+            limit: 20,
+        },
+    )
+    .unwrap();
+    let actual = call_graph_summary_json(&graph);
+    let expected: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(call_graph_golden_path("call-graph-depth1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        actual, expected,
+        "depth1 call graph summary should match golden"
+    );
+}
+
+#[test]
+#[ignore = "fixture integration harness"]
+fn t343_get_call_graph_depth2_matches_golden() {
+    let fixture = call_graph_fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+
+    let (project_id, data_dir) = do_init(&fixture, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    index_repo_with_import_and_call_edges(&fixture, &project_id, effective_ref, &index_set, &conn);
+
+    let graph = codecompass_query::call_graph::get_call_graph(
+        &conn,
+        &project_id,
+        effective_ref,
+        &codecompass_query::call_graph::CallGraphRequest {
+            symbol_name: "rust_entry",
+            path: Some("rust/main.rs"),
+            direction: codecompass_query::call_graph::CallGraphDirection::Both,
+            depth: 2,
+            limit: 20,
+        },
+    )
+    .unwrap();
+    let actual = call_graph_summary_json(&graph);
+    let expected: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(call_graph_golden_path("call-graph-depth2.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        actual, expected,
+        "depth2 call graph summary should match golden"
+    );
+}
+
+#[test]
+#[ignore = "fixture integration harness"]
+fn t349_compare_symbol_between_commits_fixture_refs_reports_modified() {
+    let fixture = call_graph_fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    copy_dir_recursive(&fixture, &workspace);
+
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+    let (project_id, data_dir) = do_init(&workspace, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+
+    index_repo_with_import_and_call_edges(&workspace, &project_id, "main", &index_set, &conn);
+
+    let rust_main = workspace.join("rust/main.rs");
+    let original = std::fs::read_to_string(&rust_main).unwrap();
+    let updated = original.replace("pub fn rust_process() {", "pub fn rust_process(ctx: i32) {");
+    std::fs::write(&rust_main, updated).unwrap();
+
+    index_repo_with_import_and_call_edges(&workspace, &project_id, "feat/auth", &index_set, &conn);
+
+    let result = codecompass_query::symbol_compare::compare_symbol_between_refs(
+        &conn,
+        &project_id,
+        "rust_process",
+        Some("rust/main.rs"),
+        "main",
+        "feat/auth",
+    )
+    .unwrap();
+
+    assert_eq!(result.diff_summary.status, "modified");
+    assert_eq!(result.diff_summary.signature_changed, Some(true));
+    assert!(result.base_version.is_some());
+    assert!(result.head_version.is_some());
+}
+
+#[test]
+#[ignore = "fixture integration harness"]
+fn t356_suggest_followup_queries_after_low_confidence_fixture_search() {
+    let fixture = call_graph_fixture_repo_path();
+    let tmp = tempdir().expect("tempdir");
+    let data_root = tmp.path().join("codecompass-data");
+    std::fs::create_dir_all(&data_root).unwrap();
+
+    let (project_id, data_dir) = do_init(&fixture, &data_root);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let index_set = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    index_repo_with_import_and_call_edges(&fixture, &project_id, effective_ref, &index_set, &conn);
+
+    let query = "where is rate limiting implemented";
+    let search_response = codecompass_query::search::search_code(
+        &index_set,
+        Some(&conn),
+        query,
+        Some(effective_ref),
+        None,
+        10,
+        false,
+    )
+    .unwrap();
+    let top_score = search_response
+        .results
+        .iter()
+        .map(|item| item.score as f64)
+        .fold(0.0_f64, f64::max);
+    let query_intent = serde_json::to_value(search_response.query_intent).unwrap();
+
+    let followup = codecompass_query::followup::suggest_followup_queries(
+        &codecompass_query::followup::FollowupRequest {
+            previous_query_tool: "search_code".to_string(),
+            previous_query_params: serde_json::json!({ "query": query }),
+            previous_results: serde_json::json!({
+                "query_intent": query_intent,
+                "total_candidates": search_response.total_candidates,
+                "top_score": top_score
+            }),
+            confidence_threshold: 0.5,
+        },
+    );
+    assert!(
+        followup
+            .suggestions
+            .iter()
+            .any(|item| item.tool == "locate_symbol"),
+        "low-confidence fixture search should suggest locate_symbol"
+    );
+}
+
 // ===========================================================================
 // T081 -- Relevance Benchmark: Top-1 Precision
 // ===========================================================================
@@ -1856,6 +2602,83 @@ fn t081_relevance_benchmark_top1_precision() {
         correct,
         total,
         failure_report,
+    );
+}
+
+#[test]
+#[ignore = "benchmark harness"]
+fn benchmark_t359_call_edge_extraction_overhead_under_20_percent() {
+    let tmp = tempdir().expect("tempdir");
+    let repo_root = tmp.path().join("synthetic-repo");
+    let file_count = std::env::var("CODECOMPASS_T359_FILE_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(5_000);
+    create_synthetic_rust_repo(&repo_root, file_count);
+
+    let no_calls_data_root = tmp.path().join("data-no-calls");
+    let with_calls_data_root = tmp.path().join("data-with-calls");
+    std::fs::create_dir_all(&no_calls_data_root).unwrap();
+    std::fs::create_dir_all(&with_calls_data_root).unwrap();
+
+    let (project_id_no_calls, data_dir_no_calls) = do_init(&repo_root, &no_calls_data_root);
+    let conn_no_calls = codecompass_state::db::open_connection(
+        &data_dir_no_calls.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    let index_no_calls =
+        codecompass_state::tantivy_index::IndexSet::open(&data_dir_no_calls).unwrap();
+
+    let (project_id_with_calls, data_dir_with_calls) = do_init(&repo_root, &with_calls_data_root);
+    let conn_with_calls = codecompass_state::db::open_connection(
+        &data_dir_with_calls.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    let index_with_calls =
+        codecompass_state::tantivy_index::IndexSet::open(&data_dir_with_calls).unwrap();
+
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+
+    let baseline_start = std::time::Instant::now();
+    index_repo_with_import_edges_batched(
+        &repo_root,
+        &project_id_no_calls,
+        effective_ref,
+        &index_no_calls,
+        &conn_no_calls,
+    );
+    let baseline_elapsed = baseline_start.elapsed();
+
+    let call_start = std::time::Instant::now();
+    index_repo_with_import_and_call_edges_batched(
+        &repo_root,
+        &project_id_with_calls,
+        effective_ref,
+        &index_with_calls,
+        &conn_with_calls,
+    );
+    let call_elapsed = call_start.elapsed();
+
+    let baseline_ms = baseline_elapsed.as_secs_f64() * 1_000.0;
+    let call_ms = call_elapsed.as_secs_f64() * 1_000.0;
+    let overhead_pct = if baseline_ms <= f64::EPSILON {
+        0.0
+    } else {
+        ((call_ms - baseline_ms) / baseline_ms) * 100.0
+    };
+
+    assert_eq!(
+        project_id_no_calls, project_id_with_calls,
+        "project IDs should match for identical repos"
+    );
+    assert!(
+        overhead_pct < 20.0,
+        "call extraction overhead should be < 20%; files={} baseline={:.2}ms with_calls={:.2}ms overhead={:.2}%",
+        file_count,
+        baseline_ms,
+        call_ms,
+        overhead_pct
     );
 }
 

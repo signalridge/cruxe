@@ -161,6 +161,41 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             workspace,
             project_id,
         }),
+        "get_call_graph" => query::handle_get_call_graph(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "compare_symbol_between_commits" => {
+            query::handle_compare_symbol_between_commits(QueryToolParams {
+                id,
+                arguments,
+                config,
+                index_set,
+                schema_status,
+                compatibility_reason,
+                conn,
+                workspace,
+                project_id,
+            })
+        }
+        "suggest_followup_queries" => query::handle_suggest_followup_queries(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
         "explain_ranking" => query::handle_explain_ranking(QueryToolParams {
             id,
             arguments,

@@ -1,3 +1,4 @@
+pub mod call_extract;
 pub mod import_extract;
 pub mod languages;
 pub mod overlay;

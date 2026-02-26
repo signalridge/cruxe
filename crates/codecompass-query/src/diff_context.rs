@@ -395,6 +395,9 @@ mod tests {
         std::fs::write(repo.join("src/lib.rs"), "pub fn keep() {}\n").unwrap();
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-m", "base"]);
+        // Ensure a deterministic default branch across environments where
+        // `git init` may default to `master` instead of `main`.
+        git(&repo, &["branch", "-M", "main"]);
 
         git(&repo, &["checkout", "-b", "feat/diff"]);
         std::fs::write(

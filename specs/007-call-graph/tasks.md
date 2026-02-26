@@ -13,9 +13,9 @@
 
 **Purpose**: CRUD operations for call edges in `symbol_edges` table
 
-- [ ] T325 [US1] Implement call edge CRUD in `crates/codecompass-state/src/edges.rs`: `insert_call_edges(edges: &[CallEdge])`, `get_callers(symbol_id, ref)`, `get_callees(symbol_id, ref)`, `delete_edges_for_file(file_path, ref)` for incremental updates
-- [ ] T326 [P] [US1] Add `CallEdge` type to `crates/codecompass-core/src/types.rs`: `from_symbol_id`, `to_symbol_id`, `to_name` (for unresolved), `edge_type`, `confidence` (static/heuristic), `source_file`, `source_line`
-- [ ] T327 [US1] Write unit tests for edge CRUD in `crates/codecompass-state/src/edges.rs`: insert, query by caller, query by callee, delete by file, handle NULL `to_symbol_id`
+- [x] T325 [US1] Implement call edge CRUD in `crates/codecompass-state/src/edges.rs`: `insert_call_edges(edges: &[CallEdge])`, `get_callers(symbol_id, ref)`, `get_callees(symbol_id, ref)`, `delete_edges_for_file(file_path, ref)` for incremental updates
+- [x] T326 [P] [US1] Add `CallEdge` type to `crates/codecompass-core/src/types.rs`: `from_symbol_id`, `to_symbol_id`, `to_name` (for unresolved), `edge_type`, `confidence` (static/heuristic), `source_file`, `source_line`
+- [x] T327 [US1] Write unit tests for edge CRUD in `crates/codecompass-state/src/edges.rs`: insert, query by caller, query by callee, delete by file, handle NULL `to_symbol_id`
 
 **Checkpoint**: Call edges can be stored, queried, and deleted in `symbol_edges`
 
@@ -25,16 +25,16 @@
 
 **Purpose**: Extract call sites from source files during indexing
 
-- [ ] T328 [US1] Implement call site extraction framework in `crates/codecompass-indexer/src/call_extract.rs`: accept parsed AST + symbol index, produce `Vec<CallEdge>`, dispatch to per-language extractors
-- [ ] T329 [P] [US1] Implement Rust call site patterns in `crates/codecompass-indexer/src/languages/rust.rs`: match `call_expression`, `method_call_expression` nodes, extract callee name, determine confidence based on receiver type availability
-- [ ] T330 [P] [US1] Implement TypeScript call site patterns in `crates/codecompass-indexer/src/languages/typescript.rs`: match `call_expression`, `new_expression`, `method_call` nodes
-- [ ] T331 [P] [US1] Implement Python call site patterns in `crates/codecompass-indexer/src/languages/python.rs`: match `call` nodes, `attribute` + `call` for method calls
-- [ ] T332 [P] [US1] Implement Go call site patterns in `crates/codecompass-indexer/src/languages/go.rs`: match `call_expression`, `selector_expression` + `call_expression` for method calls
-- [ ] T333 [US1] Implement cross-file callee resolution in `crates/codecompass-indexer/src/call_extract.rs`: match callee name against qualified names in the symbol index for the same ref, set `to_symbol_id` when matched, `NULL` when unresolved
-- [ ] T334 [US1] Integrate call extraction into indexing pipeline in `crates/codecompass-indexer/src/writer.rs`: after symbol extraction pass, run call extraction, batch-write call edges to `symbol_edges`
-- [ ] T335 [US1] Update incremental sync in `crates/codecompass-indexer/src/writer.rs`: when a file changes, delete old call edges for that file before re-extracting
-- [ ] T336 [P] [US1] Create call graph fixture repo in `testdata/fixtures/call-graph-sample/`: 8-10 files across Rust, TypeScript, Python, Go with known direct calls, method calls, cross-file calls, recursive calls, and unresolvable external calls
-- [ ] T337 [US1] Write integration test: index `testdata/fixtures/call-graph-sample/`, query `symbol_edges` for `edge_type = 'calls'`, verify all expected edges exist with correct confidence levels
+- [x] T328 [US1] Implement call site extraction framework in `crates/codecompass-indexer/src/call_extract.rs`: accept parsed AST + symbol index, produce `Vec<CallEdge>`, dispatch to per-language extractors
+- [x] T329 [P] [US1] Implement Rust call site patterns in `crates/codecompass-indexer/src/languages/rust.rs`: match `call_expression`, `method_call_expression` nodes, extract callee name, determine confidence based on receiver type availability
+- [x] T330 [P] [US1] Implement TypeScript call site patterns in `crates/codecompass-indexer/src/languages/typescript.rs`: match `call_expression`, `new_expression`, `method_call` nodes
+- [x] T331 [P] [US1] Implement Python call site patterns in `crates/codecompass-indexer/src/languages/python.rs`: match `call` nodes, `attribute` + `call` for method calls
+- [x] T332 [P] [US1] Implement Go call site patterns in `crates/codecompass-indexer/src/languages/go.rs`: match `call_expression`, `selector_expression` + `call_expression` for method calls
+- [x] T333 [US1] Implement cross-file callee resolution in `crates/codecompass-indexer/src/call_extract.rs`: match callee name against qualified names in the symbol index for the same ref, set `to_symbol_id` when matched, `NULL` when unresolved
+- [x] T334 [US1] Integrate call extraction into indexing pipeline in `crates/codecompass-indexer/src/writer.rs`: after symbol extraction pass, run call extraction, batch-write call edges to `symbol_edges`
+- [x] T335 [US1] Update incremental sync in `crates/codecompass-indexer/src/writer.rs`: when a file changes, delete old call edges for that file before re-extracting
+- [x] T336 [P] [US1] Create call graph fixture repo in `testdata/fixtures/call-graph-sample/`: 8-10 files across Rust, TypeScript, Python, Go with known direct calls, method calls, cross-file calls, recursive calls, and unresolvable external calls
+- [x] T337 [US1] Write integration test: index `testdata/fixtures/call-graph-sample/`, query `symbol_edges` for `edge_type = 'calls'`, verify all expected edges exist with correct confidence levels
 
 **Checkpoint**: Indexing produces call edges for all four languages, cross-file resolution works
 
@@ -44,13 +44,13 @@
 
 **Purpose**: Graph traversal logic for `get_call_graph` tool
 
-- [ ] T338 [US2] Implement call graph traversal in `crates/codecompass-query/src/call_graph.rs`: BFS from a given symbol, configurable direction (callers/callees/both), depth (1-5, cap enforced), limit, ref-scoped
-- [ ] T339 [US2] Implement cycle detection in graph traversal in `crates/codecompass-query/src/call_graph.rs`: track visited symbol IDs to handle recursive calls without infinite loops
-- [ ] T340 [US2] Implement `get_call_graph` MCP tool handler in `crates/codecompass-mcp/src/tools/get_call_graph.rs`: parse input, delegate to `call_graph.rs`, format response with Protocol v1 metadata and stable symbol handles
-- [ ] T341 [US2] Register `get_call_graph` in MCP tool list in `crates/codecompass-mcp/src/server.rs`
-- [ ] T342 [US2] Write integration test: index fixture repo, call `get_call_graph` at depth 1, verify callers and callees match expected values
-- [ ] T343 [P] [US2] Write integration test: call `get_call_graph` at depth 2, verify transitive edges are included
-- [ ] T344 [P] [US2] Write unit test: verify depth cap at 5, verify cycle detection with recursive function
+- [x] T338 [US2] Implement call graph traversal in `crates/codecompass-query/src/call_graph.rs`: BFS from a given symbol, configurable direction (callers/callees/both), depth (1-5, cap enforced), limit, ref-scoped
+- [x] T339 [US2] Implement cycle detection in graph traversal in `crates/codecompass-query/src/call_graph.rs`: track visited symbol IDs to handle recursive calls without infinite loops
+- [x] T340 [US2] Implement `get_call_graph` MCP tool handler in `crates/codecompass-mcp/src/tools/get_call_graph.rs`: parse input, delegate to `call_graph.rs`, format response with Protocol v1 metadata and stable symbol handles
+- [x] T341 [US2] Register `get_call_graph` in MCP tool list in `crates/codecompass-mcp/src/server.rs`
+- [x] T342 [US2] Write integration test: index fixture repo, call `get_call_graph` at depth 1, verify callers and callees match expected values
+- [x] T343 [P] [US2] Write integration test: call `get_call_graph` at depth 2, verify transitive edges are included
+- [x] T344 [P] [US2] Write unit test: verify depth cap at 5, verify cycle detection with recursive function
 
 **Checkpoint**: `get_call_graph` returns correct caller/callee graphs with depth control
 
@@ -60,12 +60,12 @@
 
 **Purpose**: Cross-ref symbol comparison tool
 
-- [ ] T345 [US3] Implement symbol comparison logic in `crates/codecompass-query/src/symbol_compare.rs`: load symbol from both refs via Tantivy `symbols` index, compare signature, line range, compute diff summary
-- [ ] T346 [US3] Implement body diff retrieval in `crates/codecompass-query/src/symbol_compare.rs`: if symbol body is available in snippets index, compute a line-level diff summary (added/removed/changed line counts)
-- [ ] T347 [US3] Implement `compare_symbol_between_commits` MCP tool handler in `crates/codecompass-mcp/src/tools/compare_symbol.rs`: parse input, delegate to `symbol_compare.rs`, format response with Protocol v1 metadata, stable handles, and compatibility metadata
-- [ ] T348 [US3] Register `compare_symbol_between_commits` in MCP tool list in `crates/codecompass-mcp/src/server.rs`
-- [ ] T349 [US3] Write integration test: index fixture repo at two different refs with a changed function, call `compare_symbol_between_commits`, verify diff summary is accurate
-- [ ] T350 [P] [US3] Write unit test: verify handling of added symbol (base=null), deleted symbol (head=null), unchanged symbol
+- [x] T345 [US3] Implement symbol comparison logic in `crates/codecompass-query/src/symbol_compare.rs`: load symbol from both refs via Tantivy `symbols` index, compare signature, line range, compute diff summary
+- [x] T346 [US3] Implement body diff retrieval in `crates/codecompass-query/src/symbol_compare.rs`: if symbol body is available in snippets index, compute a line-level diff summary (added/removed/changed line counts)
+- [x] T347 [US3] Implement `compare_symbol_between_commits` MCP tool handler in `crates/codecompass-mcp/src/tools/compare_symbol.rs`: parse input, delegate to `symbol_compare.rs`, format response with Protocol v1 metadata, stable handles, and compatibility metadata
+- [x] T348 [US3] Register `compare_symbol_between_commits` in MCP tool list in `crates/codecompass-mcp/src/server.rs`
+- [x] T349 [US3] Write integration test: index fixture repo at two different refs with a changed function, call `compare_symbol_between_commits`, verify diff summary is accurate
+- [x] T350 [P] [US3] Write unit test: verify handling of added symbol (base=null), deleted symbol (head=null), unchanged symbol
 
 **Checkpoint**: `compare_symbol_between_commits` shows accurate diffs across refs
 
@@ -75,12 +75,12 @@
 
 **Purpose**: Agent guidance tool for low-confidence results
 
-- [ ] T351 [US4] Implement follow-up suggestion engine in `crates/codecompass-query/src/followup.rs`: analyze previous query type and results, extract identifiers from natural language queries, generate tool call suggestions with parameters
-- [ ] T352 [US4] Implement suggestion rules in `crates/codecompass-query/src/followup.rs`: low-confidence `search_code` -> suggest `locate_symbol`; zero-result `locate_symbol` -> suggest `search_code` or `get_call_graph`; `natural_language` intent -> suggest `symbol` intent reformulation
-- [ ] T353 [US4] Implement `suggest_followup_queries` MCP tool handler in `crates/codecompass-mcp/src/tools/suggest_followup.rs`: parse input, delegate to `followup.rs`, format response with Protocol v1 metadata and canonical error envelope
-- [ ] T354 [US4] Register `suggest_followup_queries` in MCP tool list in `crates/codecompass-mcp/src/server.rs`
-- [ ] T355 [US4] Write unit test: verify suggestion rules for each scenario (low confidence, zero results, above threshold)
-- [ ] T356 [US4] Write integration test: index fixture repo, perform a low-confidence search, call `suggest_followup_queries`, verify suggestions are actionable
+- [x] T351 [US4] Implement follow-up suggestion engine in `crates/codecompass-query/src/followup.rs`: analyze previous query type and results, extract identifiers from natural language queries, generate tool call suggestions with parameters
+- [x] T352 [US4] Implement suggestion rules in `crates/codecompass-query/src/followup.rs`: low-confidence `search_code` -> suggest `locate_symbol`; zero-result `locate_symbol` -> suggest `search_code` or `get_call_graph`; `natural_language` intent -> suggest `symbol` intent reformulation
+- [x] T353 [US4] Implement `suggest_followup_queries` MCP tool handler in `crates/codecompass-mcp/src/tools/suggest_followup.rs`: parse input, delegate to `followup.rs`, format response with Protocol v1 metadata and canonical error envelope
+- [x] T354 [US4] Register `suggest_followup_queries` in MCP tool list in `crates/codecompass-mcp/src/server.rs`
+- [x] T355 [US4] Write unit test: verify suggestion rules for each scenario (low confidence, zero results, above threshold)
+- [x] T356 [US4] Write integration test: index fixture repo, perform a low-confidence search, call `suggest_followup_queries`, verify suggestions are actionable
 
 **Checkpoint**: `suggest_followup_queries` provides actionable guidance for agents
 
@@ -90,13 +90,13 @@
 
 **Purpose**: End-to-end validation, performance benchmarking, documentation
 
-- [ ] T357 [P] Update MCP `tools/list` response to include all three new tools with correct schemas, and validate errors for all three tools against `specs/meta/protocol-error-codes.md` with machine-stable `error.code` values
-- [ ] T358 Run full test suite (`cargo test --workspace`) and fix any failures
-- [ ] T359 [P] Benchmark call edge extraction overhead: index a 5,000-file repo with and without call extraction, verify overhead < 20%
-- [ ] T360 [P] Benchmark `get_call_graph` query latency: measure p95 for depth 1 and depth 2 on a 10,000-symbol index
-- [ ] T361 [P] Create golden output files in `testdata/golden/` for call graph queries at depth 1 and depth 2
-- [ ] T362 Run `cargo clippy --workspace -- -D warnings` and fix all lints
-- [ ] T363 Run `cargo fmt --check --all` and fix formatting
+- [x] T357 [P] Update MCP `tools/list` response to include all three new tools with correct schemas, and validate errors for all three tools against `specs/meta/protocol-error-codes.md` with machine-stable `error.code` values
+- [x] T358 Run full test suite (`cargo test --workspace`) and fix any failures
+- [x] T359 [P] Benchmark call edge extraction overhead: index a 5,000-file repo with and without call extraction, verify overhead < 20%
+- [x] T360 [P] Benchmark `get_call_graph` query latency: measure p95 for depth 1 and depth 2 on a 10,000-symbol index
+- [x] T361 [P] Create golden output files in `testdata/golden/` for call graph queries at depth 1 and depth 2
+- [x] T362 Run `cargo clippy --workspace -- -D warnings` and fix all lints
+- [x] T363 Run `cargo fmt --check --all` and fix formatting
 
 ---
 

@@ -6,8 +6,8 @@ use rusqlite::{Connection, params};
 pub fn insert_symbol(conn: &Connection, sym: &SymbolRecord) -> Result<(), StateError> {
     conn.execute(
         "INSERT OR REPLACE INTO symbol_relations
-         (repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility, content_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         (repo, \"ref\", \"commit\", path, symbol_id, symbol_stable_id, name, qualified_name, kind, language, line_start, line_end, signature, parent_symbol_id, visibility, content, content_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             sym.repo,
             sym.r#ref,
@@ -24,6 +24,7 @@ pub fn insert_symbol(conn: &Connection, sym: &SymbolRecord) -> Result<(), StateE
             sym.signature,
             sym.parent_symbol_id,
             sym.visibility,
+            sym.content.clone(),
             sym.content.as_deref().map(|c| {
                 blake3::hash(c.as_bytes()).to_hex().to_string()
             }).unwrap_or_default(),
