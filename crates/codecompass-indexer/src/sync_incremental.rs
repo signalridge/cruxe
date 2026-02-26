@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::warn;
 
-use crate::{languages, parser, snippet_extract, staging, symbol_extract, writer};
+use crate::{call_extract, languages, parser, snippet_extract, staging, symbol_extract, writer};
 
 /// Per-file action derived from `git diff --name-status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,6 +347,7 @@ fn write_actions_to_staging(
     let mut processed_files = 0usize;
     let mut symbols_written = 0usize;
     let mut applied_actions = Vec::with_capacity(actions.len());
+    let mut pending_call_edges: Vec<(String, Vec<codecompass_core::types::CallEdge>)> = Vec::new();
 
     for action in actions {
         let path = action.path();
@@ -354,6 +355,13 @@ fn write_actions_to_staging(
             SyncAction::Deleted { .. } => {
                 // Keep SQLite side consistent with the staged overlay snapshot:
                 // deleted files must not leave stale symbols/manifest/import edges behind.
+                let deleted_symbol_ids: Vec<String> =
+                    codecompass_state::symbols::list_symbols_in_file(
+                        conn, project_id, ref_name, path,
+                    )?
+                    .into_iter()
+                    .map(|symbol| symbol.symbol_stable_id)
+                    .collect();
                 codecompass_state::symbols::delete_symbols_for_file(
                     conn, project_id, ref_name, path,
                 )?;
@@ -365,6 +373,15 @@ fn write_actions_to_staging(
                     ref_name,
                     vec![source_edge_id.as_str()],
                 )?;
+                codecompass_state::edges::delete_call_edges_for_file(
+                    conn, project_id, ref_name, path,
+                )?;
+                codecompass_state::edges::delete_call_edges_to_symbols(
+                    conn,
+                    project_id,
+                    ref_name,
+                    &deleted_symbol_ids,
+                )?;
                 applied_actions.push(action.clone());
                 continue;
             }
@@ -373,8 +390,10 @@ fn write_actions_to_staging(
                 let content = match std::fs::read_to_string(&full_path) {
                     Ok(c) => c,
                     Err(err) => {
-                        warn!(path, error = %err, "Skipping changed file that could not be read");
-                        continue;
+                        return Err(StateError::Io(std::io::Error::new(
+                            err.kind(),
+                            format!("failed to read changed file {path}: {err}"),
+                        )));
                     }
                 };
                 let language = match crate::scanner::detect_language(&full_path) {
@@ -387,8 +406,10 @@ fn write_actions_to_staging(
                 let tree = match parser::parse_file(&content, &language) {
                     Ok(tree) => tree,
                     Err(err) => {
-                        warn!(path, error = %err, "Skipping changed file with parse error");
-                        continue;
+                        return Err(StateError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("failed to parse changed file {path}: {err}"),
+                        )));
                     }
                 };
                 let extracted = languages::extract_symbols(&tree, &content, &language);
@@ -405,6 +426,9 @@ fn write_actions_to_staging(
                     ref_name,
                     path,
                     Some("overlay"),
+                );
+                let call_edges = call_extract::extract_call_edges_for_file(
+                    &tree, &content, &language, path, &symbols, project_id, ref_name,
                 );
                 let file = FileRecord {
                     repo: project_id.to_string(),
@@ -429,12 +453,21 @@ fn write_actions_to_staging(
                 batch.add_snippets(&index_set.snippets, &snippets)?;
                 batch.add_file(&index_set.files, &file)?;
                 batch.write_sqlite(conn, &symbols, &file, file_mtime_ns(&full_path))?;
+                pending_call_edges.push((path.to_string(), call_edges));
 
                 processed_files += 1;
                 symbols_written += symbols.len();
                 applied_actions.push(action.clone());
             }
         }
+    }
+
+    if !pending_call_edges.is_empty() {
+        let lookup = call_extract::load_symbol_lookup(conn, project_id, ref_name)?;
+        for (_, call_edges) in pending_call_edges.iter_mut() {
+            call_extract::resolve_call_targets_with_lookup(&lookup, call_edges);
+        }
+        writer::replace_call_edges_for_files(conn, project_id, ref_name, pending_call_edges)?;
     }
 
     batch.commit()?;
@@ -535,6 +568,10 @@ where
             &plan.actions,
         )?;
         apply_tombstones_for_actions(&tx, request.project_id, request.ref_name, &applied_actions)?;
+        let total_file_count =
+            codecompass_state::manifest::file_count(&tx, request.project_id, request.ref_name)?;
+        let total_symbol_count =
+            codecompass_state::symbols::symbol_count(&tx, request.project_id, request.ref_name)?;
         let publish = staging::commit_staging_to_overlay(
             request.data_dir,
             request.sync_id,
@@ -552,8 +589,8 @@ where
                     "overlay/{}",
                     crate::overlay::normalize_overlay_ref(request.ref_name)
                 )),
-                file_count: processed_files as i64,
-                symbol_count: symbols_written as i64,
+                file_count: total_file_count as i64,
+                symbol_count: total_symbol_count as i64,
                 is_default_branch: request.is_default_branch,
             },
         )?;
@@ -631,7 +668,7 @@ where
 mod tests {
     use super::*;
     use crate::{languages, parser, scanner, snippet_extract, symbol_extract, writer};
-    use codecompass_core::types::Project;
+    use codecompass_core::types::{CallEdge, Project, SymbolKind, SymbolRecord};
     use codecompass_core::vcs::detect_head_commit;
     use codecompass_state::{db, project, schema};
     use rusqlite::Connection;
@@ -1139,7 +1176,109 @@ mod tests {
     }
 
     #[test]
-    fn run_incremental_sync_skips_tombstone_for_unprocessed_modified_file() {
+    fn run_incremental_sync_delete_file_cleans_incoming_edges_to_deleted_symbols() {
+        let tmp = tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(repo_root.join("src")).unwrap();
+        std::fs::write(repo_root.join("src/a.rs"), "pub fn a() {}\n").unwrap();
+
+        let mut conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+        insert_project(&conn, "proj-1", &repo_root);
+
+        let a = SymbolRecord {
+            repo: "proj-1".to_string(),
+            r#ref: "feat/auth".to_string(),
+            commit: None,
+            path: "src/a.rs".to_string(),
+            language: "rust".to_string(),
+            symbol_id: "sym::a".to_string(),
+            symbol_stable_id: "stable-a".to_string(),
+            name: "a".to_string(),
+            qualified_name: "a".to_string(),
+            kind: SymbolKind::Function,
+            signature: Some("fn a()".to_string()),
+            line_start: 1,
+            line_end: 1,
+            parent_symbol_id: None,
+            visibility: Some("pub".to_string()),
+            content: None,
+        };
+        let b = SymbolRecord {
+            repo: "proj-1".to_string(),
+            r#ref: "feat/auth".to_string(),
+            commit: None,
+            path: "src/b.rs".to_string(),
+            language: "rust".to_string(),
+            symbol_id: "sym::b".to_string(),
+            symbol_stable_id: "stable-b".to_string(),
+            name: "b".to_string(),
+            qualified_name: "b".to_string(),
+            kind: SymbolKind::Function,
+            signature: Some("fn b()".to_string()),
+            line_start: 1,
+            line_end: 1,
+            parent_symbol_id: None,
+            visibility: Some("pub".to_string()),
+            content: None,
+        };
+        codecompass_state::symbols::insert_symbol(&conn, &a).unwrap();
+        codecompass_state::symbols::insert_symbol(&conn, &b).unwrap();
+        codecompass_state::edges::insert_call_edges(
+            &conn,
+            "proj-1",
+            "feat/auth",
+            &[CallEdge {
+                repo: "proj-1".to_string(),
+                ref_name: "feat/auth".to_string(),
+                from_symbol_id: "stable-a".to_string(),
+                to_symbol_id: Some("stable-b".to_string()),
+                to_name: None,
+                edge_type: "calls".to_string(),
+                confidence: "static".to_string(),
+                source_file: "src/a.rs".to_string(),
+                source_line: 1,
+            }],
+        )
+        .unwrap();
+
+        let adapter = FakeAdapter {
+            merge_base: "base123".to_string(),
+            head: "head999".to_string(),
+            diff: vec![DiffEntry::deleted("src/b.rs")],
+            ancestor: true,
+        };
+        let stats = run_incremental_sync(
+            &adapter,
+            &mut conn,
+            IncrementalSyncRequest {
+                repo_root: &repo_root,
+                data_dir: &data_dir,
+                project_id: "proj-1",
+                ref_name: "feat/auth",
+                base_ref: "main",
+                sync_id: "sync-delete-cleanup",
+                last_indexed_commit: Some("head998"),
+                is_default_branch: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.changed_files, 1);
+
+        let callees =
+            codecompass_state::edges::get_callees(&conn, "proj-1", "feat/auth", "stable-a")
+                .unwrap();
+        assert!(
+            callees
+                .iter()
+                .all(|edge| edge.to_symbol_id.as_deref() != Some("stable-b")),
+            "incoming edges to deleted symbol should be removed"
+        );
+    }
+
+    #[test]
+    fn run_incremental_sync_fails_for_unreadable_modified_file_without_committing_state() {
         let tmp = tempdir().unwrap();
         let repo_root = tmp.path().join("repo");
         let data_dir = tmp.path().join("data");
@@ -1156,7 +1295,7 @@ mod tests {
             diff: vec![DiffEntry::modified("src/missing.rs")],
             ancestor: true,
         };
-        let stats = run_incremental_sync(
+        let result = run_incremental_sync(
             &adapter,
             &mut conn,
             IncrementalSyncRequest {
@@ -1169,18 +1308,95 @@ mod tests {
                 last_indexed_commit: Some("head998"),
                 is_default_branch: false,
             },
-        )
-        .unwrap();
+        );
 
-        assert_eq!(stats.changed_files, 1);
-        assert_eq!(stats.processed_files, 0);
+        assert!(result.is_err());
         let tombstones =
             codecompass_state::tombstones::list_paths_for_ref(&conn, "proj-1", "feat/auth")
                 .unwrap();
         assert!(
             tombstones.is_empty(),
-            "modified file skipped by parser/read errors must not suppress base via tombstone"
+            "failed sync must not persist tombstones"
         );
+        assert!(
+            codecompass_state::branch_state::get_branch_state(&conn, "proj-1", "feat/auth")
+                .unwrap()
+                .is_none(),
+            "failed sync must not persist branch state"
+        );
+    }
+
+    #[test]
+    fn run_incremental_sync_noop_keeps_total_branch_state_counts() {
+        let tmp = tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(repo_root.join("src")).unwrap();
+        std::fs::write(repo_root.join("src/new.rs"), "pub fn new_fn() {}\n").unwrap();
+
+        let mut conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+        insert_project(&conn, "proj-1", &repo_root);
+
+        let first_adapter = FakeAdapter {
+            merge_base: "base123".to_string(),
+            head: "head999".to_string(),
+            diff: vec![DiffEntry::added("src/new.rs")],
+            ancestor: true,
+        };
+        run_incremental_sync(
+            &first_adapter,
+            &mut conn,
+            IncrementalSyncRequest {
+                repo_root: &repo_root,
+                data_dir: &data_dir,
+                project_id: "proj-1",
+                ref_name: "feat/auth",
+                base_ref: "main",
+                sync_id: "sync-first",
+                last_indexed_commit: None,
+                is_default_branch: false,
+            },
+        )
+        .unwrap();
+
+        let first_branch =
+            codecompass_state::branch_state::get_branch_state(&conn, "proj-1", "feat/auth")
+                .unwrap()
+                .unwrap();
+        assert_eq!(first_branch.file_count, 1);
+        assert!(first_branch.symbol_count > 0);
+
+        let second_adapter = FakeAdapter {
+            merge_base: "base123".to_string(),
+            head: "head1000".to_string(),
+            diff: Vec::new(),
+            ancestor: true,
+        };
+        let second_stats = run_incremental_sync(
+            &second_adapter,
+            &mut conn,
+            IncrementalSyncRequest {
+                repo_root: &repo_root,
+                data_dir: &data_dir,
+                project_id: "proj-1",
+                ref_name: "feat/auth",
+                base_ref: "main",
+                sync_id: "sync-second",
+                last_indexed_commit: Some("head999"),
+                is_default_branch: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(second_stats.changed_files, 0);
+        assert_eq!(second_stats.processed_files, 0);
+
+        let second_branch =
+            codecompass_state::branch_state::get_branch_state(&conn, "proj-1", "feat/auth")
+                .unwrap()
+                .unwrap();
+        assert_eq!(second_branch.file_count, first_branch.file_count);
+        assert_eq!(second_branch.symbol_count, first_branch.symbol_count);
     }
 
     #[test]

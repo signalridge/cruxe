@@ -6,10 +6,12 @@ use codecompass_core::config::Config;
 use codecompass_core::constants;
 use codecompass_core::error::{ProtocolErrorCode, StateError, WorkspaceError};
 use codecompass_core::types::{DetailLevel, SchemaStatus, WorkspaceConfig, generate_project_id};
+use codecompass_query::call_graph;
 use codecompass_query::detail;
 use codecompass_query::diff_context;
 use codecompass_query::explain_ranking;
 use codecompass_query::find_references;
+use codecompass_query::followup;
 use codecompass_query::freshness::{
     self, FreshnessResult, PolicyAction, apply_freshness_policy, check_freshness_with_scan_params,
     parse_freshness_policy, trigger_async_sync,
@@ -19,6 +21,7 @@ use codecompass_query::locate;
 use codecompass_query::ranking;
 use codecompass_query::related;
 use codecompass_query::search;
+use codecompass_query::symbol_compare;
 use codecompass_query::tombstone::TombstoneCache;
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};

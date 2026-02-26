@@ -1,8 +1,10 @@
+pub mod call_graph;
 pub mod context;
 pub mod detail;
 pub mod diff_context;
 pub mod explain_ranking;
 pub mod find_references;
+pub mod followup;
 pub mod freshness;
 pub mod hierarchy;
 pub mod intent;
@@ -12,6 +14,7 @@ pub mod planner;
 pub mod ranking;
 pub mod related;
 pub mod search;
+pub mod symbol_compare;
 pub mod tombstone;
 
 #[cfg(test)]

@@ -1,0 +1,13 @@
+{
+  "symbol": "rust_entry",
+  "depth_applied": 2,
+  "callers": [],
+  "callees": [
+    "rust_method",
+    "rust_process",
+    "rust_recurse",
+    "rust_validate"
+  ],
+  "total_edges": 4,
+  "truncated": false
+}

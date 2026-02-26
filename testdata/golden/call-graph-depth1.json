@@ -1,0 +1,10 @@
+{
+  "symbol": "rust_entry",
+  "depth_applied": 1,
+  "callers": [],
+  "callees": [
+    "rust_process"
+  ],
+  "total_edges": 1,
+  "truncated": false
+}
