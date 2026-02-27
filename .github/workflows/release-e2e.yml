@@ -1,30 +1,33 @@
 name: release-e2e
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows:
+      - release
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to validate"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   linux-musl-e2e:
-    if: contains(github.ref_name, '009-test')
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+        contains(inputs.tag, '009-test')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        contains(github.event.workflow_run.head_branch, '009-test'))
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
     steps:
-      - name: Wait for release publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for _ in $(seq 1 120); do
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
-            sleep 10
-          done
-          echo "release $TAG not published in time" >&2
-          exit 1
       - name: Download Linux musl artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,23 +73,16 @@ jobs:
           )
 
   windows-e2e:
-    if: contains(github.ref_name, '009-test')
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+        contains(inputs.tag, '009-test')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        contains(github.event.workflow_run.head_branch, '009-test'))
     runs-on: windows-2022
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
     steps:
-      - name: Wait for release publication
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for ($i = 0; $i -lt 120; $i++) {
-            gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
-            if ($LASTEXITCODE -eq 0) { exit 0 }
-            Start-Sleep -Seconds 10
-          }
-          Write-Error "release $env:TAG not published in time"
-          exit 1
       - name: Download Windows artifact
         shell: pwsh
         env:
@@ -124,23 +120,17 @@ jobs:
           Pop-Location
 
   homebrew-audit-install:
-    if: contains(github.ref_name, '009-test')
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+        contains(inputs.tag, '009-test')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        contains(github.event.workflow_run.head_branch, '009-test'))
     runs-on: macos-14
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Wait for release publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for _ in $(seq 1 120); do
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
-            sleep 10
-          done
-          echo "release $TAG not published in time" >&2
-          exit 1
       - name: Build tap formula from release assets
         env:
           GH_TOKEN: ${{ github.token }}
