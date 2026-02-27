@@ -46,3 +46,7 @@ codecompass-indexer = { path = "crates/codecompass-indexer" }
 codecompass-query = { path = "crates/codecompass-query" }
 codecompass-mcp = { path = "crates/codecompass-mcp" }
 codecompass-vcs = { path = "crates/codecompass-vcs" }
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
