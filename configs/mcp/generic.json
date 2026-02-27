@@ -1,0 +1,18 @@
+{
+  "_comment": "Generic MCP server template for stdio-based clients.",
+  "_usage": "Replace ${CODECOMPASS_WORKSPACE} with an absolute path.",
+  "mcp_server": {
+    "name": "codecompass",
+    "transport": "stdio",
+    "command": "codecompass",
+    "args": [
+      "serve-mcp",
+      "--workspace",
+      "${CODECOMPASS_WORKSPACE}"
+    ],
+    "env": {
+      "RUST_LOG": "error",
+      "CODECOMPASS_CONFIG": "${CODECOMPASS_CONFIG}"
+    }
+  }
+}

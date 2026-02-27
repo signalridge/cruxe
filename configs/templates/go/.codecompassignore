@@ -1,0 +1,4 @@
+vendor/
+*.test
+*.pb.go
+*_generated.go
