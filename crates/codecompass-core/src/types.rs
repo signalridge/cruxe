@@ -202,10 +202,30 @@ pub enum SemanticMode {
     /// Disable semantic retrieval.
     #[default]
     Off,
-    /// Run semantic scoring in shadow mode for telemetry/verification only.
-    Shadow,
-    /// Enable semantic scoring in user-visible retrieval ranking.
-    On,
+    /// Keep lexical retrieval and optional rerank only (no vector branch).
+    RerankOnly,
+    /// Enable semantic/hybrid retrieval path for natural-language intent.
+    Hybrid,
+}
+
+/// Composite confidence guidance payload for search responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfidenceGuidance {
+    pub low_confidence: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_action: Option<String>,
+    pub threshold: f64,
+    pub top_score: f64,
+    pub score_margin: f64,
+    pub channel_agreement: f64,
+}
+
+/// Provider-specific rerank score for one document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankResult {
+    pub doc: String,
+    pub score: f64,
+    pub provider: String,
 }
 
 /// Per-result ranking explanation for debug mode.
@@ -814,7 +834,7 @@ mod tests {
             "ref changes must produce distinct merge keys"
         );
 
-        let mut keys = vec![
+        let mut keys = [
             OverlayMergeKey::new("repo", "feature", "src/z.rs"),
             OverlayMergeKey::new("repo", "feature", "src/a.rs"),
             OverlayMergeKey::new("repo", "main", "src/a.rs"),

@@ -985,7 +985,8 @@ fn normalize_vector_backend(raw: &str) -> String {
     }
 }
 
-fn normalize_intent_rule_name(raw: &str) -> Option<&'static str> {
+/// Normalize user-provided intent rule names/aliases into canonical identifiers.
+pub fn canonical_intent_rule_name(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "error_pattern" | "error" => Some("error_pattern"),
         "path" => Some("path"),
@@ -999,7 +1000,7 @@ fn normalize_intent_rule_name(raw: &str) -> Option<&'static str> {
 fn normalize_intent_rule_order(raw: &[String]) -> Vec<String> {
     let mut normalized = Vec::new();
     for value in raw {
-        let Some(rule) = normalize_intent_rule_name(value) else {
+        let Some(rule) = canonical_intent_rule_name(value) else {
             continue;
         };
         if !normalized.iter().any(|existing| existing == rule) {

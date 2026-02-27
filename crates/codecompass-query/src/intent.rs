@@ -238,12 +238,12 @@ fn is_path_like(query: &str) -> bool {
 }
 
 fn parse_intent_rule(raw: &str) -> Option<IntentRule> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "error_pattern" | "error" => Some(IntentRule::ErrorPattern),
+    match codecompass_core::config::canonical_intent_rule_name(raw)? {
+        "error_pattern" => Some(IntentRule::ErrorPattern),
         "path" => Some(IntentRule::Path),
-        "quoted_error" | "quoted" => Some(IntentRule::QuotedError),
+        "quoted_error" => Some(IntentRule::QuotedError),
         "symbol" => Some(IntentRule::Symbol),
-        "natural_language" | "nl" | "default" => Some(IntentRule::NaturalLanguage),
+        "natural_language" => Some(IntentRule::NaturalLanguage),
         _ => None,
     }
 }
@@ -369,5 +369,16 @@ mod tests {
 
         let classification = classify_intent_with_policy("\"connection refused\"", &policy);
         assert_eq!(classification.intent, QueryIntent::NaturalLanguage);
+    }
+
+    #[test]
+    fn intent_rule_aliases_use_core_canonical_mapping() {
+        assert_eq!(parse_intent_rule("error"), Some(IntentRule::ErrorPattern));
+        assert_eq!(parse_intent_rule("quoted"), Some(IntentRule::QuotedError));
+        assert_eq!(parse_intent_rule("nl"), Some(IntentRule::NaturalLanguage));
+        assert_eq!(
+            parse_intent_rule("default"),
+            Some(IntentRule::NaturalLanguage)
+        );
     }
 }
