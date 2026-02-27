@@ -20,10 +20,11 @@ jobs:
   linux-musl-e2e:
     if: >
       (github.event_name == 'workflow_dispatch' &&
-        contains(inputs.tag, '009-test')) ||
+        startsWith(inputs.tag, 'v')) ||
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
-        contains(github.event.workflow_run.head_branch, '009-test'))
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
@@ -75,10 +76,11 @@ jobs:
   windows-e2e:
     if: >
       (github.event_name == 'workflow_dispatch' &&
-        contains(inputs.tag, '009-test')) ||
+        startsWith(inputs.tag, 'v')) ||
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
-        contains(github.event.workflow_run.head_branch, '009-test'))
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: windows-2022
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
@@ -122,10 +124,11 @@ jobs:
   homebrew-audit-install:
     if: >
       (github.event_name == 'workflow_dispatch' &&
-        contains(inputs.tag, '009-test')) ||
+        startsWith(inputs.tag, 'v')) ||
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
-        contains(github.event.workflow_run.head_branch, '009-test'))
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: macos-14
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}

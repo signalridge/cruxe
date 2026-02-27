@@ -20,7 +20,7 @@ jobs:
       - name: Install dist
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh | sh
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh" | sh
       - name: Validate release manifest
         run: dist manifest --output-format=json --no-local-paths > dist-manifest.json
       - name: Upload dist manifest
@@ -54,7 +54,7 @@ jobs:
         shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh | sh
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh" | sh
       - name: Install Zig (aarch64 musl)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         uses: goto-bus-stop/setup-zig@v2
@@ -84,7 +84,7 @@ jobs:
       - name: Install dist
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh | sh
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh" | sh
       - name: Build global artifacts (checksums)
         run: dist build --artifacts=global
       - name: Install git-cliff
@@ -113,6 +113,35 @@ jobs:
         run: |
           mkdir -p release-assets
           find dist-artifacts -type f -maxdepth 4 -exec cp {} release-assets/ \;
+      - name: Validate release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            "codecompass-aarch64-apple-darwin.tar.gz"
+            "codecompass-aarch64-apple-darwin.tar.gz.sha256"
+            "codecompass-x86_64-apple-darwin.tar.gz"
+            "codecompass-x86_64-apple-darwin.tar.gz.sha256"
+            "codecompass-aarch64-unknown-linux-musl.tar.gz"
+            "codecompass-aarch64-unknown-linux-musl.tar.gz.sha256"
+            "codecompass-x86_64-unknown-linux-musl.tar.gz"
+            "codecompass-x86_64-unknown-linux-musl.tar.gz.sha256"
+            "codecompass-x86_64-pc-windows-msvc.zip"
+            "codecompass-x86_64-pc-windows-msvc.zip.sha256"
+            "release-notes.md"
+          )
+          missing=0
+          for file in "${required[@]}"; do
+            if [[ ! -f "release-assets/${file}" ]]; then
+              echo "Missing required release asset: ${file}" >&2
+              missing=1
+            fi
+          done
+          total="$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          echo "Release assets found: ${total}"
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
