@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 11;
+pub const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -293,6 +293,14 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                 .map_err(StateError::sqlite)?;
             Ok(())
         },
+        // V12: remove duplicate worktree_leases index.
+        // `idx_worktree_leases_status` duplicates `idx_worktree_leases_status_last_used`
+        // (both cover the same (status, last_used_at) columns).
+        |conn| {
+            conn.execute_batch("DROP INDEX IF EXISTS idx_worktree_leases_status_last_used;")
+                .map_err(StateError::sqlite)?;
+            Ok(())
+        },
     ];
 
     for version in (current + 1)..=(CURRENT_SCHEMA_VERSION) {
@@ -425,8 +433,6 @@ CREATE TABLE IF NOT EXISTS worktree_leases (
 
 CREATE INDEX IF NOT EXISTS idx_worktree_leases_status_updated
     ON worktree_leases(status, updated_at);
-CREATE INDEX IF NOT EXISTS idx_worktree_leases_status_last_used
-    ON worktree_leases(status, last_used_at);
 CREATE INDEX IF NOT EXISTS idx_worktree_leases_status
     ON worktree_leases(status, last_used_at);
 
@@ -573,7 +579,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(worktree_last_used_idx, 1);
+        // V12 migration removes this duplicate index.
+        assert_eq!(worktree_last_used_idx, 0);
         let worktree_status_idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master

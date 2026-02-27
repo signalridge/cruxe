@@ -213,6 +213,11 @@ automatically. Reference configurations are provided for common project types
   (feat, fix, refactor, docs, test, chore) with links to PRs.
 - **FR-812**: System MUST include SHA-256 checksums for all release artifacts.
 
+> **Cross-reference**: spec 001 US1 also requires `cargo install codecompass` as a
+> source-based installation path. This spec (009) complements that with prebuilt
+> binary distribution; the `cargo install` path remains supported but is not gated
+> by this spec's release workflow.
+
 ### Key Entities
 
 - **ReleaseBinary**: A platform-specific compiled binary with version, target triple,

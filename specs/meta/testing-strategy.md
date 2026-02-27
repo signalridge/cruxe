@@ -23,7 +23,6 @@ migrated_from: plan/verify/testing-strategy.md
 |---------|--------------|----------|
 | Query intent classification | 001-core-mvp | `symbol` / `path` / `error` / `natural_language` |
 | Ranking rules | 001-core-mvp | deterministic lexical and rule boosts |
-| Structural path boost | 002-agent-protocol | penalties/bonuses by path pattern and multiplicative behavior |
 | Compact serialization | 002-agent-protocol | `detail_level` + `compact` interaction and field guarantees |
 | Explainability levels | 002-agent-protocol | `ranking_explain_level` (`off`/`basic`/`full`) payload gating |
 | Parser extraction | 001-core-mvp | language-specific symbol extraction |
@@ -46,7 +45,6 @@ migrated_from: plan/verify/testing-strategy.md
 | Diff/ref tooling behavior | 006-vcs-ga-tooling | `diff_context`, `find_references`, `switch_ref` |
 | Call graph extraction/query | 007-call-graph | call edges and traversal correctness |
 | Hybrid fallback behavior | 008-semantic-hybrid | provider failure -> local fallback |
-| Watch daemon lifecycle | 004-workspace-transport | `watch --background/--status/--stop` and readiness behavior |
 | Interrupted job recovery status | 004-workspace-transport | restart leaves clear `interrupted_recovery_report` in `index_status`/`health_check` |
 | Profile advisor output | 008-semantic-hybrid | recommendation consistency by repo-size/language buckets |
 
@@ -130,6 +128,8 @@ cargo test -p codecompass-mcp benchmark_t138_get_file_outline_p95_under_50ms -- 
 cargo test -p codecompass-mcp benchmark_t457_first_query_p95_under_400ms -- --ignored --nocapture
 cargo test -p codecompass-mcp benchmark_t457_health_endpoint_p95_under_50ms -- --ignored --nocapture
 cargo test -p codecompass-mcp benchmark_t457_workspace_routing_overhead_p95_under_5ms -- --ignored --nocapture
+cargo test -p codecompass-query --test semantic_phase8_benchmarks -- --ignored --nocapture
+benchmarks/semantic/run_semantic_benchmarks.sh
 ```
 
 Fixture policy:
@@ -139,6 +139,15 @@ Fixture policy:
 - Keep benchmark fixtures and query packs versioned with spec updates.
 - Treat benchmark thresholds as gate signals; smoke tests remain in default CI for
   fast regression detection.
+
+## Future / Backlog
+
+Test concerns without an owning FR or scheduled roadmap entry.
+
+| Concern | Originating Spec | Notes |
+|---------|-----------------|-------|
+| Structural path boost | 002-agent-protocol | penalties/bonuses by path pattern; no owning FR yet |
+| Watch daemon lifecycle | 004-workspace-transport | `watch --background/--status/--stop`; not yet implemented |
 
 ## Regression Policy
 

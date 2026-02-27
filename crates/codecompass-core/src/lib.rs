@@ -7,4 +7,3 @@ pub mod time;
 pub mod tokens;
 pub mod types;
 pub mod vcs;
-pub mod vcs_adapter;

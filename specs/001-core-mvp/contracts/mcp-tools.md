@@ -49,7 +49,7 @@ Trigger full or incremental indexing of a registered project.
 | `ref` | string | no | Branch/ref to index. Default: current HEAD or project default. |
 
 > **Note:** `workspace` is determined at MCP server startup (`--workspace` flag)
-> and is not a per-call parameter. Multi-workspace routing is planned for Phase 4.
+> and is not a per-call parameter. Multi-workspace routing is implemented in spec 004 (Workspace & Transport).
 
 ### Output
 

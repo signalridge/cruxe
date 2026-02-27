@@ -133,20 +133,16 @@ fn open_existing_index(
 
 fn validate_required_fields(index: &Index, required_fields: &[&str]) -> Result<(), StateError> {
     let schema = index.schema();
-    let missing_fields: Vec<&str> = required_fields
+    if required_fields
         .iter()
-        .copied()
-        .filter(|name| schema.get_field(name).is_err())
-        .collect();
-
-    if missing_fields.is_empty() {
-        Ok(())
-    } else {
-        Err(StateError::SchemaMigrationRequired {
+        .any(|name| schema.get_field(name).is_err())
+    {
+        return Err(StateError::SchemaMigrationRequired {
             current: 0,
             required: constants::SCHEMA_VERSION,
-        })
+        });
     }
+    Ok(())
 }
 
 fn dir_is_empty(path: &Path) -> Result<bool, StateError> {

@@ -270,7 +270,7 @@ against the `symbol_relations` table — no Tantivy involvement.
 
 ## Tool: `health_check`
 
-Return project-level operational status for all registered projects.
+Return project-level operational status for the server's default project.
 
 ### Input
 
@@ -282,7 +282,7 @@ Return project-level operational status for all registered projects.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `workspace` | string | no | Specific workspace to check. Default: all registered projects. |
+| `workspace` | string | no | Absolute path to target workspace. Default: server's default project. |
 
 ### Output
 

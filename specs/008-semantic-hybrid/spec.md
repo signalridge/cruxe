@@ -4,7 +4,7 @@
 **Created**: 2026-02-23
 **Status**: Draft
 **Phase**: 3 | **Version**: v1.2.0
-**Depends On**: 007-call-graph
+**Depends On**: 007-call-graph (sequential only — no functional FR dependency; semantic search does not consume call graph edges)
 **Input**: User description: "Hybrid search toggle with local-first embedding backend, feature flags for semantic search, external rerank provider abstraction, confidence threshold and low-confidence guidance"
 
 ## Design Optimization Decisions (2026-02 Revision)

@@ -264,7 +264,8 @@ pub fn search_code_with_options(
     semantic_state.apply_lexical_short_circuit(&all_results);
 
     if semantic_state.semantic_eligible() {
-        let semantic_limit = limit.saturating_mul(2).max(20);
+        let (semantic_limit, lexical_fanout, semantic_fanout) =
+            semantic_fanout_limits(limit, &options.search_config);
         if let Some(conn) = conn {
             if let Some(project_id) =
                 resolve_semantic_project_id(conn, effective_ref.as_str(), &all_results)
@@ -283,8 +284,6 @@ pub fn search_code_with_options(
                         if semantic_output.results.is_empty() {
                             semantic_state.mark_skipped("semantic_no_matches");
                         } else {
-                            let lexical_fanout = limit.saturating_mul(4).max(40);
-                            let semantic_fanout = limit.saturating_mul(3).max(30);
                             all_results = blend_hybrid_results(
                                 all_results,
                                 semantic_output.results,
@@ -366,7 +365,13 @@ pub fn search_code_with_options(
     let confidence_threshold = options
         .search_config
         .confidence_threshold(options.confidence_threshold_override);
-    let confidence = evaluate_confidence(&all_results, query, intent.intent, confidence_threshold);
+    let confidence = evaluate_confidence(
+        &all_results,
+        query,
+        intent.intent,
+        confidence_threshold,
+        &options.search_config.semantic,
+    );
 
     let metadata = SearchMetadata {
         semantic_mode: options.search_config.semantic.mode.clone(),
@@ -568,7 +573,13 @@ pub fn search_code_vcs_merged_with_options(
     let confidence_threshold = options
         .search_config
         .confidence_threshold(options.confidence_threshold_override);
-    let confidence = evaluate_confidence(&results, query, base.query_intent, confidence_threshold);
+    let confidence = evaluate_confidence(
+        &results,
+        query,
+        base.query_intent,
+        confidence_threshold,
+        &options.search_config.semantic,
+    );
     metadata.low_confidence = confidence.low_confidence;
     metadata.suggested_action = confidence.suggested_action;
     metadata.confidence_threshold = confidence.threshold;
@@ -597,6 +608,19 @@ fn clone_connection_for_parallel(conn: &Connection) -> Option<Connection> {
         return None;
     }
     codecompass_state::db::open_connection(Path::new(path)).ok()
+}
+
+fn semantic_fanout_limits(limit: usize, search_config: &CoreSearchConfig) -> (usize, usize, usize) {
+    let semantic_limit = limit
+        .saturating_mul(search_config.semantic.semantic_limit_multiplier)
+        .max(20);
+    let lexical_fanout = limit
+        .saturating_mul(search_config.semantic.lexical_fanout_multiplier)
+        .max(40);
+    let semantic_fanout = limit
+        .saturating_mul(search_config.semantic.semantic_fanout_multiplier)
+        .max(30);
+    (semantic_limit, lexical_fanout, semantic_fanout)
 }
 
 /// Infer the project_id for semantic search from lexical results or the database.
@@ -1643,5 +1667,22 @@ mod tests {
         .unwrap();
 
         assert!((response.metadata.confidence_threshold - 0.91).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn semantic_fanout_limits_defaults_match_legacy_behavior() {
+        let config = CoreSearchConfig::default();
+        assert_eq!(semantic_fanout_limits(10, &config), (20, 40, 30));
+        assert_eq!(semantic_fanout_limits(15, &config), (30, 60, 45));
+    }
+
+    #[test]
+    fn semantic_fanout_limits_use_configured_multipliers() {
+        let mut config = CoreSearchConfig::default();
+        config.semantic.semantic_limit_multiplier = 5;
+        config.semantic.lexical_fanout_multiplier = 6;
+        config.semantic.semantic_fanout_multiplier = 7;
+        assert_eq!(semantic_fanout_limits(3, &config), (20, 40, 30));
+        assert_eq!(semantic_fanout_limits(10, &config), (50, 60, 70));
     }
 }

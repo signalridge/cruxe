@@ -98,6 +98,10 @@ Benchmark harness invocation:
 scripts/benchmarks/run_mcp_benchmarks.sh
 ```
 
+The harness includes MCP/runtime benchmark entrypoints plus semantic phase
+benchmark entrypoints and deterministic semantic report-key generation via
+`benchmarks/semantic/run_semantic_benchmarks.sh`.
+
 Default CI `cargo test --workspace` keeps smoke-level latency checks only; strict
 p95 assertions run through the benchmark harness entry points above.
 

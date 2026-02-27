@@ -94,6 +94,10 @@ specs/
 > **FR/SC Numbering Note**: FR/SC prefixes follow the original spec numbering before the VCS split.
 > Specs 005-009 use FR/SC prefixes 4xx-8xx respectively (offset by one from spec IDs).
 > All FR/SC numbers are globally unique with no collisions.
+>
+> **Alpha-suffix convention**: When a spec adds requirements after initial numbering,
+> alpha suffixes (e.g. FR-101a, FR-101b) are used to maintain numeric ordering while
+> keeping the original FR/SC numbers stable.
 
 ## Migration Notes
 

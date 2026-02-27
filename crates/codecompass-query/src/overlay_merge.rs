@@ -118,12 +118,18 @@ pub fn merged_locate(
             item.source_layer = Some(layer);
         });
 
+    // Pre-compute overlay merge keys so we can preserve base results at a
+    // tombstoned path if the overlay explicitly re-provides that merge key
+    // (consistent with merged_search behavior).
+    let overlay_keys: HashSet<OverlayMergeKey> =
+        overlay_results.iter().map(locate_merge_key).collect();
+
     let mut merged: HashMap<OverlayMergeKey, LocateResult> = HashMap::new();
-    for result in base_results
-        .into_iter()
-        .filter(|r| !tombstones.contains(r.path.as_str()))
-    {
-        merged.insert(locate_merge_key(&result), result);
+    for result in base_results.into_iter() {
+        let key = locate_merge_key(&result);
+        if !tombstones.contains(result.path.as_str()) || overlay_keys.contains(&key) {
+            merged.insert(key, result);
+        }
     }
     for result in overlay_results {
         merged.insert(locate_merge_key(&result), result);
@@ -211,6 +217,40 @@ mod tests {
         let overlay_winner = merged.iter().find(|r| r.path == "src/lib.rs").unwrap();
         assert_eq!(overlay_winner.source_layer, Some(SourceLayer::Overlay));
         assert!((overlay_winner.score - overlay_symbol.score).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn merged_locate_tombstone_reprovision_preserves_overlay_winner() {
+        // Base has a symbol at a tombstoned path. Overlay re-provides the same
+        // merge key (same stable_id+kind). The overlay version should survive.
+        let base = locate_result("src/deleted.rs", "stable-1", "function", 0.4);
+        let overlay = locate_result("src/deleted.rs", "stable-1", "function", 0.9);
+
+        let merged = merged_locate(
+            vec![base],
+            vec![overlay.clone()],
+            &HashSet::from(["src/deleted.rs".to_string()]),
+        );
+        assert_eq!(merged.len(), 1);
+        let winner = &merged[0];
+        assert_eq!(winner.source_layer, Some(SourceLayer::Overlay));
+        assert!((winner.score - overlay.score).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn merged_locate_tombstone_without_reprovision_suppresses_base() {
+        // Base has a symbol at a tombstoned path. Overlay does NOT re-provide
+        // the same merge key. The base result should be suppressed.
+        let base = locate_result("src/deleted.rs", "stable-1", "function", 0.4);
+        let overlay = locate_result("src/new.rs", "stable-2", "function", 0.9);
+
+        let merged = merged_locate(
+            vec![base],
+            vec![overlay],
+            &HashSet::from(["src/deleted.rs".to_string()]),
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].path, "src/new.rs");
     }
 
     #[test]

@@ -2,7 +2,6 @@ use crate::overlay;
 use codecompass_core::error::StateError;
 use codecompass_state::tantivy_index::IndexSet;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayPublish {
@@ -111,9 +110,10 @@ pub fn rollback_staging(data_dir: &Path, sync_id: &str) -> Result<(), StateError
 /// Remove stale staging directories older than `older_than`.
 ///
 /// Returns cleaned `sync_id` names.
-pub fn cleanup_stale_staging(
+#[cfg(test)]
+fn cleanup_stale_staging(
     data_dir: &Path,
-    older_than: SystemTime,
+    older_than: std::time::SystemTime,
 ) -> Result<Vec<String>, StateError> {
     let root = staging_root(data_dir);
     if !root.exists() {
@@ -131,7 +131,7 @@ pub fn cleanup_stale_staging(
         let modified = entry
             .metadata()?
             .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH);
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         if modified <= older_than {
             std::fs::remove_dir_all(&path)?;
             removed.push(entry.file_name().to_string_lossy().to_string());
@@ -144,6 +144,7 @@ pub fn cleanup_stale_staging(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
     #[test]

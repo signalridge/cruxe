@@ -90,6 +90,22 @@ pub struct SemanticConfig {
     pub lexical_short_circuit_threshold: f64,
     #[serde(default = "default_confidence_threshold")]
     pub confidence_threshold: f64,
+    #[serde(default = "default_confidence_top_score_weight")]
+    pub confidence_top_score_weight: f64,
+    #[serde(default = "default_confidence_score_margin_weight")]
+    pub confidence_score_margin_weight: f64,
+    #[serde(default = "default_confidence_channel_agreement_weight")]
+    pub confidence_channel_agreement_weight: f64,
+    #[serde(default = "default_local_rerank_phrase_boost")]
+    pub local_rerank_phrase_boost: f64,
+    #[serde(default = "default_local_rerank_token_overlap_weight")]
+    pub local_rerank_token_overlap_weight: f64,
+    #[serde(default = "default_semantic_limit_multiplier")]
+    pub semantic_limit_multiplier: usize,
+    #[serde(default = "default_lexical_fanout_multiplier")]
+    pub lexical_fanout_multiplier: usize,
+    #[serde(default = "default_semantic_fanout_multiplier")]
+    pub semantic_fanout_multiplier: usize,
     #[serde(default = "default_profile_advisor_mode")]
     pub profile_advisor_mode: String,
     #[serde(default)]
@@ -254,6 +270,30 @@ fn default_lexical_short_circuit_threshold() -> f64 {
 fn default_confidence_threshold() -> f64 {
     0.5
 }
+fn default_confidence_top_score_weight() -> f64 {
+    0.55
+}
+fn default_confidence_score_margin_weight() -> f64 {
+    0.30
+}
+fn default_confidence_channel_agreement_weight() -> f64 {
+    0.15
+}
+fn default_local_rerank_phrase_boost() -> f64 {
+    0.75
+}
+fn default_local_rerank_token_overlap_weight() -> f64 {
+    2.5
+}
+fn default_semantic_limit_multiplier() -> usize {
+    2
+}
+fn default_lexical_fanout_multiplier() -> usize {
+    4
+}
+fn default_semantic_fanout_multiplier() -> usize {
+    3
+}
 fn default_profile_advisor_mode() -> String {
     "off".into()
 }
@@ -363,6 +403,14 @@ impl Default for SemanticConfig {
             ratio: default_semantic_ratio(),
             lexical_short_circuit_threshold: default_lexical_short_circuit_threshold(),
             confidence_threshold: default_confidence_threshold(),
+            confidence_top_score_weight: default_confidence_top_score_weight(),
+            confidence_score_margin_weight: default_confidence_score_margin_weight(),
+            confidence_channel_agreement_weight: default_confidence_channel_agreement_weight(),
+            local_rerank_phrase_boost: default_local_rerank_phrase_boost(),
+            local_rerank_token_overlap_weight: default_local_rerank_token_overlap_weight(),
+            semantic_limit_multiplier: default_semantic_limit_multiplier(),
+            lexical_fanout_multiplier: default_lexical_fanout_multiplier(),
+            semantic_fanout_multiplier: default_semantic_fanout_multiplier(),
             profile_advisor_mode: default_profile_advisor_mode(),
             external_provider_enabled: false,
             allow_code_payload_to_external: false,
@@ -558,6 +606,51 @@ impl Config {
             config.search.semantic.confidence_threshold,
             default_confidence_threshold(),
             "search.semantic.confidence_threshold",
+        );
+        config.search.semantic.confidence_top_score_weight = clamp_non_negative_f64_with_warning(
+            config.search.semantic.confidence_top_score_weight,
+            default_confidence_top_score_weight(),
+            "search.semantic.confidence_top_score_weight",
+        );
+        config.search.semantic.confidence_score_margin_weight = clamp_non_negative_f64_with_warning(
+            config.search.semantic.confidence_score_margin_weight,
+            default_confidence_score_margin_weight(),
+            "search.semantic.confidence_score_margin_weight",
+        );
+        config.search.semantic.confidence_channel_agreement_weight =
+            clamp_non_negative_f64_with_warning(
+                config.search.semantic.confidence_channel_agreement_weight,
+                default_confidence_channel_agreement_weight(),
+                "search.semantic.confidence_channel_agreement_weight",
+            );
+        config.search.semantic.local_rerank_phrase_boost = clamp_non_negative_f64_with_warning(
+            config.search.semantic.local_rerank_phrase_boost,
+            default_local_rerank_phrase_boost(),
+            "search.semantic.local_rerank_phrase_boost",
+        );
+        config.search.semantic.local_rerank_token_overlap_weight =
+            clamp_non_negative_f64_with_warning(
+                config.search.semantic.local_rerank_token_overlap_weight,
+                default_local_rerank_token_overlap_weight(),
+                "search.semantic.local_rerank_token_overlap_weight",
+            );
+        config.search.semantic.semantic_limit_multiplier = clamp_min_usize_with_warning(
+            config.search.semantic.semantic_limit_multiplier,
+            1,
+            default_semantic_limit_multiplier(),
+            "search.semantic.semantic_limit_multiplier",
+        );
+        config.search.semantic.lexical_fanout_multiplier = clamp_min_usize_with_warning(
+            config.search.semantic.lexical_fanout_multiplier,
+            1,
+            default_lexical_fanout_multiplier(),
+            "search.semantic.lexical_fanout_multiplier",
+        );
+        config.search.semantic.semantic_fanout_multiplier = clamp_min_usize_with_warning(
+            config.search.semantic.semantic_fanout_multiplier,
+            1,
+            default_semantic_fanout_multiplier(),
+            "search.semantic.semantic_fanout_multiplier",
         );
         config.search.semantic.embedding.profile =
             normalize_embedding_profile(&config.search.semantic.embedding.profile);
@@ -770,6 +863,46 @@ fn apply_env_overrides(config: &mut Config) {
         && let Ok(n) = v.parse()
     {
         config.search.semantic.confidence_threshold = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_CONFIDENCE_TOP_SCORE_WEIGHT")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.confidence_top_score_weight = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_CONFIDENCE_SCORE_MARGIN_WEIGHT")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.confidence_score_margin_weight = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_CONFIDENCE_CHANNEL_AGREEMENT_WEIGHT")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.confidence_channel_agreement_weight = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_LOCAL_RERANK_PHRASE_BOOST")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.local_rerank_phrase_boost = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_LOCAL_RERANK_TOKEN_OVERLAP_WEIGHT")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.local_rerank_token_overlap_weight = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_LIMIT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.semantic_limit_multiplier = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_LEXICAL_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.lexical_fanout_multiplier = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_SEMANTIC_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.semantic_fanout_multiplier = n;
     }
     if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_PROFILE") {
         config.search.semantic.embedding.profile = v;
@@ -1098,6 +1231,43 @@ fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
     clamped
 }
 
+fn clamp_non_negative_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
+    if !value.is_finite() {
+        tracing::warn!(
+            field,
+            value,
+            fallback,
+            "invalid non-finite config value; falling back to default"
+        );
+        return fallback;
+    }
+    if value < 0.0 {
+        tracing::warn!(
+            field,
+            value,
+            fallback,
+            "config value below 0.0; falling back to default"
+        );
+        return fallback;
+    }
+    value
+}
+
+fn clamp_min_usize_with_warning(value: usize, min: usize, fallback: usize, field: &str) -> usize {
+    if value < min {
+        tracing::warn!(
+            field,
+            value,
+            min,
+            fallback,
+            "config value below minimum; falling back to default"
+        );
+        fallback
+    } else {
+        value
+    }
+}
+
 fn expand_tilde(path: &str) -> String {
     if path.starts_with('~')
         && let Some(home) = dirs::home_dir()
@@ -1323,6 +1493,14 @@ mod tests {
             ratio = 9.0
             lexical_short_circuit_threshold = -1.0
             confidence_threshold = 2.0
+            confidence_top_score_weight = -0.2
+            confidence_score_margin_weight = -0.3
+            confidence_channel_agreement_weight = -0.4
+            local_rerank_phrase_boost = -1.0
+            local_rerank_token_overlap_weight = -2.0
+            semantic_limit_multiplier = 0
+            lexical_fanout_multiplier = 0
+            semantic_fanout_multiplier = 0
 
             [search.semantic.embedding]
             profile = ""
@@ -1350,6 +1528,20 @@ mod tests {
         assert_eq!(loaded.search.semantic.ratio, 1.0);
         assert_eq!(loaded.search.semantic.lexical_short_circuit_threshold, 0.0);
         assert_eq!(loaded.search.semantic.confidence_threshold, 1.0);
+        assert_eq!(loaded.search.semantic.confidence_top_score_weight, 0.55);
+        assert_eq!(loaded.search.semantic.confidence_score_margin_weight, 0.30);
+        assert_eq!(
+            loaded.search.semantic.confidence_channel_agreement_weight,
+            0.15
+        );
+        assert_eq!(loaded.search.semantic.local_rerank_phrase_boost, 0.75);
+        assert_eq!(
+            loaded.search.semantic.local_rerank_token_overlap_weight,
+            2.5
+        );
+        assert_eq!(loaded.search.semantic.semantic_limit_multiplier, 2);
+        assert_eq!(loaded.search.semantic.lexical_fanout_multiplier, 4);
+        assert_eq!(loaded.search.semantic.semantic_fanout_multiplier, 3);
         assert_eq!(loaded.search.semantic.embedding.profile, "fast_local");
         assert_eq!(loaded.search.semantic.embedding.provider, "local");
         assert_eq!(loaded.search.semantic.embedding.model, "NomicEmbedTextV15Q");
@@ -1403,6 +1595,19 @@ mod tests {
             ..Default::default()
         };
         assert!(semantic.allow_external_provider_calls());
+    }
+
+    #[test]
+    fn semantic_tuning_defaults_match_legacy_constants() {
+        let semantic = SemanticConfig::default();
+        assert_eq!(semantic.confidence_top_score_weight, 0.55);
+        assert_eq!(semantic.confidence_score_margin_weight, 0.30);
+        assert_eq!(semantic.confidence_channel_agreement_weight, 0.15);
+        assert_eq!(semantic.local_rerank_phrase_boost, 0.75);
+        assert_eq!(semantic.local_rerank_token_overlap_weight, 2.5);
+        assert_eq!(semantic.semantic_limit_multiplier, 2);
+        assert_eq!(semantic.lexical_fanout_multiplier, 4);
+        assert_eq!(semantic.semantic_fanout_multiplier, 3);
     }
 
     #[test]

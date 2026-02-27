@@ -110,7 +110,7 @@ Status transitions:
                evicted            rebuilding -> active
 ```
 
-### `branch_tombstones` Table (Unchanged from 001-core-mvp)
+### `branch_tombstones` Table (Extended from 001-core-mvp)
 
 ```sql
 CREATE TABLE branch_tombstones (

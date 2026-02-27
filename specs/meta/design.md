@@ -454,6 +454,14 @@ index schema.
 - Keep symbol queries lexical-first.
 - Treat `semantic_ratio` as a runtime cap; allow adaptive lowering when lexical confidence is high.
 - Add lexical short-circuit (`lexical_short_circuit_threshold`) to skip semantic branch on easy queries.
+- Keep hybrid-tuning constants config-backed under `search.semantic` so behavior
+  can be tuned without code changes:
+  - confidence composite weights: `confidence_top_score_weight`,
+    `confidence_score_margin_weight`, `confidence_channel_agreement_weight`
+  - local reranker boosts: `local_rerank_phrase_boost`,
+    `local_rerank_token_overlap_weight`
+  - fanout multipliers: `semantic_limit_multiplier`,
+    `lexical_fanout_multiplier`, `semantic_fanout_multiplier`
 - Key vector records by stable symbol identity (`symbol_stable_id`) + snippet hash + model version.
 - Enforce external provider privacy gates (`external_provider_enabled`, `allow_code_payload_to_external`) defaulting to false.
 - Start from `semantic_mode = rerank_only`, then enable `hybrid` only after benchmark gates pass.
@@ -846,8 +854,35 @@ CREATE TABLE branch_tombstones (
   repo TEXT NOT NULL,
   ref TEXT NOT NULL,
   path TEXT NOT NULL,               -- base index path to suppress
+  tombstone_type TEXT DEFAULT 'deleted',  -- 'deleted' or 'replaced'
+  created_at TEXT NOT NULL,
   PRIMARY KEY(repo, ref, path)
 );
+```
+
+**`symbol_edges` table** — inter-symbol relationship edges:
+
+```sql
+CREATE TABLE symbol_edges (
+  repo TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  from_symbol_id TEXT NOT NULL,
+  to_symbol_id TEXT,                -- nullable: unresolved targets use to_name
+  to_name TEXT,                     -- fallback target name when to_symbol_id is NULL
+  edge_type TEXT NOT NULL,          -- 'imports', 'calls', 'implements', 'extends'
+  confidence TEXT DEFAULT 'static', -- 'static' or 'heuristic'
+  source_file TEXT,                 -- call site source file
+  source_line INTEGER,              -- call site line number
+  CHECK (to_symbol_id IS NOT NULL OR to_name IS NOT NULL)
+);
+CREATE UNIQUE INDEX idx_symbol_edges_unique
+  ON symbol_edges(repo, ref, from_symbol_id, edge_type,
+    COALESCE(to_symbol_id, ''), COALESCE(to_name, ''),
+    COALESCE(source_file, ''), COALESCE(source_line, -1));
+CREATE INDEX idx_symbol_edges_to ON symbol_edges(repo, ref, to_symbol_id);
+CREATE INDEX idx_symbol_edges_from_type ON symbol_edges(repo, ref, from_symbol_id, edge_type);
+CREATE INDEX idx_symbol_edges_to_type ON symbol_edges(repo, ref, to_symbol_id, edge_type);
+CREATE INDEX idx_symbol_edges_source_file ON symbol_edges(repo, ref, source_file, edge_type);
 ```
 
 **`index_jobs` table** — job state machine:
@@ -866,10 +901,17 @@ CREATE TABLE index_jobs (
   duration_ms INTEGER,
   error_message TEXT,
   retry_count INTEGER DEFAULT 0,
+  progress_token TEXT,              -- MCP progress notification token
+  files_scanned INTEGER DEFAULT 0,
+  files_indexed INTEGER DEFAULT 0,
+  symbols_extracted INTEGER DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_jobs_status ON index_jobs(status, created_at);
+CREATE INDEX idx_jobs_project_status_created ON index_jobs(project_id, status, created_at DESC);
+CREATE UNIQUE INDEX idx_jobs_active_project_ref
+  ON index_jobs(project_id, ref) WHERE status IN ('queued', 'running', 'validating');
 ```
 
 **`known_workspaces` table** — multi-workspace auto-discovery registry:
@@ -882,6 +924,37 @@ CREATE TABLE known_workspaces (
   last_used_at TEXT NOT NULL,
   index_status TEXT DEFAULT 'unknown' -- unknown, indexed, indexing, error
 );
+```
+
+**`semantic_vectors` and `semantic_vector_meta` tables** — embedding store (V11):
+
+```sql
+CREATE TABLE semantic_vector_meta (
+  meta_key TEXT PRIMARY KEY,
+  meta_value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE semantic_vectors (
+  project_id TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  symbol_stable_id TEXT NOT NULL,
+  snippet_hash TEXT NOT NULL,
+  embedding_model_id TEXT NOT NULL,
+  embedding_model_version TEXT NOT NULL,
+  embedding_dimensions INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  line_start INTEGER NOT NULL,
+  line_end INTEGER NOT NULL,
+  language TEXT NOT NULL,
+  chunk_type TEXT,
+  snippet_text TEXT NOT NULL,
+  vector_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (project_id, ref, symbol_stable_id, snippet_hash, embedding_model_version)
+);
+CREATE INDEX idx_semantic_vectors_query ON semantic_vectors(project_id, ref, language);
 ```
 
 ### 9.1 Branch-aware indexing strategy (default: no full reindex)
