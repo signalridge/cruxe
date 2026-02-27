@@ -361,29 +361,17 @@ impl ExternalEmbeddingProvider {
 
 fn shared_embedding_http_client(timeout: Duration) -> Result<Client, StateError> {
     let timeout_ms = timeout.as_millis() as u64;
-    let cache = EMBEDDING_HTTP_CLIENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-
-    if let Ok(guard) = cache.lock()
-        && let Some(client) = guard.get(&timeout_ms)
-    {
-        return Ok(client.clone());
-    }
-
-    let client = Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(StateError::external)?;
-
-    if let Ok(mut guard) = cache.lock() {
-        if guard.len() >= MAX_EMBEDDING_HTTP_CLIENT_CACHE_ENTRIES
-            && let Some(evict_key) = guard.keys().next().cloned()
-        {
-            guard.remove(&evict_key);
-        }
-        guard.insert(timeout_ms, client.clone());
-    }
-
-    Ok(client)
+    codecompass_core::cache::get_or_insert_cached(
+        &EMBEDDING_HTTP_CLIENT_CACHE,
+        timeout_ms,
+        MAX_EMBEDDING_HTTP_CLIENT_CACHE_ENTRIES,
+        || {
+            Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(StateError::external)
+        },
+    )
 }
 
 impl EmbeddingProvider for ExternalEmbeddingProvider {

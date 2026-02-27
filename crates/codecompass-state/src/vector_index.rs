@@ -860,6 +860,21 @@ fn invalidate_scope_cache(
     });
 }
 
+#[cfg(test)]
+fn reset_internal_caches_for_tests() {
+    if let Some(cache) = VECTOR_QUERY_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+    if let Some(cache) = VECTOR_SCHEMA_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+    JSON_VECTOR_FALLBACK_WARNED.store(false, AtomicOrdering::Relaxed);
+}
+
 fn vector_l2_norm(vector: &[f32]) -> f32 {
     if vector.is_empty() {
         return 0.0;
@@ -943,6 +958,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn setup_conn() -> Connection {
+        reset_internal_caches_for_tests();
         let dir = tempdir().unwrap();
         let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
         schema::create_tables(&conn).unwrap();
