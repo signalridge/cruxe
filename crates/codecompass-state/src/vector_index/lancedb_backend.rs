@@ -430,7 +430,7 @@ pub(super) fn delete_vectors_for_symbols(
 
     let escaped_project_id = escape_filter_value(project_id);
     let escaped_ref_name = escape_filter_value(ref_name);
-    let mut total_deleted = 0usize;
+    let mut predicates = Vec::new();
     const CHUNK_SIZE: usize = 256;
 
     for chunk in symbol_stable_ids.chunks(CHUNK_SIZE) {
@@ -439,14 +439,13 @@ pub(super) fn delete_vectors_for_symbols(
             .map(|id| format!("'{}'", escape_filter_value(id)))
             .collect::<Vec<_>>()
             .join(", ");
-        let predicate = format!(
+        predicates.push(format!(
             "project_id = '{}' AND ref_name = '{}' AND symbol_stable_id IN ({ids_list})",
             escaped_project_id, escaped_ref_name,
-        );
-        total_deleted += delete_with_predicate(conn, &predicate)?;
+        ));
     }
 
-    Ok(total_deleted)
+    delete_with_predicates(conn, &predicates)
 }
 
 pub(super) fn delete_vectors_for_path(
@@ -551,6 +550,14 @@ pub(super) fn query_nearest(
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 fn delete_with_predicate(conn: &Connection, predicate: &str) -> Result<usize, StateError> {
+    delete_with_predicates(conn, &[predicate.to_string()])
+}
+
+fn delete_with_predicates(conn: &Connection, predicates: &[String]) -> Result<usize, StateError> {
+    if predicates.is_empty() {
+        return Ok(0);
+    }
+
     block_on(async {
         let lance = open_lance(conn).await?;
         let tables = lance
@@ -572,10 +579,12 @@ fn delete_with_predicate(conn: &Connection, predicate: &str) -> Result<usize, St
                 .count_rows(None)
                 .await
                 .map_err(|e| StateError::external(format!("lancedb count_rows({}): {e}", name)))?;
-            table
-                .delete(predicate)
-                .await
-                .map_err(|e| StateError::external(format!("lancedb delete({}): {e}", name)))?;
+            for predicate in predicates {
+                table
+                    .delete(predicate)
+                    .await
+                    .map_err(|e| StateError::external(format!("lancedb delete({}): {e}", name)))?;
+            }
             let after = table
                 .count_rows(None)
                 .await

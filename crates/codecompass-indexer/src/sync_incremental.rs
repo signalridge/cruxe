@@ -348,6 +348,37 @@ fn write_actions_to_staging(
     semantic: &SemanticConfig,
 ) -> Result<(usize, usize, Vec<SyncAction>), StateError> {
     write_actions_to_staging_with_parser(
+        StagingWriteContext {
+            conn,
+            index_set,
+            repo_root,
+            project_id,
+            ref_name,
+            actions,
+            semantic,
+        },
+        |content, language| parser::parse_file(content, language).map_err(|err| err.to_string()),
+    )
+}
+
+struct StagingWriteContext<'a> {
+    conn: &'a Connection,
+    index_set: &'a codecompass_state::tantivy_index::IndexSet,
+    repo_root: &'a Path,
+    project_id: &'a str,
+    ref_name: &'a str,
+    actions: &'a [SyncAction],
+    semantic: &'a SemanticConfig,
+}
+
+fn write_actions_to_staging_with_parser<F>(
+    ctx: StagingWriteContext<'_>,
+    mut parse_changed_file: F,
+) -> Result<(usize, usize, Vec<SyncAction>), StateError>
+where
+    F: FnMut(&str, &str) -> Result<tree_sitter::Tree, String>,
+{
+    let StagingWriteContext {
         conn,
         index_set,
         repo_root,
@@ -355,24 +386,8 @@ fn write_actions_to_staging(
         ref_name,
         actions,
         semantic,
-        |content, language| parser::parse_file(content, language).map_err(|err| err.to_string()),
-    )
-}
+    } = ctx;
 
-#[allow(clippy::too_many_arguments)]
-fn write_actions_to_staging_with_parser<F>(
-    conn: &Connection,
-    index_set: &codecompass_state::tantivy_index::IndexSet,
-    repo_root: &Path,
-    project_id: &str,
-    ref_name: &str,
-    actions: &[SyncAction],
-    semantic: &SemanticConfig,
-    mut parse_changed_file: F,
-) -> Result<(usize, usize, Vec<SyncAction>), StateError>
-where
-    F: FnMut(&str, &str) -> Result<tree_sitter::Tree, String>,
-{
     let batch = writer::BatchWriter::new(index_set)?;
     let mut embedding_writer = embed_writer::EmbeddingWriter::new(semantic, project_id, ref_name)?;
     let mut processed_files = 0usize;
@@ -1025,13 +1040,15 @@ mod tests {
         }];
         let (processed_files, symbols_written, applied_actions) =
             write_actions_to_staging_with_parser(
-                &conn,
-                &index_set,
-                &repo_root,
-                "proj-1",
-                "feat/auth",
-                &actions,
-                &SemanticConfig::default(),
+                StagingWriteContext {
+                    conn: &conn,
+                    index_set: &index_set,
+                    repo_root: &repo_root,
+                    project_id: "proj-1",
+                    ref_name: "feat/auth",
+                    actions: &actions,
+                    semantic: &SemanticConfig::default(),
+                },
                 |_content, _language| Err("synthetic parse failure".to_string()),
             )
             .unwrap();
