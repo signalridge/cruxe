@@ -184,7 +184,10 @@ jobs:
             local out_dir="$1"
             rm -rf "$out_dir"
             mkdir -p "$out_dir"
-            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${mac_arm}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${mac_x86}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${linux_arm}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${linux_x86}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
 
             mac_arm_sha="$(extract_checksum "$out_dir/${mac_arm}.sha256" 2>/dev/null || true)"
             mac_x86_sha="$(extract_checksum "$out_dir/${mac_x86}.sha256" 2>/dev/null || true)"
