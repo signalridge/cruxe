@@ -536,9 +536,16 @@ where
     }
 
     if !pending_call_edges.is_empty() {
-        let lookup = call_extract::load_symbol_lookup(conn, project_id, ref_name)?;
-        for (_, call_edges) in pending_call_edges.iter_mut() {
-            call_extract::resolve_call_targets_with_lookup(&lookup, call_edges);
+        if pending_call_edges
+            .iter()
+            .any(|(_, call_edges)| !call_edges.is_empty())
+        {
+            let lookup = call_extract::load_symbol_lookup(conn, project_id, ref_name)?;
+            for (_, call_edges) in pending_call_edges.iter_mut() {
+                if !call_edges.is_empty() {
+                    call_extract::resolve_call_targets_with_lookup(&lookup, call_edges);
+                }
+            }
         }
         writer::replace_call_edges_for_files(conn, project_id, ref_name, pending_call_edges)?;
     }
