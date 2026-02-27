@@ -398,6 +398,7 @@ where
         Vec<codecompass_core::types::SymbolRecord>,
         Vec<codecompass_core::types::SnippetRecord>,
     )> = Vec::new();
+    let embedding_enabled = embedding_writer.enabled();
 
     for action in actions {
         let path = action.path();
@@ -508,7 +509,7 @@ where
                     content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
                 };
 
-                if is_modified {
+                if is_modified && embedding_enabled {
                     embedding_writer.delete_for_file_vectors(conn, path)?;
                 }
 
@@ -519,9 +520,13 @@ where
                 batch.add_snippets(&index_set.snippets, &snippets)?;
                 batch.add_file(&index_set.files, &file)?;
                 batch.write_sqlite(conn, &symbols, &file, file_mtime_ns(&full_path))?;
-                pending_call_edges.push((path.to_string(), call_edges));
+                if is_modified || !call_edges.is_empty() {
+                    pending_call_edges.push((path.to_string(), call_edges));
+                }
                 let symbol_len = symbols.len();
-                pending_embedding_batches.push((symbols, snippets));
+                if embedding_enabled && !snippets.is_empty() {
+                    pending_embedding_batches.push((symbols, snippets));
+                }
 
                 processed_files += 1;
                 symbols_written += symbol_len;
@@ -538,12 +543,14 @@ where
         writer::replace_call_edges_for_files(conn, project_id, ref_name, pending_call_edges)?;
     }
 
-    embedding_writer.write_embeddings_for_files(
-        conn,
-        pending_embedding_batches
-            .iter()
-            .map(|(symbols, snippets)| (symbols.as_slice(), snippets.as_slice())),
-    )?;
+    if embedding_enabled && !pending_embedding_batches.is_empty() {
+        embedding_writer.write_embeddings_for_files(
+            conn,
+            pending_embedding_batches
+                .iter()
+                .map(|(symbols, snippets)| (symbols.as_slice(), snippets.as_slice())),
+        )?;
+    }
 
     batch.commit()?;
     Ok((processed_files, symbols_written, applied_actions))
