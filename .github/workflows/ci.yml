@@ -2,13 +2,19 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+      - "chore/**"
+      - "docs/**"
   pull_request:
   workflow_dispatch:
 
 jobs:
   format:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -18,6 +24,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -29,6 +36,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -36,10 +44,13 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
       - name: Test suite
+        env:
+          CODECOMPASS_ENABLE_FASTEMBED_RUNTIME: "0"
         run: cargo test --workspace
 
   test-fixture-harness:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -50,12 +61,21 @@ jobs:
         run: |
           cargo test -p codecompass --test integration_test -- --ignored --test-threads=1 --skip benchmark_t359_call_edge_extraction_overhead_under_20_percent --skip benchmark_t379_embedding_overhead_under_30_percent
 
+  auto-indexing-template-hooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate auto-indexing hook templates
+        run: tests/test_auto_indexing_hook_templates.sh
+
   build:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain

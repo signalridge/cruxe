@@ -1,0 +1,17 @@
+{
+  "mcp_servers": {
+    "codecompass": {
+      "command": "codecompass",
+      "args": [
+        "serve-mcp",
+        "--workspace",
+        "${CODECOMPASS_WORKSPACE}"
+      ],
+      "env": {
+        "RUST_LOG": "error",
+        "CODECOMPASS_CONFIG": "${CODECOMPASS_CONFIG}"
+      },
+      "startup_timeout_sec": 30
+    }
+  }
+}

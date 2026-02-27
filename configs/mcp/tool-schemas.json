@@ -1,0 +1,633 @@
+{
+  "generated_at": "2026-02-27T07:02:47Z",
+  "generator": "scripts/generate_mcp_tool_schemas.sh",
+  "source": "tools/list",
+  "binary": "codecompass",
+  "binary_version": "0.1.0",
+  "tool_count": 18,
+  "tools": [
+    {
+      "description": "Trigger full or incremental indexing of a registered project.",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "description": "Force full re-index",
+            "type": "boolean"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "index_repo"
+    },
+    {
+      "description": "Trigger incremental sync based on file changes since last indexed state.",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "description": "Force full sync",
+            "type": "boolean"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "sync_repo"
+    },
+    {
+      "description": "Search across symbols, snippets, and files with query intent classification.",
+      "inputSchema": {
+        "properties": {
+          "compact": {
+            "description": "Token-thrifty serialization flag. Keeps identity/location/score fields while omitting large context blocks.",
+            "type": "boolean"
+          },
+          "confidence_threshold": {
+            "description": "Optional low-confidence threshold override (0.0-1.0).",
+            "type": "number"
+          },
+          "detail_level": {
+            "description": "Response verbosity: \"location\", \"signature\" (default), \"context\"",
+            "enum": [
+              "location",
+              "signature",
+              "context"
+            ],
+            "type": "string"
+          },
+          "freshness_policy": {
+            "description": "Freshness behavior: \"strict\", \"balanced\" (default), \"best_effort\"",
+            "enum": [
+              "strict",
+              "balanced",
+              "best_effort"
+            ],
+            "type": "string"
+          },
+          "language": {
+            "description": "Filter by language",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max results (default: 10)",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query (symbol name, path, error string, or natural language)",
+            "type": "string"
+          },
+          "ranking_explain_level": {
+            "description": "Ranking explainability payload level: \"off\" (default), \"basic\", \"full\"",
+            "enum": [
+              "off",
+              "basic",
+              "full"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "semantic_ratio": {
+            "description": "Optional semantic blend ratio cap override (0.0-1.0). Runtime may reduce actual usage.",
+            "type": "number"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_code"
+    },
+    {
+      "description": "Find symbol definitions by name. Returns precise file:line locations.",
+      "inputSchema": {
+        "properties": {
+          "compact": {
+            "description": "Token-thrifty serialization flag. Works with all detail levels.",
+            "type": "boolean"
+          },
+          "detail_level": {
+            "description": "Response verbosity: \"location\", \"signature\" (default), \"context\"",
+            "enum": [
+              "location",
+              "signature",
+              "context"
+            ],
+            "type": "string"
+          },
+          "freshness_policy": {
+            "description": "Freshness behavior: \"strict\", \"balanced\" (default), \"best_effort\"",
+            "enum": [
+              "strict",
+              "balanced",
+              "best_effort"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "description": "Filter by kind (fn, struct, class, method, etc.)",
+            "type": "string"
+          },
+          "language": {
+            "description": "Filter by language",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max results (default: 10)",
+            "type": "integer"
+          },
+          "name": {
+            "description": "Symbol name to locate",
+            "type": "string"
+          },
+          "ranking_explain_level": {
+            "description": "Ranking explainability payload level: \"off\" (default), \"basic\", \"full\"",
+            "enum": [
+              "off",
+              "basic",
+              "full"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "locate_symbol"
+    },
+    {
+      "description": "Return a nested symbol tree for a source file. Shows structure without reading full file content.",
+      "inputSchema": {
+        "properties": {
+          "depth": {
+            "description": "\"top\" (top-level only) or \"all\" (nested). Default: \"all\"",
+            "enum": [
+              "top",
+              "all"
+            ],
+            "type": "string"
+          },
+          "language": {
+            "description": "Filter hint (informational)",
+            "type": "string"
+          },
+          "path": {
+            "description": "Source file path relative to repo root",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "get_file_outline"
+    },
+    {
+      "description": "Return callers/callees for a symbol with bounded graph traversal.",
+      "inputSchema": {
+        "properties": {
+          "depth": {
+            "description": "Traversal depth (1-5). Values above 5 are clamped.",
+            "type": "integer"
+          },
+          "direction": {
+            "description": "Traversal direction. Default: both.",
+            "enum": [
+              "callers",
+              "callees",
+              "both"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max edges returned per direction (default: 20).",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Optional file path to disambiguate symbols.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
+          },
+          "symbol_name": {
+            "description": "Name (or qualified name) of the symbol to inspect.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol_name"
+        ],
+        "type": "object"
+      },
+      "name": "get_call_graph"
+    },
+    {
+      "description": "Compare one symbol across two refs and summarize signature/body/line deltas.",
+      "inputSchema": {
+        "properties": {
+          "base_ref": {
+            "description": "Base ref (commit, branch, or tag).",
+            "type": "string"
+          },
+          "head_ref": {
+            "description": "Head ref (commit, branch, or tag).",
+            "type": "string"
+          },
+          "path": {
+            "description": "Optional file path to disambiguate symbols.",
+            "type": "string"
+          },
+          "symbol_name": {
+            "description": "Symbol name (or qualified name) to compare.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol_name",
+          "base_ref",
+          "head_ref"
+        ],
+        "type": "object"
+      },
+      "name": "compare_symbol_between_commits"
+    },
+    {
+      "description": "Traverse the parent chain (ancestors) or child tree (descendants) for a symbol.",
+      "inputSchema": {
+        "properties": {
+          "direction": {
+            "default": "ancestors",
+            "description": "\"ancestors\" (default) or \"descendants\"",
+            "enum": [
+              "ancestors",
+              "descendants"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "File path to disambiguate symbols with the same name; omitted may return ambiguous_symbol if multiple files match",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "symbol_name": {
+            "description": "Symbol name to start from",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol_name"
+        ],
+        "type": "object"
+      },
+      "name": "get_symbol_hierarchy"
+    },
+    {
+      "description": "Find symbols in the same file/module/package scope as an anchor symbol.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 20,
+            "description": "Max related symbols (default: 20)",
+            "type": "integer"
+          },
+          "path": {
+            "description": "File path to disambiguate symbols with same name; omitted may return ambiguous_symbol if multiple files match",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "scope": {
+            "default": "file",
+            "description": "\"file\" (default), \"module\", or \"package\"",
+            "enum": [
+              "file",
+              "module",
+              "package"
+            ],
+            "type": "string"
+          },
+          "symbol_name": {
+            "description": "Anchor symbol name",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol_name"
+        ],
+        "type": "object"
+      },
+      "name": "find_related_symbols"
+    },
+    {
+      "description": "Retrieve code context fitted to a token budget using breadth/depth strategies.",
+      "inputSchema": {
+        "properties": {
+          "language": {
+            "description": "Language filter",
+            "type": "string"
+          },
+          "max_tokens": {
+            "default": 4000,
+            "description": "Maximum estimated tokens in returned context (default: 4000)",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query for relevant code context",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "strategy": {
+            "default": "breadth",
+            "description": "\"breadth\" (default) or \"depth\"",
+            "enum": [
+              "breadth",
+              "depth"
+            ],
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "get_code_context"
+    },
+    {
+      "description": "Suggest next tool calls when prior results are low-confidence or empty.",
+      "inputSchema": {
+        "properties": {
+          "confidence_threshold": {
+            "description": "Threshold below which results are considered low-confidence. Default: 0.5.",
+            "type": "number"
+          },
+          "previous_query": {
+            "description": "The previous tool call, including tool name and params.",
+            "properties": {
+              "params": {
+                "type": "object"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool"
+            ],
+            "type": "object"
+          },
+          "previous_results": {
+            "description": "Result summary from the previous query (top_score, total_candidates, query_intent, etc.).",
+            "type": "object"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "previous_query",
+          "previous_results"
+        ],
+        "type": "object"
+      },
+      "name": "suggest_followup_queries"
+    },
+    {
+      "description": "Return project-level operational status. Checks Tantivy indices, SQLite integrity, grammar availability, and prewarm status.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "health_check"
+    },
+    {
+      "description": "Get current indexing status and job history for a project.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "index_status"
+    },
+    {
+      "description": "Summarize symbol-level changes between two refs.",
+      "inputSchema": {
+        "properties": {
+          "base_ref": {
+            "description": "Base ref. Default: project default branch.",
+            "type": "string"
+          },
+          "head_ref": {
+            "description": "Head ref. Default: current effective ref.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max symbol changes to return (default: 50).",
+            "type": "integer"
+          },
+          "path_filter": {
+            "description": "Optional path prefix filter.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "diff_context"
+    },
+    {
+      "description": "Find symbol references using relation graph edges.",
+      "inputSchema": {
+        "properties": {
+          "kind": {
+            "description": "Optional edge type filter (imports, calls, implements, extends, references).",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max references to return (default: 20).",
+            "type": "integer"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
+          },
+          "symbol_name": {
+            "description": "Name or qualified name of the symbol.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol_name"
+        ],
+        "type": "object"
+      },
+      "name": "find_references"
+    },
+    {
+      "description": "Explain deterministic ranking contributions for one search result.",
+      "inputSchema": {
+        "properties": {
+          "language": {
+            "description": "Optional language filter for re-executed query.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Search candidate limit for explain lookup (default: 200).",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Search query string.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
+          },
+          "result_line_start": {
+            "description": "Result start line to explain.",
+            "type": "integer"
+          },
+          "result_path": {
+            "description": "Result file path to explain.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "result_path",
+          "result_line_start"
+        ],
+        "type": "object"
+      },
+      "name": "explain_ranking"
+    },
+    {
+      "description": "List indexed refs and branch-state metadata for the project.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_refs"
+    },
+    {
+      "description": "Switch default ref for subsequent tool calls in this workspace session.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Target ref name.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "name": "switch_ref"
+    }
+  ]
+}
