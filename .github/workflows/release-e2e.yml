@@ -1,19 +1,19 @@
 name: release-e2e
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: ["release"]
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   linux-musl-e2e:
-    if: contains(github.ref_name, '009-test')
+    if: github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, '009-test')
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - name: Download Linux musl artifact
         env:
@@ -60,10 +60,10 @@ jobs:
           )
 
   windows-e2e:
-    if: contains(github.ref_name, '009-test')
+    if: github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, '009-test')
     runs-on: windows-2022
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - name: Download Windows artifact
         shell: pwsh
@@ -98,10 +98,10 @@ jobs:
           Pop-Location
 
   homebrew-audit-install:
-    if: contains(github.ref_name, '009-test')
+    if: github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, '009-test')
     runs-on: macos-14
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - name: Build tap formula from release assets
         env:
