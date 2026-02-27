@@ -179,15 +179,17 @@ jobs:
             local out_dir="$1"
             rm -rf "$out_dir"
             mkdir -p "$out_dir"
-            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
-            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
-            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
-            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir "$out_dir" >/dev/null 2>&1 || return 1
 
-            mac_arm_sha="$(shasum -a 256 "$out_dir/$mac_arm" | awk '{print $1}')"
-            mac_x86_sha="$(shasum -a 256 "$out_dir/$mac_x86" | awk '{print $1}')"
-            linux_arm_sha="$(shasum -a 256 "$out_dir/$linux_arm" | awk '{print $1}')"
-            linux_x86_sha="$(shasum -a 256 "$out_dir/$linux_x86" | awk '{print $1}')"
+            mac_arm_sha="$(awk '{print $1}' "$out_dir/${mac_arm}.sha256" 2>/dev/null | head -n 1)"
+            mac_x86_sha="$(awk '{print $1}' "$out_dir/${mac_x86}.sha256" 2>/dev/null | head -n 1)"
+            linux_arm_sha="$(awk '{print $1}' "$out_dir/${linux_arm}.sha256" 2>/dev/null | head -n 1)"
+            linux_x86_sha="$(awk '{print $1}' "$out_dir/${linux_x86}.sha256" 2>/dev/null | head -n 1)"
+
+            [[ "$mac_arm_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$mac_x86_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$linux_arm_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$linux_x86_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
           }
 
           mac_arm=""
