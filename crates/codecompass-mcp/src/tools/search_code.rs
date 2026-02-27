@@ -47,6 +47,14 @@ pub fn definition() -> ToolDefinition {
                     "type": "string",
                     "description": "Ranking explainability payload level: \"off\" (default), \"basic\", \"full\"",
                     "enum": ["off", "basic", "full"]
+                },
+                "semantic_ratio": {
+                    "type": "number",
+                    "description": "Optional semantic blend ratio cap override (0.0-1.0). Runtime may reduce actual usage."
+                },
+                "confidence_threshold": {
+                    "type": "number",
+                    "description": "Optional low-confidence threshold override (0.0-1.0)."
                 }
             },
             "required": ["query"]

@@ -1,3 +1,4 @@
+use codecompass_core::config::{Config, SemanticConfig};
 use codecompass_core::error::{StateError, VcsError};
 use codecompass_core::ids::new_job_id;
 use codecompass_core::time::now_iso8601;
@@ -11,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::warn;
 
-use crate::{call_extract, languages, parser, snippet_extract, staging, symbol_extract, writer};
+use crate::{
+    call_extract, embed_writer, languages, parser, snippet_extract, staging, symbol_extract, writer,
+};
 
 /// Per-file action derived from `git diff --name-status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,12 +345,60 @@ fn write_actions_to_staging(
     project_id: &str,
     ref_name: &str,
     actions: &[SyncAction],
+    semantic: &SemanticConfig,
 ) -> Result<(usize, usize, Vec<SyncAction>), StateError> {
+    write_actions_to_staging_with_parser(
+        StagingWriteContext {
+            conn,
+            index_set,
+            repo_root,
+            project_id,
+            ref_name,
+            actions,
+            semantic,
+        },
+        |content, language| parser::parse_file(content, language).map_err(|err| err.to_string()),
+    )
+}
+
+struct StagingWriteContext<'a> {
+    conn: &'a Connection,
+    index_set: &'a codecompass_state::tantivy_index::IndexSet,
+    repo_root: &'a Path,
+    project_id: &'a str,
+    ref_name: &'a str,
+    actions: &'a [SyncAction],
+    semantic: &'a SemanticConfig,
+}
+
+fn write_actions_to_staging_with_parser<F>(
+    ctx: StagingWriteContext<'_>,
+    mut parse_changed_file: F,
+) -> Result<(usize, usize, Vec<SyncAction>), StateError>
+where
+    F: FnMut(&str, &str) -> Result<tree_sitter::Tree, String>,
+{
+    let StagingWriteContext {
+        conn,
+        index_set,
+        repo_root,
+        project_id,
+        ref_name,
+        actions,
+        semantic,
+    } = ctx;
+
     let batch = writer::BatchWriter::new(index_set)?;
+    let mut embedding_writer = embed_writer::EmbeddingWriter::new(semantic, project_id, ref_name)?;
     let mut processed_files = 0usize;
     let mut symbols_written = 0usize;
     let mut applied_actions = Vec::with_capacity(actions.len());
     let mut pending_call_edges: Vec<(String, Vec<codecompass_core::types::CallEdge>)> = Vec::new();
+    let mut pending_embedding_batches: Vec<(
+        Vec<codecompass_core::types::SymbolRecord>,
+        Vec<codecompass_core::types::SnippetRecord>,
+    )> = Vec::new();
+    let embedding_enabled = embedding_writer.enabled();
 
     for action in actions {
         let path = action.path();
@@ -382,10 +433,16 @@ fn write_actions_to_staging(
                     ref_name,
                     &deleted_symbol_ids,
                 )?;
+                embedding_writer.delete_for_file_vectors_with_symbols(
+                    conn,
+                    path,
+                    &deleted_symbol_ids,
+                )?;
                 applied_actions.push(action.clone());
                 continue;
             }
             SyncAction::Added { .. } | SyncAction::Modified { .. } => {
+                let is_modified = matches!(action, SyncAction::Modified { .. });
                 let full_path = repo_root.join(path);
                 let content = match std::fs::read_to_string(&full_path) {
                     Ok(c) => c,
@@ -403,16 +460,20 @@ fn write_actions_to_staging(
                         continue;
                     }
                 };
-                let tree = match parser::parse_file(&content, &language) {
-                    Ok(tree) => tree,
+                let parsed_tree = match parse_changed_file(&content, &language) {
+                    Ok(tree) => Some(tree),
                     Err(err) => {
-                        return Err(StateError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("failed to parse changed file {path}: {err}"),
-                        )));
+                        warn!(
+                            path,
+                            error = %err,
+                            "Parse failed for changed file; continuing with metadata-only update"
+                        );
+                        None
                     }
                 };
-                let extracted = languages::extract_symbols(&tree, &content, &language);
+                let extracted = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
+                    languages::extract_symbols(tree, &content, &language)
+                });
                 let symbols = symbol_extract::build_symbol_records(
                     &extracted,
                     project_id,
@@ -427,9 +488,11 @@ fn write_actions_to_staging(
                     path,
                     Some("overlay"),
                 );
-                let call_edges = call_extract::extract_call_edges_for_file(
-                    &tree, &content, &language, path, &symbols, project_id, ref_name,
-                );
+                let call_edges = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
+                    call_extract::extract_call_edges_for_file(
+                        tree, &content, &language, path, &symbols, project_id, ref_name,
+                    )
+                });
                 let file = FileRecord {
                     repo: project_id.to_string(),
                     r#ref: ref_name.to_string(),
@@ -446,6 +509,10 @@ fn write_actions_to_staging(
                     content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
                 };
 
+                if is_modified && embedding_enabled {
+                    embedding_writer.delete_for_file_vectors(conn, path)?;
+                }
+
                 codecompass_state::symbols::delete_symbols_for_file(
                     conn, project_id, ref_name, path,
                 )?;
@@ -453,21 +520,43 @@ fn write_actions_to_staging(
                 batch.add_snippets(&index_set.snippets, &snippets)?;
                 batch.add_file(&index_set.files, &file)?;
                 batch.write_sqlite(conn, &symbols, &file, file_mtime_ns(&full_path))?;
-                pending_call_edges.push((path.to_string(), call_edges));
+                if is_modified || !call_edges.is_empty() {
+                    pending_call_edges.push((path.to_string(), call_edges));
+                }
+                let symbol_len = symbols.len();
+                if embedding_enabled && !snippets.is_empty() {
+                    pending_embedding_batches.push((symbols, snippets));
+                }
 
                 processed_files += 1;
-                symbols_written += symbols.len();
+                symbols_written += symbol_len;
                 applied_actions.push(action.clone());
             }
         }
     }
 
     if !pending_call_edges.is_empty() {
-        let lookup = call_extract::load_symbol_lookup(conn, project_id, ref_name)?;
-        for (_, call_edges) in pending_call_edges.iter_mut() {
-            call_extract::resolve_call_targets_with_lookup(&lookup, call_edges);
+        if pending_call_edges
+            .iter()
+            .any(|(_, call_edges)| !call_edges.is_empty())
+        {
+            let lookup = call_extract::load_symbol_lookup(conn, project_id, ref_name)?;
+            for (_, call_edges) in pending_call_edges.iter_mut() {
+                if !call_edges.is_empty() {
+                    call_extract::resolve_call_targets_with_lookup(&lookup, call_edges);
+                }
+            }
         }
         writer::replace_call_edges_for_files(conn, project_id, ref_name, pending_call_edges)?;
+    }
+
+    if embedding_enabled && !pending_embedding_batches.is_empty() {
+        embedding_writer.write_embeddings_for_files(
+            conn,
+            pending_embedding_batches
+                .iter()
+                .map(|(symbols, snippets)| (symbols.as_slice(), snippets.as_slice())),
+        )?;
     }
 
     batch.commit()?;
@@ -521,6 +610,17 @@ where
     }
 
     let mut job_id: Option<String> = None;
+    let semantic_config = Config::load(Some(&execution_root))
+        .map(|config| config.search.semantic)
+        .unwrap_or_else(|err| {
+            warn!(
+                project_id = request.project_id,
+                ref_name = request.ref_name,
+                error = %err,
+                "Failed to load semantic config for incremental sync, defaulting to semantic=off"
+            );
+            SemanticConfig::default()
+        });
     let sync_result = (|| -> Result<IncrementalSyncStats, StateError> {
         let head_commit = adapter
             .resolve_head(&execution_root)
@@ -550,6 +650,14 @@ where
 
         if rebuild_triggered {
             rebuild_overlay_directory(request.data_dir, request.ref_name)?;
+            if semantic_config.mode.eq_ignore_ascii_case("hybrid") {
+                codecompass_state::vector_index::delete_vectors_for_ref_with_backend(
+                    conn,
+                    request.project_id,
+                    request.ref_name,
+                    semantic_config.vector_backend_opt(),
+                )?;
+            }
         }
 
         let plan = build_sync_plan(adapter, &execution_root, request.base_ref, request.ref_name)
@@ -566,6 +674,7 @@ where
             request.project_id,
             request.ref_name,
             &plan.actions,
+            &semantic_config,
         )?;
         apply_tombstones_for_actions(&tx, request.project_id, request.ref_name, &applied_actions)?;
         let total_file_count =
@@ -853,7 +962,7 @@ mod tests {
     #[test]
     fn apply_tombstones_for_actions_upserts_rows() {
         let tmp = tempdir().unwrap();
-        let mut conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
         schema::create_tables(&conn).unwrap();
 
         let actions = vec![
@@ -864,7 +973,7 @@ mod tests {
                 path: "src/b.rs".to_string(),
             },
         ];
-        apply_tombstones_for_actions(&mut conn, "repo-1", "feat/auth", &actions).unwrap();
+        apply_tombstones_for_actions(&conn, "repo-1", "feat/auth", &actions).unwrap();
 
         let paths = codecompass_state::tombstones::list_paths_for_ref(&conn, "repo-1", "feat/auth")
             .unwrap();
@@ -874,11 +983,11 @@ mod tests {
     #[test]
     fn apply_tombstones_for_actions_replaces_previous_ref_snapshot() {
         let tmp = tempdir().unwrap();
-        let mut conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
         schema::create_tables(&conn).unwrap();
 
         apply_tombstones_for_actions(
-            &mut conn,
+            &conn,
             "repo-1",
             "feat/auth",
             &[SyncAction::Deleted {
@@ -891,7 +1000,7 @@ mod tests {
         assert_eq!(first, vec!["src/old.rs".to_string()]);
 
         apply_tombstones_for_actions(
-            &mut conn,
+            &conn,
             "repo-1",
             "feat/auth",
             &[SyncAction::Modified {
@@ -903,6 +1012,85 @@ mod tests {
             codecompass_state::tombstones::list_paths_for_ref(&conn, "repo-1", "feat/auth")
                 .unwrap();
         assert_eq!(second, vec!["src/new.rs".to_string()]);
+    }
+
+    #[test]
+    fn write_actions_to_staging_parse_failure_continues_and_cleans_stale_symbols() {
+        let tmp = tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(repo_root.join("src")).unwrap();
+        std::fs::write(repo_root.join("src/lib.rs"), "pub fn broken( {\n").unwrap();
+
+        let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+        let index_set =
+            codecompass_state::tantivy_index::IndexSet::open(&tmp.path().join("index")).unwrap();
+
+        codecompass_state::symbols::insert_symbol(
+            &conn,
+            &SymbolRecord {
+                repo: "proj-1".to_string(),
+                r#ref: "feat/auth".to_string(),
+                commit: None,
+                path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                symbol_id: "sym-stale".to_string(),
+                symbol_stable_id: "stable-stale".to_string(),
+                name: "stale_symbol".to_string(),
+                qualified_name: "stale_symbol".to_string(),
+                kind: SymbolKind::Function,
+                signature: Some("fn stale_symbol()".to_string()),
+                line_start: 1,
+                line_end: 1,
+                parent_symbol_id: None,
+                visibility: Some("pub".to_string()),
+                content: Some("pub fn stale_symbol() {}".to_string()),
+            },
+        )
+        .unwrap();
+
+        let actions = vec![SyncAction::Modified {
+            path: "src/lib.rs".to_string(),
+        }];
+        let (processed_files, symbols_written, applied_actions) =
+            write_actions_to_staging_with_parser(
+                StagingWriteContext {
+                    conn: &conn,
+                    index_set: &index_set,
+                    repo_root: &repo_root,
+                    project_id: "proj-1",
+                    ref_name: "feat/auth",
+                    actions: &actions,
+                    semantic: &SemanticConfig::default(),
+                },
+                |_content, _language| Err("synthetic parse failure".to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(processed_files, 1);
+        assert_eq!(symbols_written, 0);
+        assert_eq!(applied_actions, actions);
+
+        let symbols = codecompass_state::symbols::list_symbols_in_file(
+            &conn,
+            "proj-1",
+            "feat/auth",
+            "src/lib.rs",
+        )
+        .unwrap();
+        assert!(
+            symbols.is_empty(),
+            "stale symbols should be removed on parse failure"
+        );
+
+        let mut manifest_paths: Vec<String> =
+            codecompass_state::manifest::get_all_entries(&conn, "proj-1", "feat/auth")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect();
+        manifest_paths.sort();
+        assert_eq!(manifest_paths, vec!["src/lib.rs".to_string()]);
     }
 
     #[test]

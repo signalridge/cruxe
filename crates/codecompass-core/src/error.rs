@@ -133,6 +133,9 @@ pub enum StateError {
     #[error("vcs error: {0}")]
     Vcs(String),
 
+    #[error("external provider error: {0}")]
+    External(String),
+
     #[error("sync in progress: project_id={project_id}, ref={ref_name}, job_id={job_id}")]
     SyncInProgress {
         project_id: String,
@@ -199,6 +202,11 @@ impl StateError {
     /// Convenience constructor for VCS errors — use with `.map_err(StateError::vcs)`.
     pub fn vcs<E: std::fmt::Display>(e: E) -> Self {
         Self::Vcs(e.to_string())
+    }
+
+    /// Convenience constructor for external provider errors.
+    pub fn external<E: std::fmt::Display>(e: E) -> Self {
+        Self::External(e.to_string())
     }
 
     pub fn sync_in_progress(

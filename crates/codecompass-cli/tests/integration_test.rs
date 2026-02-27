@@ -642,6 +642,130 @@ fn index_repo_with_import_and_call_edges_batched(
     batch.commit().expect("commit batch");
 }
 
+/// Batched variant used by T379 benchmark to measure embedding overhead.
+fn index_repo_with_import_and_embeddings_batched(
+    repo_root: &Path,
+    project_id: &str,
+    effective_ref: &str,
+    index_set: &codecompass_state::tantivy_index::IndexSet,
+    conn: &rusqlite::Connection,
+    semantic: &codecompass_core::config::SemanticConfig,
+) {
+    let files = codecompass_indexer::scanner::scan_directory(
+        repo_root,
+        codecompass_core::constants::MAX_FILE_SIZE,
+    );
+    let batch = codecompass_indexer::writer::BatchWriter::new(index_set).expect("create batch");
+    let mut embedding_writer = codecompass_indexer::embed_writer::EmbeddingWriter::new(
+        semantic,
+        project_id,
+        effective_ref,
+    )
+    .expect("create embedding writer");
+    let mut pending_imports = Vec::new();
+
+    for file in &files {
+        let content = std::fs::read_to_string(&file.path).expect("read fixture file");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+        let (extracted, raw_imports) =
+            if codecompass_indexer::parser::is_language_supported(&file.language) {
+                match codecompass_indexer::parser::parse_file(&content, &file.language) {
+                    Ok(tree) => (
+                        codecompass_indexer::languages::extract_symbols(
+                            &tree,
+                            &content,
+                            &file.language,
+                        ),
+                        codecompass_indexer::import_extract::extract_imports(
+                            &tree,
+                            &content,
+                            &file.language,
+                            &file.relative_path,
+                        ),
+                    ),
+                    Err(_) => (Vec::new(), Vec::new()),
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+        let symbols = codecompass_indexer::symbol_extract::build_symbol_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let snippets = codecompass_indexer::snippet_extract::build_snippet_records(
+            &extracted,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+            None,
+        );
+        let file_record = codecompass_core::types::FileRecord {
+            repo: project_id.to_string(),
+            r#ref: effective_ref.to_string(),
+            commit: None,
+            path: file.relative_path.clone(),
+            filename: file
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            language: file.language.clone(),
+            content_hash,
+            size_bytes: content.len() as u64,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
+        };
+
+        codecompass_state::symbols::delete_symbols_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &file.relative_path,
+        )
+        .expect("delete symbols for file");
+
+        batch
+            .add_symbols(&index_set.symbols, &symbols)
+            .expect("batch add symbols");
+        batch
+            .add_snippets(&index_set.snippets, &snippets)
+            .expect("batch add snippets");
+        batch
+            .add_file(&index_set.files, &file_record)
+            .expect("batch add file");
+        batch
+            .write_sqlite(conn, &symbols, &file_record, None)
+            .expect("batch write sqlite records");
+
+        embedding_writer
+            .delete_for_path(conn, &file.relative_path)
+            .expect("delete stale vectors");
+        embedding_writer
+            .write_file_embeddings(conn, &symbols, &snippets)
+            .expect("write embeddings");
+
+        pending_imports.push((file.relative_path.clone(), raw_imports));
+    }
+
+    for (path, raw_imports) in pending_imports {
+        codecompass_indexer::writer::replace_import_edges_for_file(
+            conn,
+            project_id,
+            effective_ref,
+            &path,
+            raw_imports,
+        )
+        .expect("replace import edges for file");
+    }
+
+    batch.commit().expect("commit batch");
+}
+
 // ===========================================================================
 // T031 -- Init + Doctor Roundtrip
 // ===========================================================================
@@ -2678,6 +2802,107 @@ fn benchmark_t359_call_edge_extraction_overhead_under_20_percent() {
         file_count,
         baseline_ms,
         call_ms,
+        overhead_pct
+    );
+}
+
+#[test]
+#[ignore = "benchmark harness"]
+fn benchmark_t379_embedding_overhead_under_30_percent() {
+    let tmp = tempdir().expect("tempdir");
+    let repo_root = tmp.path().join("synthetic-repo");
+    let file_count = std::env::var("CODECOMPASS_T379_FILE_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1_000);
+    create_synthetic_rust_repo(&repo_root, file_count);
+
+    let baseline_data_root = tmp.path().join("data-no-embeddings");
+    let semantic_data_root = tmp.path().join("data-with-embeddings");
+    std::fs::create_dir_all(&baseline_data_root).unwrap();
+    std::fs::create_dir_all(&semantic_data_root).unwrap();
+
+    let (baseline_project_id, baseline_data_dir) = do_init(&repo_root, &baseline_data_root);
+    let baseline_conn = codecompass_state::db::open_connection(
+        &baseline_data_dir.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    let baseline_index_set =
+        codecompass_state::tantivy_index::IndexSet::open(&baseline_data_dir).unwrap();
+
+    let (semantic_project_id, semantic_data_dir) = do_init(&repo_root, &semantic_data_root);
+    let semantic_conn = codecompass_state::db::open_connection(
+        &semantic_data_dir.join(codecompass_core::constants::STATE_DB_FILE),
+    )
+    .unwrap();
+    let semantic_index_set =
+        codecompass_state::tantivy_index::IndexSet::open(&semantic_data_dir).unwrap();
+
+    let effective_ref = codecompass_core::constants::REF_LIVE;
+    let semantic_config = codecompass_core::config::SemanticConfig {
+        mode: "hybrid".to_string(),
+        embedding: codecompass_core::config::SemanticEmbeddingConfig {
+            provider: "local".to_string(),
+            profile: "fast_local".to_string(),
+            model: "NomicEmbedTextV15Q".to_string(),
+            model_version: "fastembed-1".to_string(),
+            dimensions: 768,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let baseline_start = std::time::Instant::now();
+    index_repo_with_import_edges_batched(
+        &repo_root,
+        &baseline_project_id,
+        effective_ref,
+        &baseline_index_set,
+        &baseline_conn,
+    );
+    let baseline_elapsed = baseline_start.elapsed();
+
+    let semantic_start = std::time::Instant::now();
+    index_repo_with_import_and_embeddings_batched(
+        &repo_root,
+        &semantic_project_id,
+        effective_ref,
+        &semantic_index_set,
+        &semantic_conn,
+        &semantic_config,
+    );
+    let semantic_elapsed = semantic_start.elapsed();
+
+    let baseline_ms = baseline_elapsed.as_secs_f64() * 1_000.0;
+    let semantic_ms = semantic_elapsed.as_secs_f64() * 1_000.0;
+    let overhead_pct = if baseline_ms <= f64::EPSILON {
+        0.0
+    } else {
+        ((semantic_ms - baseline_ms) / baseline_ms) * 100.0
+    };
+
+    let vector_rows: i64 = semantic_conn
+        .query_row("SELECT COUNT(*) FROM semantic_vectors", [], |row| {
+            row.get(0)
+        })
+        .expect("count semantic vectors");
+
+    assert_eq!(
+        baseline_project_id, semantic_project_id,
+        "project IDs should match for identical repos"
+    );
+    assert!(
+        vector_rows > 0,
+        "semantic benchmark must persist vectors; got {} rows",
+        vector_rows
+    );
+    assert!(
+        overhead_pct < 30.0,
+        "embedding overhead should be < 30%; files={} baseline={:.2}ms with_embeddings={:.2}ms overhead={:.2}%",
+        file_count,
+        baseline_ms,
+        semantic_ms,
         overhead_pct
     );
 }

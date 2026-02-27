@@ -81,13 +81,20 @@ pub fn merged_search(
             item.source_layer = Some(layer);
         });
 
+    // Pre-compute overlay merge keys so we can preserve base results at a
+    // tombstoned path if the overlay explicitly re-provides that merge key
+    // (e.g. overlay edited a file but added back a different symbol).
+    let overlay_keys: HashSet<OverlayMergeKey> =
+        overlay_results.iter().map(search_merge_key).collect();
+
     let mut merged: HashMap<OverlayMergeKey, SearchResult> = HashMap::new();
-    for result in base_results
-        .into_iter()
-        .filter(|r| !tombstones.contains(r.path.as_str()))
-    {
-        merged.insert(search_merge_key(&result), result);
+    for result in base_results.into_iter() {
+        let key = search_merge_key(&result);
+        if !tombstones.contains(result.path.as_str()) || overlay_keys.contains(&key) {
+            merged.insert(key, result);
+        }
     }
+    // Overlay-wins: overlay results overwrite any base entry with the same key.
     for result in overlay_results {
         merged.insert(search_merge_key(&result), result);
     }
@@ -157,6 +164,7 @@ mod tests {
             snippet: None,
             chunk_type: (result_type == "snippet").then(|| "symbol_body".to_string()),
             source_layer: None,
+            provenance: "lexical".to_string(),
         }
     }
 

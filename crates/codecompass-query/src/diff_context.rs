@@ -350,6 +350,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_symbol(
         conn: &Connection,
         repo: &str,

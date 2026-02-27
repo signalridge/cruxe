@@ -1,5 +1,9 @@
 use super::*;
+use codecompass_query::semantic_advisor::{
+    SemanticAdvisorInput, SemanticAdvisorRecommendation, recommend_semantic_profile,
+};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Serialize)]
 struct IndexStatusActiveJobPayload {
@@ -25,6 +29,13 @@ struct IndexStatusRecentJobPayload {
 }
 
 #[derive(Serialize)]
+struct SemanticProfileRecommendationPayload {
+    profile: String,
+    repo_size_bucket: String,
+    reason_codes: Vec<String>,
+}
+
+#[derive(Serialize)]
 struct IndexStatusPayload {
     project_id: String,
     repo_root: String,
@@ -37,6 +48,8 @@ struct IndexStatusPayload {
     last_indexed_at: Option<String>,
     file_count: u64,
     symbol_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_profile_recommendation: Option<SemanticProfileRecommendationPayload>,
     compatibility_reason: Option<String>,
     active_job: Option<IndexStatusActiveJobPayload>,
     recent_jobs: Vec<IndexStatusRecentJobPayload>,
@@ -82,6 +95,8 @@ pub(super) fn handle_index_status(params: IndexStatusToolParams<'_>) -> JsonRpcR
             (fc, sc)
         })
         .unwrap_or((0, 0));
+    let semantic_profile_recommendation =
+        build_semantic_profile_recommendation(conn, config, project_id, &effective_ref);
 
     let recent_jobs = conn
         .and_then(|c| codecompass_state::jobs::get_recent_jobs(c, project_id, 5).ok())
@@ -141,6 +156,7 @@ pub(super) fn handle_index_status(params: IndexStatusToolParams<'_>) -> JsonRpcR
         last_indexed_at,
         file_count,
         symbol_count,
+        semantic_profile_recommendation,
         compatibility_reason: compatibility_reason.map(str::to_string),
         active_job: active_job_payload,
         recent_jobs: recent_jobs_payload,
@@ -156,4 +172,65 @@ pub(super) fn handle_index_status(params: IndexStatusToolParams<'_>) -> JsonRpcR
     })
     .unwrap_or_else(|_| json!({"error": "failed to serialize index_status payload"}));
     tool_text_response(id, result)
+}
+
+fn build_semantic_profile_recommendation(
+    conn: Option<&rusqlite::Connection>,
+    config: &Config,
+    project_id: &str,
+    ref_name: &str,
+) -> Option<SemanticProfileRecommendationPayload> {
+    if !config
+        .search
+        .semantic
+        .profile_advisor_mode
+        .eq_ignore_ascii_case("suggest")
+    {
+        return None;
+    }
+    let conn = conn?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(language, ''), COUNT(*)
+             FROM file_manifest
+             WHERE repo = ?1 AND \"ref\" = ?2
+             GROUP BY COALESCE(language, '')",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([project_id, ref_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .ok()?;
+
+    let mut language_counts = BTreeMap::new();
+    let mut file_count = 0usize;
+    for row in rows {
+        let (language, count) = row.ok()?;
+        let normalized_language = if language.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            language
+        };
+        let normalized_count = count.max(0) as usize;
+        file_count += normalized_count;
+        language_counts.insert(normalized_language, normalized_count);
+    }
+    if file_count == 0 {
+        return None;
+    }
+
+    let recommendation: SemanticAdvisorRecommendation =
+        recommend_semantic_profile(&SemanticAdvisorInput {
+            file_count,
+            language_counts,
+            target_latency_ms: 200,
+        });
+
+    Some(SemanticProfileRecommendationPayload {
+        profile: recommendation.profile,
+        repo_size_bucket: recommendation.repo_size_bucket,
+        reason_codes: recommendation.reason_codes,
+    })
 }

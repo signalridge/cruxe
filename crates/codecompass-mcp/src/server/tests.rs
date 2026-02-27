@@ -3283,6 +3283,317 @@ fn t124_search_code_ranking_reasons_basic_mode() {
     );
 }
 
+#[test]
+fn t403_search_code_exposes_semantic_and_confidence_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let mut config = Config::default();
+    config.search.semantic.mode = "rerank_only".to_string();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "where is validate token",
+                "semantic_ratio": 0.8,
+                "confidence_threshold": 0.2
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        meta.get("semantic_mode").and_then(|v| v.as_str()),
+        Some("rerank_only")
+    );
+    assert_eq!(
+        meta.get("semantic_enabled").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(meta.get("semantic_triggered").is_some());
+    assert_eq!(
+        meta.get("confidence_threshold").and_then(|v| v.as_f64()),
+        Some(0.2)
+    );
+    assert!(meta.get("query_intent_confidence").is_some());
+    assert!(meta.get("low_confidence").is_some());
+
+    let first = payload["results"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .expect("expected at least one search result");
+    assert_eq!(
+        first.get("provenance").and_then(|v| v.as_str()),
+        Some("lexical")
+    );
+}
+
+#[test]
+fn t403_search_code_invalid_semantic_ratio_returns_invalid_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "semantic_ratio": 1.5
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "tool call should return content envelope"
+    );
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_input")
+    );
+    assert!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("semantic_ratio")
+    );
+}
+
+#[test]
+fn t404_search_code_invalid_confidence_threshold_returns_invalid_input_envelope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "confidence_threshold": -0.1
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "tool call should return canonical content envelope"
+    );
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_input")
+    );
+    assert!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("confidence_threshold")
+    );
+
+    let metadata = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        metadata.get("schema_status").and_then(|v| v.as_str()),
+        Some("compatible")
+    );
+    assert_eq!(
+        metadata.get("indexing_status").and_then(|v| v.as_str()),
+        Some("ready")
+    );
+    assert_eq!(
+        metadata
+            .get("codecompass_protocol_version")
+            .and_then(|v| v.as_str()),
+        Some(codecompass_core::constants::PROTOCOL_VERSION)
+    );
+}
+
+#[test]
+fn t458_search_code_low_intent_confidence_emits_escalation_hint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    // "abc" is intentionally ambiguous and classified as symbol intent with low confidence.
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "abc"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").expect("metadata should be present");
+
+    let confidence = meta
+        .get("query_intent_confidence")
+        .and_then(|v| v.as_f64())
+        .expect("query_intent_confidence should be present");
+    assert!(confidence < 0.65, "expected low-confidence classification");
+    assert!(
+        meta.get("intent_escalation_hint")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "low-confidence classifications should include escalation hint"
+    );
+}
+
+#[test]
+fn t458_search_code_high_intent_confidence_suppresses_escalation_hint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    // Path-like query should be classified with high confidence and no hint.
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "src/main.rs"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").expect("metadata should be present");
+
+    let confidence = meta
+        .get("query_intent_confidence")
+        .and_then(|v| v.as_f64())
+        .expect("query_intent_confidence should be present");
+    assert!(
+        confidence >= 0.65,
+        "expected high-confidence classification"
+    );
+    assert!(
+        meta.get("intent_escalation_hint").is_none()
+            || meta
+                .get("intent_escalation_hint")
+                .and_then(|v| v.as_str())
+                .is_none(),
+        "high-confidence classifications should suppress escalation hint"
+    );
+}
+
 /// T453: basic explainability payload should be smaller than full mode.
 #[test]
 fn t453_ranking_explainability_basic_payload_smaller_than_full() {
@@ -3777,6 +4088,21 @@ fn t134_tools_list_schema_verification() {
     );
     let context_required = context_schema.get("required").unwrap().as_array().unwrap();
     assert!(context_required.contains(&json!("query")));
+
+    let search = tools
+        .iter()
+        .find(|t| t.get("name").unwrap().as_str().unwrap() == "search_code")
+        .expect("search_code should be listed");
+    let search_schema = search.get("inputSchema").unwrap();
+    let search_props = search_schema.get("properties").unwrap();
+    assert!(
+        search_props.get("semantic_ratio").is_some(),
+        "search_code should expose semantic_ratio override"
+    );
+    assert!(
+        search_props.get("confidence_threshold").is_some(),
+        "search_code should expose confidence_threshold override"
+    );
 }
 
 #[test]
@@ -5466,6 +5792,89 @@ fn t220_index_repo_without_notifications_uses_index_status_progress_fields() {
             .get("estimated_completion_pct")
             .unwrap()
             .is_number()
+    );
+}
+
+#[test]
+fn t472_index_status_surfaces_semantic_profile_recommendation_when_enabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (mut config, conn, project_id) = setup_indexing_runtime(&workspace);
+    config.search.semantic.profile_advisor_mode = "suggest".to_string();
+
+    let ref_name = codecompass_core::constants::REF_LIVE;
+    for (path, language) in [
+        ("src/lib.rs", "rust"),
+        ("src/auth.rs", "rust"),
+        ("src/app.ts", "typescript"),
+    ] {
+        codecompass_state::manifest::upsert_manifest(
+            &conn,
+            &codecompass_state::manifest::ManifestEntry {
+                repo: project_id.clone(),
+                r#ref: ref_name.to_string(),
+                path: path.to_string(),
+                content_hash: format!("hash-{path}"),
+                size_bytes: 128,
+                mtime_ns: Some(1),
+                language: Some(language.to_string()),
+                indexed_at: "2026-02-26T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    let status_request = make_request(
+        "tools/call",
+        json!({
+            "name": "index_status",
+            "arguments": {}
+        }),
+    );
+    let status_response = handle_request_with_ctx(
+        &status_request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(
+        status_response.error.is_none(),
+        "index_status should succeed"
+    );
+
+    let payload = extract_payload_from_response(&status_response);
+    let recommendation = payload
+        .get("semantic_profile_recommendation")
+        .and_then(|value| value.as_object())
+        .expect("semantic_profile_recommendation should be present");
+    assert!(
+        recommendation
+            .get("profile")
+            .and_then(|value| value.as_str())
+            .is_some()
+    );
+    assert!(
+        recommendation
+            .get("repo_size_bucket")
+            .and_then(|value| value.as_str())
+            .is_some()
+    );
+    assert!(
+        recommendation
+            .get("reason_codes")
+            .and_then(|value| value.as_array())
+            .is_some()
     );
 }
 

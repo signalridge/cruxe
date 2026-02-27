@@ -37,5 +37,12 @@ Thumbs.db
 .codecompass/
 research/
 
+# Generated benchmark reports
+benchmarks/semantic/reports/*.json
+!benchmarks/semantic/reports/.gitkeep
+
+# ML model caches (fastembed, ONNX runtime, etc.)
+.fastembed_cache/
+
 # Claude local instructions
 CLAUDE.md
