@@ -32,7 +32,7 @@ class Config:
 
     bind_address: str = "127.0.0.1"
     port: int = DEFAULT_PORT
-    database_url: str = "postgres://localhost/codecompass_dev"
+    database_url: str = "postgres://localhost/cruxe_dev"
     jwt_secret: str = "development-secret-do-not-use-in-prod"
     pool_size: int = DEFAULT_POOL_SIZE
     debug: bool = True

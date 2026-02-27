@@ -79,7 +79,7 @@ func LoadConfig(envFile string) (*Config, error) {
 	cfg := &Config{
 		BindAddress:    "127.0.0.1",
 		Port:           DefaultPort,
-		DatabaseURL:    "postgres://localhost/codecompass_dev",
+		DatabaseURL:    "postgres://localhost/cruxe_dev",
 		JWTSecret:      "development-secret-do-not-use-in-prod",
 		PoolSize:       DefaultPoolSize,
 		Debug:          true,

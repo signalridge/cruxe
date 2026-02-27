@@ -118,16 +118,16 @@ jobs:
         run: |
           set -euo pipefail
           required=(
-            "codecompass-aarch64-apple-darwin.tar.gz"
-            "codecompass-aarch64-apple-darwin.tar.gz.sha256"
-            "codecompass-x86_64-apple-darwin.tar.gz"
-            "codecompass-x86_64-apple-darwin.tar.gz.sha256"
-            "codecompass-aarch64-unknown-linux-musl.tar.gz"
-            "codecompass-aarch64-unknown-linux-musl.tar.gz.sha256"
-            "codecompass-x86_64-unknown-linux-musl.tar.gz"
-            "codecompass-x86_64-unknown-linux-musl.tar.gz.sha256"
-            "codecompass-x86_64-pc-windows-msvc.zip"
-            "codecompass-x86_64-pc-windows-msvc.zip.sha256"
+            "cruxe-aarch64-apple-darwin.tar.gz"
+            "cruxe-aarch64-apple-darwin.tar.gz.sha256"
+            "cruxe-x86_64-apple-darwin.tar.gz"
+            "cruxe-x86_64-apple-darwin.tar.gz.sha256"
+            "cruxe-aarch64-unknown-linux-musl.tar.gz"
+            "cruxe-aarch64-unknown-linux-musl.tar.gz.sha256"
+            "cruxe-x86_64-unknown-linux-musl.tar.gz"
+            "cruxe-x86_64-unknown-linux-musl.tar.gz.sha256"
+            "cruxe-x86_64-pc-windows-msvc.zip"
+            "cruxe-x86_64-pc-windows-msvc.zip.sha256"
             "release-notes.md"
           )
           missing=0

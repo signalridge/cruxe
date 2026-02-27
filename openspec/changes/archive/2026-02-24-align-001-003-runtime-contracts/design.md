@@ -6,8 +6,8 @@ current runtime is partially aligned, but still contains legacy output values
 and feature toggles (for example `debug.ranking_reasons`) that do not match the
 latest spec text.
 
-This change is cross-cutting across `codecompass-core`, `codecompass-query`,
-`codecompass-mcp`, and `codecompass-cli`, and directly affects MCP tool
+This change is cross-cutting across `cruxe-core`, `cruxe-query`,
+`cruxe-mcp`, and `cruxe-cli`, and directly affects MCP tool
 contracts consumed by external AI tools. That makes compatibility, migration,
 and deterministic behavior more important than isolated local refactors.
 

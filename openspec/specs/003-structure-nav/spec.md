@@ -8,7 +8,7 @@ emit Protocol v1 metadata aligned with canonical enum values.
 
 Required metadata fields include:
 
-- `codecompass_protocol_version`
+- `cruxe_protocol_version`
 - `freshness_status`
 - `indexing_status` (`not_indexed | indexing | ready | failed`)
 - `result_completeness` (`complete | partial | truncated`)

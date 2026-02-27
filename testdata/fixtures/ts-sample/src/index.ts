@@ -1,5 +1,5 @@
 /**
- * CodeCompass TypeScript sample - main entry point.
+ * Cruxe TypeScript sample - main entry point.
  *
  * Re-exports public API surface for the application.
  */

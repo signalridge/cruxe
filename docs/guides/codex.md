@@ -2,16 +2,16 @@
 
 ## Prerequisites
 
-- `codecompass` available on `PATH`
+- `cruxe` available on `PATH`
 - Codex client with MCP server configuration support
 - Indexed workspace
 
 ## 1) Initialize and Verify Index
 
 ```bash
-codecompass init
-codecompass index
-codecompass doctor
+cruxe init
+cruxe index
+cruxe doctor
 ```
 
 ## 2) Configure MCP
@@ -20,13 +20,13 @@ Use `configs/mcp/codex.json` as the starter template.
 
 Set:
 
-- `${CODECOMPASS_WORKSPACE}` -> absolute path to project
-- `${CODECOMPASS_CONFIG}` -> optional explicit config path
+- `${CRUXE_WORKSPACE}` -> absolute path to project
+- `${CRUXE_CONFIG}` -> optional explicit config path
 
-The template launches CodeCompass in stdio MCP mode:
+The template launches Cruxe in stdio MCP mode:
 
 ```bash
-codecompass serve-mcp --workspace <absolute-project-path>
+cruxe serve-mcp --workspace <absolute-project-path>
 ```
 
 ## 3) Verify Tool Availability
@@ -46,7 +46,7 @@ codecompass serve-mcp --workspace <absolute-project-path>
 
 ### Tool startup timeout
 
-- Ensure `codecompass` binary is discoverable on `PATH`.
+- Ensure `cruxe` binary is discoverable on `PATH`.
 - Increase startup timeout in client config if supported.
 
 ### Tools missing after config update

@@ -103,7 +103,7 @@ func ValidateToken(authHeader string, secret []byte) (*Claims, error) {
 		Role:   "user",
 		Exp:    now.Add(tokenTTL).Unix(),
 		Iat:    now.Unix(),
-		Issuer: "codecompass",
+		Issuer: "cruxe",
 	}
 
 	if claims.IsExpired() {

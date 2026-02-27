@@ -1,0 +1,32 @@
+[package]
+name = "cruxe-state"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+lancedb = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures", "dep:tokio"]
+
+[dependencies]
+cruxe-core = { workspace = true }
+rusqlite = { workspace = true }
+tantivy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+reqwest = { workspace = true }
+fastembed = { workspace = true }
+tokio = { workspace = true, optional = true }
+lancedb = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tar = "0.4"
+zstd = "0.13"
+tempfile = { workspace = true }
+fs4 = "0.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }

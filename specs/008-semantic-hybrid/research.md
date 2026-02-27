@@ -88,7 +88,7 @@ provider = "local"        # "local" | "openai" | "voyage"
 model = "NomicEmbedTextV15Q"
 model_version = "fastembed-1"
 dimensions = 768
-# api_key read from CODECOMPASS_EMBEDDING_API_KEY env var
+# api_key read from CRUXE_EMBEDDING_API_KEY env var
 ```
 
 **Trade-offs**:

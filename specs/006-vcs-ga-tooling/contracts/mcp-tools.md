@@ -13,7 +13,7 @@ In addition to the base Protocol v1 metadata, VCS-mode responses include:
 ```json
 {
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
     "indexing_status": "not_indexed | indexing | ready | failed",
     "result_completeness": "complete | partial | truncated",
@@ -139,7 +139,7 @@ symbols with before/after signatures. No equivalent exists in any open-source co
     }
   ],
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -258,7 +258,7 @@ graph lookups. Returns each reference with file location and edge type.
   ],
   "total_references": 3,
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -343,7 +343,7 @@ contribution of each ranking factor, enabling debugging and transparency.
     "kind_match_reason": "no kind filter in query"
   },
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -424,7 +424,7 @@ List all indexed refs (branches/tags) for a project. VCS mode only.
   "total_refs": 2,
   "vcs_mode": true,
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -490,11 +490,11 @@ subsequent queries in the current session.
 {
   "ref": "feat/auth",
   "previous_ref": "main",
-  "worktree_path": "/home/user/.codecompass/worktrees/a1b2c3d4/feat-auth",
+  "worktree_path": "/home/user/.cruxe/worktrees/a1b2c3d4/feat-auth",
   "status": "active",
   "last_indexed_commit": "def789abc012",
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -525,9 +525,9 @@ subsequent queries in the current session.
 
 | Command | Description |
 |---------|-------------|
-| `codecompass state export <path>` | Export index + SQLite state to portable `.tar.zst` archive |
-| `codecompass state import <path>` | Import archive and restore state |
-| `codecompass prune-overlays [--older-than DAYS]` | Remove overlay indices for inactive branches |
+| `cruxe state export <path>` | Export index + SQLite state to portable `.tar.zst` archive |
+| `cruxe state import <path>` | Import archive and restore state |
+| `cruxe prune-overlays [--older-than DAYS]` | Remove overlay indices for inactive branches |
 
 All CLI commands support `--verbose` / `-v` for increased log output and
 `--workspace PATH` for targeting a specific project.

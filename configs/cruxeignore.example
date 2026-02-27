@@ -1,0 +1,100 @@
+# =============================================================================
+# .cruxeignore
+# =============================================================================
+#
+# This file tells Cruxe which files and directories to skip during
+# indexing. Place a copy named `.cruxeignore` in your project root
+# and uncomment or add patterns as needed.
+#
+# Syntax is identical to .gitignore:
+#   - Blank lines are ignored.
+#   - Lines starting with # are comments.
+#   - Standard glob patterns work (*, ?, [abc]).
+#   - A leading / anchors the pattern to the project root.
+#   - A trailing / matches directories only.
+#   - A leading ! negates the pattern (re-includes a previously excluded path).
+#
+# Patterns are evaluated top-to-bottom; later rules override earlier ones.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Build outputs
+# -----------------------------------------------------------------------------
+target/
+dist/
+build/
+out/
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+node_modules/
+vendor/
+.venv/
+
+# -----------------------------------------------------------------------------
+# Generated code
+# -----------------------------------------------------------------------------
+*.generated.*
+*.pb.go
+*_generated.rs
+
+# -----------------------------------------------------------------------------
+# Binary files
+# -----------------------------------------------------------------------------
+*.exe
+*.dll
+*.so
+*.dylib
+*.wasm
+*.pyc
+*.class
+
+# -----------------------------------------------------------------------------
+# Minified files
+# -----------------------------------------------------------------------------
+*.min.js
+*.min.css
+
+# -----------------------------------------------------------------------------
+# IDE / editor files
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS files
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------------------------------------------------------
+# Lock files
+# -----------------------------------------------------------------------------
+package-lock.json
+yarn.lock
+Cargo.lock
+
+# -----------------------------------------------------------------------------
+# Negation patterns
+# -----------------------------------------------------------------------------
+# Use the ! prefix to re-include a file that was excluded by an earlier rule.
+# Negation patterns are evaluated in order, so they must appear AFTER the rule
+# they override.
+#
+# Examples:
+#
+#   # Exclude all of vendor/, but keep a specific vendored library:
+#   vendor/
+#   !vendor/critical-lib/
+#
+#   # Exclude all generated code, but index a specific protobuf file:
+#   *.pb.go
+#   !api/v1/service.pb.go
+#
+#   # Exclude all lock files, but keep Cargo.lock (recommended for binaries):
+#   Cargo.lock
+#   !Cargo.lock

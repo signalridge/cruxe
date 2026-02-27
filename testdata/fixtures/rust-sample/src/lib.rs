@@ -1,4 +1,4 @@
-//! CodeCompass sample Rust library for testing symbol extraction.
+//! Cruxe sample Rust library for testing symbol extraction.
 //!
 //! This crate provides a minimal authentication and request handling
 //! framework used as a test fixture.

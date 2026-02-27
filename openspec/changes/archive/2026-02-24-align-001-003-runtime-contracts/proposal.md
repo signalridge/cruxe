@@ -43,10 +43,10 @@ None. This change focused on runtime alignment with existing specs.
 ## Impact
 
 - Affected code:
-  - `codecompass-core` (types/config)
-  - `codecompass-query` (detail/ranking/search)
-  - `codecompass-mcp` (protocol/tool handlers/schema)
-  - `codecompass-cli` (`serve-mcp` config entrypoint)
+  - `cruxe-core` (types/config)
+  - `cruxe-query` (detail/ranking/search)
+  - `cruxe-mcp` (protocol/tool handlers/schema)
+  - `cruxe-cli` (`serve-mcp` config entrypoint)
 - API impact:
   - compatibility upgrade for MCP tool input/output contracts
     (new normalized enum values + fields, legacy-read compatibility retained).

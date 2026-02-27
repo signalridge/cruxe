@@ -72,7 +72,7 @@ export function loadConfig(envFile?: string): AppConfig {
     bindAddress: process.env["BIND_ADDRESS"] ?? "127.0.0.1",
     port,
     databaseUrl:
-      process.env["DATABASE_URL"] ?? "postgres://localhost/codecompass_dev",
+      process.env["DATABASE_URL"] ?? "postgres://localhost/cruxe_dev",
     jwtSecret:
       process.env["JWT_SECRET"] ?? "development-secret-do-not-use-in-prod",
     poolSize,

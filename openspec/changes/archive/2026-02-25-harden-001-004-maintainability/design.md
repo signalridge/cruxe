@@ -4,7 +4,7 @@
 friction for continued delivery:
 
 1. `stdio` and `http` maintain separate `tools/call` dispatch flows.
-2. `crates/codecompass-mcp/src/server/tool_calls.rs` was a conflict hotspot.
+2. `crates/cruxe-mcp/src/server/tool_calls.rs` was a conflict hotspot.
 3. `index_repo` and `bootstrap_and_index` used partially divergent index launch
    logic.
 4. Protocol error codes were hard-coded in multiple locations.
@@ -255,9 +255,9 @@ Do not implement new transports now, but enforce extension seam constraints:
 
 ## Open Questions
 
-1. Should `ProtocolErrorCode` live in `codecompass-core` or
-   `codecompass-mcp`?  
-   **Recommendation:** `codecompass-core` for cross-transport reuse.
+1. Should `ProtocolErrorCode` live in `cruxe-core` or
+   `cruxe-mcp`?  
+   **Recommendation:** `cruxe-core` for cross-transport reuse.
 2. Should benchmarking start with custom harness or `criterion`?  
    **Recommendation:** start with minimal harness, adopt `criterion` when needed.
 3. Should OpenSpec trace gate be required immediately or staged?  

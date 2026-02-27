@@ -1,18 +1,18 @@
 {
   "_comment": "Generic MCP server template for stdio-based clients.",
-  "_usage": "Replace ${CODECOMPASS_WORKSPACE} with an absolute path.",
+  "_usage": "Replace ${CRUXE_WORKSPACE} with an absolute path.",
   "mcp_server": {
-    "name": "codecompass",
+    "name": "cruxe",
     "transport": "stdio",
-    "command": "codecompass",
+    "command": "cruxe",
     "args": [
       "serve-mcp",
       "--workspace",
-      "${CODECOMPASS_WORKSPACE}"
+      "${CRUXE_WORKSPACE}"
     ],
     "env": {
       "RUST_LOG": "error",
-      "CODECOMPASS_CONFIG": "${CODECOMPASS_CONFIG}"
+      "CRUXE_CONFIG": "${CRUXE_CONFIG}"
     }
   }
 }

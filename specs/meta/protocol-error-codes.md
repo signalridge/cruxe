@@ -1,6 +1,6 @@
 # Protocol Error Codes (Canonical)
 
-> Canonical error envelope and code registry for CodeCompass CLI/MCP/HTTP transports.
+> Canonical error envelope and code registry for Cruxe CLI/MCP/HTTP transports.
 > This prevents error drift across specs and implementations.
 
 ## Scope
@@ -17,11 +17,11 @@ All protocol errors should use:
 {
   "error": {
     "code": "index_incompatible",
-    "message": "Index schema is incompatible. Run codecompass index --force.",
+    "message": "Index schema is incompatible. Run cruxe index --force.",
     "data": {
       "current_schema_version": 1,
       "required_schema_version": 2,
-      "remediation": "codecompass index --force"
+      "remediation": "cruxe index --force"
     }
   }
 }
@@ -58,7 +58,7 @@ Implementation migration note:
 | `invalid_input` | Validation | Generic input validation failure | Fix parameters and retry |
 | `invalid_strategy` | Validation | `strategy` not in allowed enum | Use supported strategy value |
 | `invalid_max_tokens` | Validation | `max_tokens < 1` | Provide positive token budget |
-| `project_not_found` | Workspace | No registered project for requested workspace | Run `codecompass init` / correct workspace |
+| `project_not_found` | Workspace | No registered project for requested workspace | Run `cruxe init` / correct workspace |
 | `workspace_not_registered` | Workspace | Unknown workspace and auto-discovery disabled | Pre-register workspace or enable auto-workspace |
 | `workspace_not_allowed` | Workspace | Workspace outside allowed roots | Use allowed root or adjust allowlist |
 | `workspace_limit_exceeded` | Workspace | Auto-discovered workspace cap reached | Retry after eviction/cleanup |
@@ -66,7 +66,7 @@ Implementation migration note:
 | `index_not_ready` | Indexing | Query requested against a `not_indexed` or `failed` index state | Run `index_repo` or inspect failure details |
 | `sync_in_progress` | Indexing | Sync job active for same `(project, ref)` | Wait and retry |
 | `index_stale` | Freshness | Strict freshness policy blocks stale index query | Run `sync_repo` |
-| `index_incompatible` | Compatibility | Schema mismatch or corrupt manifest | Run `codecompass index --force` |
+| `index_incompatible` | Compatibility | Schema mismatch or corrupt manifest | Run `cruxe index --force` |
 | `ref_not_indexed` | VCS | Requested ref lacks indexed state | Index requested ref first |
 | `overlay_not_ready` | VCS | Ref overlay exists but not queryable yet | Retry after sync/index completion |
 | `merge_base_failed` | VCS | Could not compute merge-base | Validate refs and repository integrity |

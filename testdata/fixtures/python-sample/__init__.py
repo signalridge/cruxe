@@ -1,5 +1,5 @@
 """
-CodeCompass Python sample package for testing symbol extraction.
+Cruxe Python sample package for testing symbol extraction.
 
 Provides authentication, database access, request handling, and
 configuration management.

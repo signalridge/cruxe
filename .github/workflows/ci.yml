@@ -45,7 +45,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Test suite
         env:
-          CODECOMPASS_ENABLE_FASTEMBED_RUNTIME: "0"
+          CRUXE_ENABLE_FASTEMBED_RUNTIME: "0"
         run: cargo test --workspace
 
   test-fixture-harness:
@@ -59,7 +59,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run fixture integration harness tests (serial)
         run: |
-          cargo test -p codecompass --test integration_test -- --ignored --test-threads=1 --skip benchmark_t359_call_edge_extraction_overhead_under_20_percent --skip benchmark_t379_embedding_overhead_under_30_percent
+          cargo test -p cruxe --test integration_test -- --ignored --test-threads=1 --skip benchmark_t359_call_edge_extraction_overhead_under_20_percent --skip benchmark_t379_embedding_overhead_under_30_percent
 
   auto-indexing-template-hooks:
     runs-on: ubuntu-latest

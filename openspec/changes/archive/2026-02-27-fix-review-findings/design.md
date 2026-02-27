@@ -4,7 +4,7 @@ The review surfaced concrete implementation gaps across protocol correctness,
 dead code, governance evidence, and code quality hygiene:
 
 1. Protocol error-code mappings are wrong: `SchemaStatus::NotIndexed` emits `IndexIncompatible` instead of `IndexNotReady` (in `tool_compatibility_error`, `tool_calls.rs:320-322`), and `StateError::ProjectNotFound` falls through to `InternalError` in `map_state_error` (`shared.rs:420-424`).
-2. Dead code: `codecompass-core::vcs_adapter` module has zero external callers; aggregate `Error`/`Result` type and `IndexError`/`McpError`/`QueryError` sub-types are never imported outside `error.rs`; `DefaultDiffEntry` type alias is unreferenced.
+2. Dead code: `cruxe-core::vcs_adapter` module has zero external callers; aggregate `Error`/`Result` type and `IndexError`/`McpError`/`QueryError` sub-types are never imported outside `error.rs`; `DefaultDiffEntry` type alias is unreferenced.
 3. MCP tool schemas have gaps: `suggest_followup_queries` accepts `ref` in handler but schema omits it; `search_code.semantic_ratio`/`confidence_threshold` lack numeric bounds; `find_references.kind` has no enum constraint.
 4. Overlay merge asymmetry: `merged_search` has tombstone re-provision check via `overlay_keys`; `merged_locate` does not, causing potential false suppression.
 5. Duplicate `worktree_leases` indexes: `idx_worktree_leases_status_last_used` and `idx_worktree_leases_status` are identical (`status, last_used_at`).
@@ -42,7 +42,7 @@ state. We classify each item as:
 
 | ID | Finding | Triage | Notes |
 |---|---|---|---|
-| C1 | `codecompass-core::vcs_adapter` dead module | Confirmed | `codecompass-core/src/vcs_adapter.rs` has no workspace callers beyond self-tests. `pub trait VcsAdapter`, `pub struct GitVcsAdapter`, `pub fn default_vcs_adapter()` — all zero external imports. Superseded by `codecompass-vcs` crate (spec 005/006). |
+| C1 | `cruxe-core::vcs_adapter` dead module | Confirmed | `cruxe-core/src/vcs_adapter.rs` has no workspace callers beyond self-tests. `pub trait VcsAdapter`, `pub struct GitVcsAdapter`, `pub fn default_vcs_adapter()` — all zero external imports. Superseded by `cruxe-vcs` crate (spec 005/006). |
 | C2 | Aggregate `Error`/`Result` and specific sub-errors unused | Confirmed | Dead types: aggregate `Error` enum (lines 4-28), `Result<T>` alias (line 342), `IndexError` (line 274), `McpError` (line 319), `QueryError` (line 307). **Live types to preserve**: `StateError`, `ConfigError`, `ParseError`, `VcsError`, `WorkspaceError`, `ProtocolErrorCode` — all actively imported across multiple crates. |
 | C3 | `SchemaStatus::NotIndexed` mapped to `IndexIncompatible` instead of `IndexNotReady` | Confirmed | `tool_compatibility_error` in `tool_calls.rs:320-322` emits `ProtocolErrorCode::IndexIncompatible` for all non-`ProjectNotFound` cases including `NotIndexed`. Per spec, `IndexNotReady` is the correct code for "no index available." |
 | C4 | Spec 009 missing explicit crates.io FR | Partial | Constitution requires `cargo install` path; spec 001 US1 presupposes it. Spec 009 (distribution) has no explicit FR for crates.io publishing. Resolution: add cross-reference note in spec 009, not a new FR (since spec 001 already establishes the requirement). |
@@ -59,7 +59,7 @@ state. We classify each item as:
 |---|---|---|---|
 | M1 | `cleanup_stale_staging()` dead public API | Confirmed | Only referenced in its own test module. Should be `pub(crate)` not `pub`. |
 | M2 | `DefaultDiffEntry` alias unused | Confirmed | `adapter.rs:38` — zero references outside declaration. |
-| M3 | `serde_json` in CLI runtime deps but used only in tests | Confirmed | `serde_json` in `codecompass-cli/Cargo.toml:24` `[dependencies]` but no `use serde_json` in any `src/` file. Only in `tests/integration_test.rs`. Note: `blake3` is correctly in `[dependencies]` (used in `commands/index.rs`). |
+| M3 | `serde_json` in CLI runtime deps but used only in tests | Confirmed | `serde_json` in `cruxe-cli/Cargo.toml:24` `[dependencies]` but no `use serde_json` in any `src/` file. Only in `tests/integration_test.rs`. Note: `blake3` is correctly in `[dependencies]` (used in `commands/index.rs`). |
 | M4 | Query tuning magic numbers not config-exposed | Confirmed | Hardcoded weights/boosts/fanouts in `confidence.rs:27` (0.55/0.30/0.15), `rerank.rs:80,84` (0.75/2.5), `search.rs:267,286-287` (2x/4x/3x fanout multipliers). |
 | M5 | `search_code` schema missing numeric bounds for ratio/threshold | Confirmed | `semantic_ratio` and `confidence_threshold` are `"type": "number"` with no `minimum`/`maximum`. Spec says 0.0-1.0 and handler validates at runtime. |
 | M6 | `find_references.kind` missing enum constraint | Confirmed | `kind` parameter is `"type": "string"` with no enum despite having exactly 5 valid values. |
@@ -67,7 +67,7 @@ state. We classify each item as:
 | M8 | Overlay merge asymmetry (search vs locate tombstone re-provision) | Confirmed | `merged_search` (lines 87-95) computes `overlay_keys` and preserves base results at tombstoned paths if overlay re-provides the key. `merged_locate` (lines 122-125) has no such check — always suppresses base at tombstoned paths. |
 | M9 | `StateError::ProjectNotFound` not mapped in `map_state_error` | Confirmed | Falls through to catch-all `InternalError` at `shared.rs:420-424`, even though `ProtocolErrorCode::ProjectNotFound` exists and is used at direct emission sites. |
 | M10 | Stale phase reference in 001 MCP contract | Confirmed | `specs/001-core-mvp/contracts/mcp-tools.md:52` says "planned for Phase 4" for multi-workspace routing. Phase 4 is now spec 009 (distribution). Multi-workspace is Phase 1.5b/spec 004 (already implemented). |
-| L1 | `codecompass-core::vcs` free functions duplicate VCS crate capabilities | Partial | Active callers exist in 4 crates (`cli`, `query`, `mcp`, `indexer`). Migration debt, not dead code. Free functions are thin (3-5 lines), no bugs. Recommend: document keep rationale, defer migration. |
+| L1 | `cruxe-core::vcs` free functions duplicate VCS crate capabilities | Partial | Active callers exist in 4 crates (`cli`, `query`, `mcp`, `indexer`). Migration debt, not dead code. Free functions are thin (3-5 lines), no bugs. Recommend: document keep rationale, defer migration. |
 | L2 | FR numbering offset inconsistency | Not confirmed | Numbering strategy documented in `specs/meta/INDEX.md:94-96`. Intentional. |
 | L3 | Alpha-suffixed FRs undocumented | Partial | Suffix usage exists (`FR-105a/b/c`, `FR-115a`); no explicit convention section. Low-risk doc hygiene. |
 | L4 | `semantic_fallback` metadata documentation drift | Partial | Mentioned in spec edge cases; not consistently listed in contract metadata table. |
@@ -104,7 +104,7 @@ blast radius.
 - No protocol schema redesign.
 - No FFI-level `catch_unwind` for ONNX runtime (unless explicitly scoped as a follow-up decision).
 - No broad refactor of module boundaries or visibility unless required by behavior/correctness.
-- No migration of `codecompass-core::vcs` free functions (keep rationale documented, defer to follow-up).
+- No migration of `cruxe-core::vcs` free functions (keep rationale documented, defer to follow-up).
 
 ## Decisions
 
@@ -138,9 +138,9 @@ blast radius.
 ### 5) Dead-code cleanup must be evidence-backed
 - Decision: require an explicit dead-code pass for touched modules and allow removals only when references are provably absent (compiler/lint/symbol search evidence).
 - Confirmed dead code to remove:
-  - `crates/codecompass-core/src/vcs_adapter.rs` — entire file + `pub mod vcs_adapter;` from `lib.rs:10`. Zero external callers confirmed by workspace-wide grep.
-  - `crates/codecompass-core/src/error.rs` — aggregate `Error` enum (lines 4-28), `Result<T>` alias (line 342), `IndexError` (lines 274-292), `McpError` (lines 319-331), `QueryError` (lines 307-316). Zero external imports confirmed. **Preserve**: `StateError`, `ConfigError`, `ParseError`, `VcsError`, `WorkspaceError`, `ProtocolErrorCode` (all actively used).
-  - `crates/codecompass-vcs/src/adapter.rs:38` — `pub type DefaultDiffEntry = DiffEntry;`. Zero references.
+  - `crates/cruxe-core/src/vcs_adapter.rs` — entire file + `pub mod vcs_adapter;` from `lib.rs:10`. Zero external callers confirmed by workspace-wide grep.
+  - `crates/cruxe-core/src/error.rs` — aggregate `Error` enum (lines 4-28), `Result<T>` alias (line 342), `IndexError` (lines 274-292), `McpError` (lines 319-331), `QueryError` (lines 307-316). Zero external imports confirmed. **Preserve**: `StateError`, `ConfigError`, `ParseError`, `VcsError`, `WorkspaceError`, `ProtocolErrorCode` (all actively used).
+  - `crates/cruxe-vcs/src/adapter.rs:38` — `pub type DefaultDiffEntry = DiffEntry;`. Zero references.
 - Rationale: satisfies review expectations while preventing accidental deletion of live extension points.
 
 ### 6) Consolidate validated external findings into one change
@@ -148,10 +148,10 @@ blast radius.
 - Rationale: user requested one-spec governance lane; this keeps traceability, validation evidence, and rollout communication in one place.
 
 ### 7) VCS free-function migration debt: document and defer
-- Decision: keep `codecompass-core::vcs` free functions (`detect_head_branch`, `is_git_repo`, `detect_head_commit`) as-is. Document keep rationale; do not consolidate into `codecompass-vcs` adapter threading.
-- Rationale: free functions are thin (3-5 lines each), have no bugs, and 4 crates actively call them. Cost of threading a `Git2VcsAdapter` instance through all callers outweighs dedup benefit. Follow-up trigger: if `codecompass-vcs` adds functionality that free functions cannot provide (e.g., caching, pooling).
+- Decision: keep `cruxe-core::vcs` free functions (`detect_head_branch`, `is_git_repo`, `detect_head_commit`) as-is. Document keep rationale; do not consolidate into `cruxe-vcs` adapter threading.
+- Rationale: free functions are thin (3-5 lines each), have no bugs, and 4 crates actively call them. Cost of threading a `Git2VcsAdapter` instance through all callers outweighs dedup benefit. Follow-up trigger: if `cruxe-vcs` adds functionality that free functions cannot provide (e.g., caching, pooling).
 - Alternatives considered:
-  - Full migration to `codecompass-vcs` adapter: rejected (high churn, zero correctness gain).
+  - Full migration to `cruxe-vcs` adapter: rejected (high churn, zero correctness gain).
 
 ### 8) `semantic_vectors.project_id` naming: values align with `repo`, migration deferred
 - Decision: runtime usage currently passes the same logical project identity through both `repo` (other tables) and `project_id` (semantic vectors), but we defer column rename in this change and record a V13 migration plan.
@@ -187,7 +187,7 @@ blast radius.
 11. Verify with deterministic command set:
     - `cargo fmt --all --check`
     - `cargo clippy --workspace -- -D warnings`
-    - `CODECOMPASS_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace`
+    - `CRUXE_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace`
     - benchmark harness script run (including semantic entries)
 
 Rollback strategy:

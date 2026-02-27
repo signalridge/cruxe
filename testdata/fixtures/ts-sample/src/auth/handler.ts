@@ -65,7 +65,7 @@ export function validateToken(authHeader: string, secret: string): TokenClaims {
     role: UserRole.User,
     exp: Date.now() + TOKEN_TTL_MS,
     iat: Date.now(),
-    iss: "codecompass",
+    iss: "cruxe",
   };
 
   if (claims.exp < Date.now()) {

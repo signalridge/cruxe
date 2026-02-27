@@ -17,7 +17,7 @@ jobs:
   update-formula:
     runs-on: ubuntu-latest
     env:
-      SOURCE_REPO: signalridge/codecompass
+      SOURCE_REPO: signalridge/cruxe
       TAP_REPO: signalridge/homebrew-tap
     steps:
       - name: Resolve release tag
@@ -94,17 +94,17 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
-      - name: Update Formula/codecompass.rb
+      - name: Update Formula/cruxe.rb
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           version="${TAG#v}"
           base_url="https://github.com/${SOURCE_REPO}/releases/download/${TAG}"
 
-          cat > tap/Formula/codecompass.rb <<RUBY
-          class Codecompass < Formula
+          cat > tap/Formula/cruxe.rb <<RUBY
+          class Cruxe < Formula
             desc "Code search and navigation engine for AI coding assistants"
-            homepage "https://github.com/signalridge/codecompass"
+            homepage "https://github.com/signalridge/cruxe"
             version "${version}"
             license "MIT"
 
@@ -129,11 +129,11 @@ jobs:
             end
 
             def install
-              bin.install "codecompass"
+              bin.install "cruxe"
             end
 
             test do
-              output = shell_output("#{bin}/codecompass --version")
+              output = shell_output("#{bin}/cruxe --version")
               assert_match(version.to_s, output)
             end
           end
@@ -144,9 +144,9 @@ jobs:
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
-          commit-message: "chore(formula): update codecompass to ${{ steps.tag.outputs.tag }}"
+          commit-message: "chore(formula): update cruxe to ${{ steps.tag.outputs.tag }}"
           branch: "automation/homebrew-${{ steps.tag.outputs.tag }}"
-          title: "chore(formula): update codecompass to ${{ steps.tag.outputs.tag }}"
+          title: "chore(formula): update cruxe to ${{ steps.tag.outputs.tag }}"
           body: |
             Automated formula update for `${{ steps.tag.outputs.tag }}`.
             - Source release: `https://github.com/${{ env.SOURCE_REPO }}/releases/tag/${{ steps.tag.outputs.tag }}`

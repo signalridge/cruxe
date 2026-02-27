@@ -1,4 +1,4 @@
-// Package main is the entry point for the CodeCompass Go sample application.
+// Package main is the entry point for the Cruxe Go sample application.
 package main
 
 import (
@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"codecompass/config"
-	"codecompass/database"
-	"codecompass/handlers"
+	"cruxe/config"
+	"cruxe/database"
+	"cruxe/handlers"
 )
 
 // version is set at build time via ldflags.
@@ -18,7 +18,7 @@ var version = "dev"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Printf("starting codecompass %s", version)
+	log.Printf("starting cruxe %s", version)
 
 	cfg, err := config.LoadConfig("")
 	if err != nil {

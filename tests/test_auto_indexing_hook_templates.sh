@@ -18,17 +18,17 @@ for template in "${TEMPLATES[@]}"; do
   mkdir -p "$mock_bin_dir"
   hook_calls_log="$tmp_dir/hook-calls.log"
 
-  cat > "$mock_bin_dir/codecompass" <<'MOCK'
+  cat > "$mock_bin_dir/cruxe" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 
 echo "$*" >> "${HOOK_CALLS_LOG:?HOOK_CALLS_LOG must be set}"
 
-if [ "${CODECOMPASS_MOCK_FAIL:-0}" = "1" ]; then
+if [ "${CRUXE_MOCK_FAIL:-0}" = "1" ]; then
   exit 99
 fi
 MOCK
-  chmod +x "$mock_bin_dir/codecompass"
+  chmod +x "$mock_bin_dir/cruxe"
 
   cp "$ROOT_DIR/configs/templates/$template/hooks/post-commit" "$repo_dir/.git/hooks/post-commit"
   cp "$ROOT_DIR/configs/templates/$template/hooks/pre-push" "$repo_dir/.git/hooks/pre-push"
@@ -51,8 +51,8 @@ MOCK
   fi
 
   # Fail-soft check: mocked failures must not block hooks.
-  PATH="$mock_bin_dir:$PATH" HOOK_CALLS_LOG="$hook_calls_log" CODECOMPASS_MOCK_FAIL=1 "$repo_dir/.git/hooks/pre-push"
-  PATH="$mock_bin_dir:$PATH" HOOK_CALLS_LOG="$hook_calls_log" CODECOMPASS_MOCK_FAIL=1 "$repo_dir/.git/hooks/post-commit"
+  PATH="$mock_bin_dir:$PATH" HOOK_CALLS_LOG="$hook_calls_log" CRUXE_MOCK_FAIL=1 "$repo_dir/.git/hooks/pre-push"
+  PATH="$mock_bin_dir:$PATH" HOOK_CALLS_LOG="$hook_calls_log" CRUXE_MOCK_FAIL=1 "$repo_dir/.git/hooks/post-commit"
 
   rm -rf "$tmp_dir"
   trap - EXIT

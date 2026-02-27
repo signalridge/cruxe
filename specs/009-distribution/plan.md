@@ -5,7 +5,7 @@
 
 ## Summary
 
-Set up the complete distribution pipeline for CodeCompass: cross-platform binary builds
+Set up the complete distribution pipeline for Cruxe: cross-platform binary builds
 via cargo-dist/cross, GitHub Actions release workflow with automated changelog, Homebrew
 tap with auto-update, MCP configuration templates for major AI coding agents, integration
 guides, and auto-indexing reference templates. The goal is to make installation and
@@ -60,7 +60,7 @@ Cross.toml                       # NEW: cross-compilation configuration (if need
 
 # Homebrew Tap (separate repo: signalridge/homebrew-tap)
 Formula/
-└── codecompass.rb               # NEW: Homebrew formula
+└── cruxe.rb               # NEW: Homebrew formula
 
 # MCP Configuration Templates
 configs/
@@ -86,27 +86,27 @@ docs/
 configs/
 └── templates/
     ├── rust/
-    │   ├── .codecompassignore   # NEW: Rust-specific ignore patterns
+    │   ├── .cruxeignore   # NEW: Rust-specific ignore patterns
     │   └── hooks/
     │       ├── post-commit      # NEW: Git post-commit hook for sync
     │       └── pre-push         # NEW: Git pre-push hook for doctor
     ├── typescript/
-    │   ├── .codecompassignore   # NEW: TypeScript-specific ignore patterns
+    │   ├── .cruxeignore   # NEW: TypeScript-specific ignore patterns
     │   └── hooks/
     │       ├── post-commit
     │       └── pre-push
     ├── python/
-    │   ├── .codecompassignore   # NEW: Python-specific ignore patterns
+    │   ├── .cruxeignore   # NEW: Python-specific ignore patterns
     │   └── hooks/
     │       ├── post-commit
     │       └── pre-push
     ├── go/
-    │   ├── .codecompassignore   # NEW: Go-specific ignore patterns
+    │   ├── .cruxeignore   # NEW: Go-specific ignore patterns
     │   └── hooks/
     │       ├── post-commit
     │       └── pre-push
     └── monorepo/
-        ├── .codecompassignore   # NEW: Multi-language monorepo ignore patterns
+        ├── .cruxeignore   # NEW: Multi-language monorepo ignore patterns
         └── hooks/
             ├── post-commit
             └── pre-push

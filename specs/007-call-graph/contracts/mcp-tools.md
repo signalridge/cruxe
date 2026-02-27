@@ -12,7 +12,7 @@ Included in every tool response:
 ```json
 {
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
     "indexing_status": "not_indexed | indexing | ready | failed",
     "result_completeness": "complete | partial | truncated",

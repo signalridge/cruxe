@@ -183,11 +183,11 @@ Hooks:
 
 | Path | Owner | Review Required |
 |------|-------|----------------|
-| `crates/codecompass-core/` | Core team | Always |
-| `crates/codecompass-vcs/` | Core team | Always |
-| `crates/codecompass-state/` | Core team | Always |
+| `crates/cruxe-core/` | Core team | Always |
+| `crates/cruxe-vcs/` | Core team | Always |
+| `crates/cruxe-state/` | Core team | Always |
 | `.github/workflows/` | Core team | Always |
-| `crates/codecompass-mcp/` | Core team | Protocol changes |
+| `crates/cruxe-mcp/` | Core team | Protocol changes |
 | `docs/` | Any contributor | Spelling/accuracy |
 | `configs/` | Any contributor | Correctness |
 
@@ -500,7 +500,7 @@ For benchmark thresholds, see [benchmark-targets.md](benchmark-targets.md).
 ### Data Directory
 
 ```
-~/.codecompass/
+~/.cruxe/
   data/
     <project_id>/
       base/
@@ -519,13 +519,13 @@ For benchmark thresholds, see [benchmark-targets.md](benchmark-targets.md).
 
 ```bash
 # Remove all index data for a project
-rm -rf ~/.codecompass/data/<project_id>
+rm -rf ~/.cruxe/data/<project_id>
 
-# Remove all CodeCompass data
-rm -rf ~/.codecompass
+# Remove all Cruxe data
+rm -rf ~/.cruxe
 
 # Prune stale branch overlays (005-vcs-core+)
-codecompass prune-overlays --ttl 30d
+cruxe prune-overlays --ttl 30d
 ```
 
 ---
@@ -537,13 +537,13 @@ codecompass prune-overlays --ttl 30d
 All operations emit structured tracing spans:
 - Default level: `info`
 - `--verbose` flag: `debug` level
-- `CODECOMPASS_LOG` env var: fine-grained control (e.g., `codecompass::query=trace`)
+- `CRUXE_LOG` env var: fine-grained control (e.g., `cruxe::query=trace`)
 
 ### Health Check
 
 ```bash
 # CLI health check
-codecompass doctor
+cruxe doctor
 
 # MCP health check (via tool call)
 { "method": "tools/call", "params": { "name": "health_check" } }

@@ -1,4 +1,4 @@
-# Data Model: CodeCompass Core MVP
+# Data Model: Cruxe Core MVP
 
 ## Storage Architecture
 

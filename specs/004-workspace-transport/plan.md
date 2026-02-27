@@ -10,7 +10,7 @@
 Add multi-workspace auto-workspace discovery (with security-constrained opt-in), index
 progress notifications via MCP protocol, restart-safe interrupted-job reporting,
 workspace warmset prewarming, and HTTP transport mode to the existing
-CodeCompass MCP server. This extends the single-workspace stdio server from
+Cruxe MCP server. This extends the single-workspace stdio server from
 001-core-mvp into a multi-project, multi-transport system suitable for shared
 development environments.
 
@@ -18,7 +18,7 @@ development environments.
 
 **Language/Version**: Rust (latest stable, 2024 edition)
 **New Dependencies**: `axum` (HTTP framework), `tokio` (already present, add HTTP listener)
-**Modified Crates**: `codecompass-mcp`, `codecompass-cli`, `codecompass-state`, `codecompass-core`
+**Modified Crates**: `cruxe-mcp`, `cruxe-cli`, `cruxe-state`, `cruxe-core`
 **Storage Changes**: `index_jobs.progress_token` column addition; `known_workspaces` table activation
 **Testing**: cargo test + fixture repos with multi-workspace scenarios
 **Constraints**: No authentication in HTTP v1 (explicit non-goal for this phase; local-only), `--auto-workspace` off by default
@@ -63,16 +63,16 @@ specs/004-workspace-transport/
 
 ```text
 crates/
-├── codecompass-core/
+├── cruxe-core/
 │   └── src/
 │       ├── types.rs              # + WorkspaceConfig, AllowedRoots types
 │       └── error.rs              # + WorkspaceNotRegistered, WorkspaceNotAllowed errors
-├── codecompass-state/
+├── cruxe-state/
 │   └── src/
 │       ├── schema.rs             # + progress_token column migration for index_jobs
 │       ├── workspace.rs          # NEW: known_workspaces CRUD, eviction logic
 │       └── jobs.rs               # + progress_token field, interrupted reconciliation, progress data getters
-├── codecompass-mcp/
+├── cruxe-mcp/
 │   └── src/
 │       ├── server.rs             # + workspace routing middleware, notification support
 │       ├── http.rs               # NEW: axum HTTP transport, /health endpoint
@@ -91,7 +91,7 @@ crates/
 │           ├── get_symbol_hierarchy.rs # + workspace param
 │           ├── find_related_symbols.rs # + workspace param
 │           └── get_code_context.rs     # + workspace param
-└── codecompass-cli/
+└── cruxe-cli/
     └── src/
         └── commands/
             └── serve_mcp.rs      # + --transport, --port, --bind, --auto-workspace, --allowed-root flags
@@ -99,7 +99,7 @@ crates/
 
 **Structure Decision**: No new crates. All changes fit within existing crate
 boundaries. `workspace_router.rs` and `http.rs` are new modules within
-`codecompass-mcp`. `workspace.rs` is a new module within `codecompass-state`.
+`cruxe-mcp`. `workspace.rs` is a new module within `cruxe-state`.
 
 ## Implementation Strategy
 

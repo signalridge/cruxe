@@ -15,7 +15,7 @@ Included in every search response when semantic search is available:
 ```json
 {
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
     "indexing_status": "not_indexed | indexing | ready | failed",
     "result_completeness": "complete | partial | truncated",
@@ -89,7 +89,7 @@ Now supports optional semantic/hybrid search for natural language queries.
   "query_intent": "natural_language",
   "total_candidates": 47,
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -242,5 +242,5 @@ ratio = 0.0
 
 | Variable | Description |
 |----------|-------------|
-| `CODECOMPASS_EMBEDDING_API_KEY` | API key for external embedding provider (Voyage, OpenAI). Never logged. |
-| `CODECOMPASS_RERANK_API_KEY` | API key for external rerank provider (Cohere, Voyage). Never logged. |
+| `CRUXE_EMBEDDING_API_KEY` | API key for external embedding provider (Voyage, OpenAI). Never logged. |
+| `CRUXE_RERANK_API_KEY` | API key for external rerank provider (Cohere, Voyage). Never logged. |

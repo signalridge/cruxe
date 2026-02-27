@@ -9,16 +9,16 @@ For now, use the CLI workflow below as the stable fallback.
 ## Fallback Workflow (CLI-first)
 
 ```bash
-codecompass init
-codecompass index
-codecompass doctor
-codecompass search "auth middleware"
-codecompass sync --workspace .
+cruxe init
+cruxe index
+cruxe doctor
+cruxe search "auth middleware"
+cruxe sync --workspace .
 ```
 
 ## Suggested Usage Pattern with Copilot
 
-1. Use CodeCompass CLI commands in terminal for retrieval.
+1. Use Cruxe CLI commands in terminal for retrieval.
 2. Paste focused results (paths/symbols) into Copilot chat.
 3. Ask Copilot to reason over those exact symbols/files.
 
@@ -28,10 +28,10 @@ When your Copilot surface adds MCP config support:
 
 1. Start from `configs/mcp/generic.json`.
 2. Map fields to Copilot MCP schema.
-3. Verify `tools/list` shows the CodeCompass tools.
+3. Verify `tools/list` shows the Cruxe tools.
 
 ## Troubleshooting
 
 - If Copilot cannot call external tools, use CLI fallback above.
-- If search accuracy drops after ref changes, run `codecompass sync`.
-- If symbol lookups fail unexpectedly, run `codecompass doctor`.
+- If search accuracy drops after ref changes, run `cruxe sync`.
+- If symbol lookups fail unexpectedly, run `cruxe doctor`.

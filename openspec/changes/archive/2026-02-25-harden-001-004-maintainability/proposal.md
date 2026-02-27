@@ -75,17 +75,17 @@ before that scale-up.
 ## Impact
 
 - Affected code:
-  - `crates/codecompass-mcp/src/server.rs`
-  - `crates/codecompass-mcp/src/http.rs`
-  - `crates/codecompass-mcp/src/server/tool_calls.rs`
-  - `crates/codecompass-mcp/src/server/tool_calls/*` (post-split)
-  - `crates/codecompass-core/src/config.rs`
-  - `crates/codecompass-core/src/types.rs`
-  - `crates/codecompass-core/src/error.rs`
-  - `crates/codecompass-cli/src/commands/serve_mcp.rs`
-  - `crates/codecompass-state/src/schema.rs`
-  - `crates/codecompass-state/src/edges.rs`
-  - `crates/codecompass-state/src/jobs.rs`
+  - `crates/cruxe-mcp/src/server.rs`
+  - `crates/cruxe-mcp/src/http.rs`
+  - `crates/cruxe-mcp/src/server/tool_calls.rs`
+  - `crates/cruxe-mcp/src/server/tool_calls/*` (post-split)
+  - `crates/cruxe-core/src/config.rs`
+  - `crates/cruxe-core/src/types.rs`
+  - `crates/cruxe-core/src/error.rs`
+  - `crates/cruxe-cli/src/commands/serve_mcp.rs`
+  - `crates/cruxe-state/src/schema.rs`
+  - `crates/cruxe-state/src/edges.rs`
+  - `crates/cruxe-state/src/jobs.rs`
 - Affected specs/docs:
   - `specs/001-core-mvp/*`
   - `specs/002-agent-protocol/*`

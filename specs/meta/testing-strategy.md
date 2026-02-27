@@ -124,11 +124,11 @@ scripts/benchmarks/run_mcp_benchmarks.sh
 Equivalent direct entry points:
 
 ```bash
-cargo test -p codecompass-mcp benchmark_t138_get_file_outline_p95_under_50ms -- --ignored --nocapture
-cargo test -p codecompass-mcp benchmark_t457_first_query_p95_under_400ms -- --ignored --nocapture
-cargo test -p codecompass-mcp benchmark_t457_health_endpoint_p95_under_50ms -- --ignored --nocapture
-cargo test -p codecompass-mcp benchmark_t457_workspace_routing_overhead_p95_under_5ms -- --ignored --nocapture
-cargo test -p codecompass-query --test semantic_phase8_benchmarks -- --ignored --nocapture
+cargo test -p cruxe-mcp benchmark_t138_get_file_outline_p95_under_50ms -- --ignored --nocapture
+cargo test -p cruxe-mcp benchmark_t457_first_query_p95_under_400ms -- --ignored --nocapture
+cargo test -p cruxe-mcp benchmark_t457_health_endpoint_p95_under_50ms -- --ignored --nocapture
+cargo test -p cruxe-mcp benchmark_t457_workspace_routing_overhead_p95_under_5ms -- --ignored --nocapture
+cargo test -p cruxe-query --test semantic_phase8_benchmarks -- --ignored --nocapture
 benchmarks/semantic/run_semantic_benchmarks.sh
 ```
 

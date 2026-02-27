@@ -14,8 +14,8 @@ mkdir -p "${REPO_DIR}"
 cd "${REPO_DIR}"
 
 git init -b main
-git config user.name "CodeCompass Fixture"
-git config user.email "fixture@codecompass.local"
+git config user.name "Cruxe Fixture"
+git config user.email "fixture@cruxe.local"
 
 mkdir -p src
 cat > src/lib.rs <<'EOF'

@@ -123,7 +123,7 @@ with no error surfaced to the user.
 
 **Acceptance Scenarios**:
 
-1. **Given** a Cohere API key is configured via `CODECOMPASS_RERANK_API_KEY` environment
+1. **Given** a Cohere API key is configured via `CRUXE_RERANK_API_KEY` environment
    variable, **When** `search_code` is called with a natural language query, **Then**
    results are reranked by the external provider and scores reflect provider output.
 2. **Given** no API key is configured, **When** `search_code` is called, **Then**
@@ -213,7 +213,7 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
 - **FR-709**: System MUST implement at least one external rerank provider (Cohere Rerank v3
   or Voyage Rerank) behind the `Rerank` trait.
 - **FR-710**: System MUST read rerank API keys from environment variables only
-  (`CODECOMPASS_RERANK_API_KEY`), never from config files, and never log them.
+  (`CRUXE_RERANK_API_KEY`), never from config files, and never log them.
 - **FR-711**: System MUST fall back to local rule-based reranker when external provider
   is unavailable, times out (5s), or returns an error, with `rerank_fallback: true` in
   metadata.

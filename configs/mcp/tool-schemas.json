@@ -2,7 +2,7 @@
   "generated_at": "2026-02-27T07:02:47Z",
   "generator": "scripts/generate_mcp_tool_schemas.sh",
   "source": "tools/list",
-  "binary": "codecompass",
+  "binary": "cruxe",
   "binary_version": "0.1.0",
   "tool_count": 18,
   "tools": [

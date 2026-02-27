@@ -1,4 +1,4 @@
-# CodeCompass
+# Cruxe
 
 Code search and navigation engine for AI coding assistants.
 
@@ -14,7 +14,7 @@ Code search and navigation engine for AI coding assistants.
 ## Installation
 
 ```bash
-cargo install --path crates/codecompass-cli
+cargo install --path crates/cruxe-cli
 ```
 
 ### Prebuilt Releases
@@ -30,28 +30,28 @@ Checksums are published alongside each release.
 ## Quick Start
 
 ```bash
-# Initialize CodeCompass in your project
-codecompass init
+# Initialize Cruxe in your project
+cruxe init
 
 # Index the codebase
-codecompass index
+cruxe index
 
 # Search for symbols or code
-codecompass search "validate_token"
+cruxe search "validate_token"
 
 # Check project health
-codecompass doctor
+cruxe doctor
 ```
 
 ## MCP Configuration
 
-To use CodeCompass as an MCP server (e.g. with Claude Desktop or similar tools), add the following to your MCP client configuration:
+To use Cruxe as an MCP server (e.g. with Claude Desktop or similar tools), add the following to your MCP client configuration:
 
 ```json
 {
   "mcpServers": {
-    "codecompass": {
-      "command": "codecompass",
+    "cruxe": {
+      "command": "cruxe",
       "args": ["serve-mcp", "--workspace", "/path/to/project"]
     }
   }
@@ -72,34 +72,34 @@ Auto-indexing templates: `configs/templates/`
 
 ## Architecture
 
-CodeCompass is a Rust workspace with 6 crates:
+Cruxe is a Rust workspace with 6 crates:
 
 | Crate | Responsibility |
 |-------|---------------|
-| `codecompass-core` | Shared types, constants, config, error types |
-| `codecompass-state` | SQLite (rusqlite) + Tantivy storage layer |
-| `codecompass-indexer` | tree-sitter parsing and per-language symbol extractors |
-| `codecompass-query` | Search, locate, intent classification, ranking |
-| `codecompass-mcp` | MCP JSON-RPC server (stdio transport) |
-| `codecompass-cli` | clap-based CLI entry point |
+| `cruxe-core` | Shared types, constants, config, error types |
+| `cruxe-state` | SQLite (rusqlite) + Tantivy storage layer |
+| `cruxe-indexer` | tree-sitter parsing and per-language symbol extractors |
+| `cruxe-query` | Search, locate, intent classification, ranking |
+| `cruxe-mcp` | MCP JSON-RPC server (stdio transport) |
+| `cruxe-cli` | clap-based CLI entry point |
 
 Storage is fully embedded -- Tantivy for full-text search, SQLite (WAL mode) for structured data. No external services required.
 
 ## CLI Commands
 
 ```
-codecompass init [--path PATH]                      Initialize project configuration
-codecompass index [--path PATH] [--ref REF] [--force]   Index source code
-codecompass sync [--workspace PATH] [--force]           Incremental sync
-codecompass search <query> [--ref REF] [--lang LANG]    Search code in the index
-codecompass doctor [--path PATH]                        Check project health
-codecompass serve-mcp [--workspace PATH]                Start MCP server (stdio transport)
+cruxe init [--path PATH]                      Initialize project configuration
+cruxe index [--path PATH] [--ref REF] [--force]   Index source code
+cruxe sync [--workspace PATH] [--force]           Incremental sync
+cruxe search <query> [--ref REF] [--lang LANG]    Search code in the index
+cruxe doctor [--path PATH]                        Check project health
+cruxe serve-mcp [--workspace PATH]                Start MCP server (stdio transport)
 ```
 
 ## Search Intent Strategy Configuration
 
 Intent classification is configurable via `search.intent` in config TOML (for example in
-`.codecompass/config.toml` or your explicit `--config` file):
+`.cruxe/config.toml` or your explicit `--config` file):
 
 ```toml
 [search.intent]
@@ -120,11 +120,11 @@ Supported `rule_order` values:
 
 Runtime environment variable overrides:
 
-- `CODECOMPASS_SEARCH_INTENT_RULE_ORDER` (CSV list)
-- `CODECOMPASS_SEARCH_INTENT_ERROR_PATTERNS` (CSV list)
-- `CODECOMPASS_SEARCH_INTENT_PATH_EXTENSIONS` (CSV list)
-- `CODECOMPASS_SEARCH_INTENT_SYMBOL_KIND_KEYWORDS` (CSV list)
-- `CODECOMPASS_SEARCH_INTENT_ENABLE_WRAPPED_QUOTED_ERROR_LITERAL` (`true/false`, `1/0`, `yes/no`, `on/off`)
+- `CRUXE_SEARCH_INTENT_RULE_ORDER` (CSV list)
+- `CRUXE_SEARCH_INTENT_ERROR_PATTERNS` (CSV list)
+- `CRUXE_SEARCH_INTENT_PATH_EXTENSIONS` (CSV list)
+- `CRUXE_SEARCH_INTENT_SYMBOL_KIND_KEYWORDS` (CSV list)
+- `CRUXE_SEARCH_INTENT_ENABLE_WRAPPED_QUOTED_ERROR_LITERAL` (`true/false`, `1/0`, `yes/no`, `on/off`)
 
 ## Semantic Query Tuning Configuration
 
@@ -149,14 +149,14 @@ semantic_fanout_multiplier = 3
 
 Relevant environment variable overrides:
 
-- `CODECOMPASS_SEMANTIC_CONFIDENCE_TOP_SCORE_WEIGHT`
-- `CODECOMPASS_SEMANTIC_CONFIDENCE_SCORE_MARGIN_WEIGHT`
-- `CODECOMPASS_SEMANTIC_CONFIDENCE_CHANNEL_AGREEMENT_WEIGHT`
-- `CODECOMPASS_SEMANTIC_LOCAL_RERANK_PHRASE_BOOST`
-- `CODECOMPASS_SEMANTIC_LOCAL_RERANK_TOKEN_OVERLAP_WEIGHT`
-- `CODECOMPASS_SEMANTIC_LIMIT_MULTIPLIER`
-- `CODECOMPASS_SEMANTIC_LEXICAL_FANOUT_MULTIPLIER`
-- `CODECOMPASS_SEMANTIC_SEMANTIC_FANOUT_MULTIPLIER`
+- `CRUXE_SEMANTIC_CONFIDENCE_TOP_SCORE_WEIGHT`
+- `CRUXE_SEMANTIC_CONFIDENCE_SCORE_MARGIN_WEIGHT`
+- `CRUXE_SEMANTIC_CONFIDENCE_CHANNEL_AGREEMENT_WEIGHT`
+- `CRUXE_SEMANTIC_LOCAL_RERANK_PHRASE_BOOST`
+- `CRUXE_SEMANTIC_LOCAL_RERANK_TOKEN_OVERLAP_WEIGHT`
+- `CRUXE_SEMANTIC_LIMIT_MULTIPLIER`
+- `CRUXE_SEMANTIC_LEXICAL_FANOUT_MULTIPLIER`
+- `CRUXE_SEMANTIC_SEMANTIC_FANOUT_MULTIPLIER`
 
 ## Verification
 
@@ -165,7 +165,7 @@ Default deterministic verification lane:
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace -- -D warnings
-CODECOMPASS_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace
+CRUXE_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace
 ```
 
 Runtime-sensitive benchmark lane:
@@ -185,7 +185,7 @@ command -v protoc >/dev/null || {
 protoc --version
 
 cargo clippy --workspace --all-features -- -D warnings
-CODECOMPASS_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace --all-features
+CRUXE_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace --all-features
 ```
 
 ## License

@@ -47,10 +47,10 @@ specs/006-vcs-ga-tooling/
 
 ```text
 crates/
-  codecompass-query/      # diff_context, find_references, explain_ranking
-  codecompass-mcp/        # tool handlers + tools/list registration
-  codecompass-state/      # export/import flows
-  codecompass-cli/        # state export/import + prune-overlays
+  cruxe-query/      # diff_context, find_references, explain_ranking
+  cruxe-mcp/        # tool handlers + tools/list registration
+  cruxe-state/      # export/import flows
+  cruxe-cli/        # state export/import + prune-overlays
 ```
 
 ## Pre-Analysis

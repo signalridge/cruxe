@@ -1,14 +1,14 @@
 ## 1. Baseline Lock and Refactor Safety Net
 
-- [x] 1.1 Add transport-parity regression tests in `crates/codecompass-mcp/src/server/tests.rs` and `crates/codecompass-mcp/src/http.rs` to lock equivalent stdio/http semantics for representative success/error paths.
-- [x] 1.2 Add launcher-behavior regression tests in `crates/codecompass-mcp/src/server/tests.rs` for binary resolution order and env propagation (`CODECOMPASS_INDEX_BIN`, `CODECOMPASS_PROJECT_ID`, `CODECOMPASS_STORAGE_DATA_DIR`, `CODECOMPASS_JOB_ID`).
-- [x] 1.3 Add compatibility snapshot tests for canonical protocol error envelope and canonical metadata enums in `crates/codecompass-mcp/src/server/tests.rs`.
+- [x] 1.1 Add transport-parity regression tests in `crates/cruxe-mcp/src/server/tests.rs` and `crates/cruxe-mcp/src/http.rs` to lock equivalent stdio/http semantics for representative success/error paths.
+- [x] 1.2 Add launcher-behavior regression tests in `crates/cruxe-mcp/src/server/tests.rs` for binary resolution order and env propagation (`CRUXE_INDEX_BIN`, `CRUXE_PROJECT_ID`, `CRUXE_STORAGE_DATA_DIR`, `CRUXE_JOB_ID`).
+- [x] 1.3 Add compatibility snapshot tests for canonical protocol error envelope and canonical metadata enums in `crates/cruxe-mcp/src/server/tests.rs`.
 
 ## 2. Transport-Agnostic Tool Execution Pipeline (004)
 
-- [x] 2.1 Extract shared request execution pipeline in `crates/codecompass-mcp/src/server.rs` (or new shared module) to own workspace resolution, runtime/schema checks, and tool dispatch.
-- [x] 2.2 Refactor stdio path in `crates/codecompass-mcp/src/server.rs` to use the shared execution pipeline with transport-specific decode/encode only.
-- [x] 2.3 Refactor HTTP JSON-RPC path in `crates/codecompass-mcp/src/http.rs` to use the same shared execution pipeline with transport-specific decode/encode only.
+- [x] 2.1 Extract shared request execution pipeline in `crates/cruxe-mcp/src/server.rs` (or new shared module) to own workspace resolution, runtime/schema checks, and tool dispatch.
+- [x] 2.2 Refactor stdio path in `crates/cruxe-mcp/src/server.rs` to use the shared execution pipeline with transport-specific decode/encode only.
+- [x] 2.3 Refactor HTTP JSON-RPC path in `crates/cruxe-mcp/src/http.rs` to use the same shared execution pipeline with transport-specific decode/encode only.
 - [x] 2.4 Verify and update parity tests ensuring equivalent semantic outputs across transports for success, validation errors, and compatibility failures.
 - [x] 2.5 Extract shared health-core assembler used by `GET /health` and `health_check`, while preserving endpoint-specific contract envelopes.
 - [x] 2.6 Extract shared helper(s) for `SchemaStatus -> contract string` mapping and `interrupted_recovery_report` payload construction; remove duplicated inline `match/json` blocks.
@@ -17,7 +17,7 @@
 
 ## 3. Handler Decomposition and Module Boundaries (003)
 
-- [x] 3.1 Split `crates/codecompass-mcp/src/server/tool_calls.rs` into domain modules (`query`, `structure`, `context`, `index`, `health`, `status`, `shared`) while preserving public entrypoint behavior.
+- [x] 3.1 Split `crates/cruxe-mcp/src/server/tool_calls.rs` into domain modules (`query`, `structure`, `context`, `index`, `health`, `status`, `shared`) while preserving public entrypoint behavior.
 - [x] 3.2 Move shared helper logic (metadata build, freshness enforcement, serialization filters, dedup/limit helpers) into stable internal shared modules and remove duplicate logic.
 - [x] 3.3 Preserve and verify 003 tool semantic stability (`get_symbol_hierarchy`, `find_related_symbols`, `get_code_context`) through focused regression tests.
 - [x] 3.4 Continue decomposition from the existing `query_tools` split and complete migration of `health/index/status/structure/context` handlers out of the monolithic dispatcher file.
@@ -25,27 +25,27 @@
 
 ## 4. Unified Index Process Launcher (001/004)
 
-- [x] 4.1 Introduce shared index launcher abstraction in `crates/codecompass-mcp/src/server.rs` (or dedicated module) and migrate `index_repo`/`sync_repo` subprocess start to use it.
-- [x] 4.2 Migrate `bootstrap_and_index` in `crates/codecompass-mcp/src/server.rs` to the same launcher implementation.
+- [x] 4.1 Introduce shared index launcher abstraction in `crates/cruxe-mcp/src/server.rs` (or dedicated module) and migrate `index_repo`/`sync_repo` subprocess start to use it.
+- [x] 4.2 Migrate `bootstrap_and_index` in `crates/cruxe-mcp/src/server.rs` to the same launcher implementation.
 - [x] 4.3 Ensure all launcher call sites use deterministic binary resolution order and required env propagation with consistent error mapping.
 - [x] 4.4 Add integration tests for both explicit index and auto-bootstrap paths to confirm launcher parity.
 
 ## 5. Canonical Protocol Error Mapping (002)
 
-- [x] 5.1 Add centralized typed protocol error code mapping in `crates/codecompass-core/src/error.rs` (or equivalent shared location) aligned with `specs/meta/protocol-error-codes.md`.
-- [x] 5.2 Replace ad-hoc string error codes in `crates/codecompass-mcp/src/server.rs`, `crates/codecompass-mcp/src/server/tool_calls.rs`, and `crates/codecompass-mcp/src/http.rs` with the centralized mapping.
+- [x] 5.1 Add centralized typed protocol error code mapping in `crates/cruxe-core/src/error.rs` (or equivalent shared location) aligned with `specs/meta/protocol-error-codes.md`.
+- [x] 5.2 Replace ad-hoc string error codes in `crates/cruxe-mcp/src/server.rs`, `crates/cruxe-mcp/src/server/tool_calls.rs`, and `crates/cruxe-mcp/src/http.rs` with the centralized mapping.
 - [x] 5.3 Add test coverage to guarantee stdio and HTTP return canonical, transport-consistent `error.code` for equivalent failure classes.
 
 ## 6. Config Normalization and Legacy Compatibility (002)
 
-- [x] 6.1 Add typed normalization helpers for explainability/freshness config in `crates/codecompass-core/src/config.rs` and keep canonical runtime values.
+- [x] 6.1 Add typed normalization helpers for explainability/freshness config in `crates/cruxe-core/src/config.rs` and keep canonical runtime values.
 - [x] 6.2 Ensure legacy `debug.ranking_reasons` compatibility maps deterministically to canonical `ranking_explain_level` behavior.
-- [x] 6.3 Add/expand config-loading tests in `crates/codecompass-core/src/config.rs` for invalid values fallback and legacy compatibility behavior.
+- [x] 6.3 Add/expand config-loading tests in `crates/cruxe-core/src/config.rs` for invalid values fallback and legacy compatibility behavior.
 
 ## 7. Performance Verification Layer Split (004)
 
 - [x] 7.1 Define benchmark harness entrypoints and fixture policy for p95 verification in repository benchmark tooling (new benchmark module/path), referencing `specs/meta/benchmark-targets.md`.
-- [x] 7.2 Move environment-sensitive p95 assertions out of flaky integration assertions while retaining deterministic smoke guards in `crates/codecompass-mcp/src/server/tests.rs`, `crates/codecompass-mcp/src/http.rs`, and `crates/codecompass-mcp/src/workspace_router.rs`.
+- [x] 7.2 Move environment-sensitive p95 assertions out of flaky integration assertions while retaining deterministic smoke guards in `crates/cruxe-mcp/src/server/tests.rs`, `crates/cruxe-mcp/src/http.rs`, and `crates/cruxe-mcp/src/workspace_router.rs`.
 - [x] 7.3 Document benchmark invocation and acceptance thresholds in `specs/meta/testing-strategy.md` and/or developer docs.
 
 ## 8. Repository Governance Automation (new capability)
@@ -64,7 +64,7 @@
 
 ## 10. Runtime Connection Lifecycle Management (P1)
 
-- [x] 10.1 Introduce a lightweight runtime SQLite `ConnectionManager` (or equivalent) in `crates/codecompass-mcp/src/server.rs` and/or `crates/codecompass-mcp/src/http.rs` for lazy open, reuse, and reconnect behavior.
+- [x] 10.1 Introduce a lightweight runtime SQLite `ConnectionManager` (or equivalent) in `crates/cruxe-mcp/src/server.rs` and/or `crates/cruxe-mcp/src/http.rs` for lazy open, reuse, and reconnect behavior.
 - [x] 10.2 Refactor stdio and HTTP request paths to consume the same connection lifecycle abstraction instead of repeated per-request open calls.
 - [x] 10.3 Add regression tests for connection failure/reopen semantics and ensure protocol error behavior remains stable.
 
@@ -76,13 +76,13 @@
 
 ## 12. Graph Query Readiness Foundations (006/007 prework)
 
-- [x] 12.1 Add/verify SQLite index strategy for `symbol_edges` hot queries in `crates/codecompass-state/src/schema.rs` and related query modules (`from/to + edge_type` combinations).
-- [x] 12.2 Add query-shape regression tests in `crates/codecompass-state/src/edges.rs` for forward and reverse lookups to validate index-backed access patterns.
+- [x] 12.1 Add/verify SQLite index strategy for `symbol_edges` hot queries in `crates/cruxe-state/src/schema.rs` and related query modules (`from/to + edge_type` combinations).
+- [x] 12.2 Add query-shape regression tests in `crates/cruxe-state/src/edges.rs` for forward and reverse lookups to validate index-backed access patterns.
 - [x] 12.3 Document `symbol_edges` query/index expectations in corresponding spec docs for 006/007 readiness.
 
 ## 13. Semantic Config Typed Substructure Foundations (008 prework)
 
-- [x] 13.1 Extend `crates/codecompass-core/src/config.rs` with typed config substructures for semantic feature gates (`semantic_mode`, profile selection, profile-specific overrides) while preserving legacy compatibility.
+- [x] 13.1 Extend `crates/cruxe-core/src/config.rs` with typed config substructures for semantic feature gates (`semantic_mode`, profile selection, profile-specific overrides) while preserving legacy compatibility.
 - [x] 13.2 Add normalization and compatibility tests for semantic config parsing (canonical values, invalid fallback, legacy mapping behavior).
 - [x] 13.3 Update `specs/008-semantic-hybrid/*` docs to align semantic config contracts with typed runtime structure decisions.
 

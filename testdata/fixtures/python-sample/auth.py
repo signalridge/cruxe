@@ -39,7 +39,7 @@ class TokenClaims:
         role: Role,
         exp: float,
         iat: float,
-        issuer: str = "codecompass",
+        issuer: str = "cruxe",
     ) -> None:
         self.sub = sub
         self.role = role

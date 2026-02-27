@@ -22,7 +22,7 @@
 - [x] T416 [US1] Create GitHub Actions release workflow in `.github/workflows/release.yml`: tag-triggered cargo-dist release pipeline with changelog + checksums + GH release publish
 - [x] T417 [P] [US1] Create GitHub Actions CI workflow in `.github/workflows/ci.yml`: ensured push/PR coverage, cargo test/clippy/fmt checks, Linux/macOS build matrix, and auto-index hook template test job
 - [x] T418 [US1] Test release workflow: created test tags (e.g. `v0.1.0-rc.0-009-test-20260227u`) and verified release workflow success with 5 platform binaries + `.sha256` artifacts + generated release notes
-- [x] T419 [P] [US1] Verify static linking: `release-e2e` Linux job extracts musl archive, runs `codecompass --version`, and validates `ldd` output has no unresolved shared libraries
+- [x] T419 [P] [US1] Verify static linking: `release-e2e` Linux job extracts musl archive, runs `cruxe --version`, and validates `ldd` output has no unresolved shared libraries
 
 **Checkpoint**: Tag push produces GitHub release with 5 platform binaries + checksums + changelog
 
@@ -33,12 +33,12 @@
 **Purpose**: Homebrew distribution for macOS (and Linux Homebrew) users
 
 - [x] T420 [US2] Create Homebrew tap repository: verified `signalridge/homebrew-tap` exists on GitHub and contains initial `README.md`
-- [x] T421 [US2] Write Homebrew formula in `Formula/codecompass.rb`: added multi-platform formula template with URL/checksum slots and `codecompass --version` test block
+- [x] T421 [US2] Write Homebrew formula in `Formula/cruxe.rb`: added multi-platform formula template with URL/checksum slots and `cruxe --version` test block
 - [x] T422 [US2] Create Homebrew auto-update workflow in `.github/workflows/homebrew-update.yml`: added release/workflow_dispatch updater that opens a PR against `signalridge/homebrew-tap`
-- [x] T423 [US2] Test Homebrew formula: CI `homebrew-audit-install` job runs `brew install --build-from-source signalridge/tap/codecompass`, then verifies `codecompass --version` and `codecompass doctor`
-- [x] T424 [US2] Run `brew audit --strict Formula/codecompass.rb` and fix any issues: CI `homebrew-audit-install` executes `brew audit --strict signalridge/tap/codecompass` successfully
+- [x] T423 [US2] Test Homebrew formula: CI `homebrew-audit-install` job runs `brew install --build-from-source signalridge/tap/cruxe`, then verifies `cruxe --version` and `cruxe doctor`
+- [x] T424 [US2] Run `brew audit --strict Formula/cruxe.rb` and fix any issues: CI `homebrew-audit-install` executes `brew audit --strict signalridge/tap/cruxe` successfully
 
-**Checkpoint**: `brew install signalridge/tap/codecompass` works, auto-updates on release
+**Checkpoint**: `brew install signalridge/tap/cruxe` works, auto-updates on release
 
 ---
 
@@ -75,12 +75,12 @@
 
 **Purpose**: Reference configurations for automatic indexing in common project types
 
-- [x] T436 [P] [US5] Create Rust auto-indexing template in `configs/templates/rust/`: added `.codecompassignore` + fail-soft hook templates
-- [x] T437 [P] [US5] Create TypeScript auto-indexing template in `configs/templates/typescript/`: added `.codecompassignore` + fail-soft hook templates
-- [x] T438 [P] [US5] Create Python auto-indexing template in `configs/templates/python/`: added `.codecompassignore` + fail-soft hook templates
-- [x] T439 [P] [US5] Create Go auto-indexing template in `configs/templates/go/`: added `.codecompassignore` + fail-soft hook templates
-- [x] T440 [P] [US5] Create monorepo auto-indexing template in `configs/templates/monorepo/`: added `.codecompassignore` + fail-soft hook templates
-- [x] T441 [US5] Add error handling to all git hook templates: hooks log to `~/.codecompass/logs/hook.log` and always exit `0`
+- [x] T436 [P] [US5] Create Rust auto-indexing template in `configs/templates/rust/`: added `.cruxeignore` + fail-soft hook templates
+- [x] T437 [P] [US5] Create TypeScript auto-indexing template in `configs/templates/typescript/`: added `.cruxeignore` + fail-soft hook templates
+- [x] T438 [P] [US5] Create Python auto-indexing template in `configs/templates/python/`: added `.cruxeignore` + fail-soft hook templates
+- [x] T439 [P] [US5] Create Go auto-indexing template in `configs/templates/go/`: added `.cruxeignore` + fail-soft hook templates
+- [x] T440 [P] [US5] Create monorepo auto-indexing template in `configs/templates/monorepo/`: added `.cruxeignore` + fail-soft hook templates
+- [x] T441 [US5] Add error handling to all git hook templates: hooks log to `~/.cruxe/logs/hook.log` and always exit `0`
 - [x] T442 [US5] Write test: added `tests/test_auto_indexing_hook_templates.sh` and wired it into CI
 
 **Checkpoint**: Template git hooks auto-sync the index on commit
@@ -91,11 +91,11 @@
 
 **Purpose**: End-to-end validation of the full distribution pipeline
 
-- [x] T443 End-to-end test on macOS arm64: downloaded `codecompass-aarch64-apple-darwin.tar.gz`, verified `init + index + search`, and confirmed `serve-mcp` startup log (`MCP server started`)
-- [x] T444 [P] End-to-end test on Linux x86_64: validated in `docker run --platform linux/amd64 ubuntu:latest` using release binary `codecompass-x86_64-unknown-linux-musl.tar.gz` with successful `init + index + search`
+- [x] T443 End-to-end test on macOS arm64: downloaded `cruxe-aarch64-apple-darwin.tar.gz`, verified `init + index + search`, and confirmed `serve-mcp` startup log (`MCP server started`)
+- [x] T444 [P] End-to-end test on Linux x86_64: validated in `docker run --platform linux/amd64 ubuntu:latest` using release binary `cruxe-x86_64-unknown-linux-musl.tar.gz` with successful `init + index + search`
 - [x] T445 [P] End-to-end test on Windows x86_64: `release-e2e` Windows job downloads release zip and verifies `init + index + search` on `windows-2022`
-- [x] T446 Verify Homebrew formula: `release-e2e` macOS job verifies `brew install signalridge/tap/codecompass` and `codecompass doctor`
-- [x] T447 [P] Validate all MCP config templates: verified all templates map to `codecompass serve-mcp --workspace ${CODECOMPASS_WORKSPACE}` and confirmed tools are listed via `tools/list` (18 tools)
+- [x] T446 Verify Homebrew formula: `release-e2e` macOS job verifies `brew install signalridge/tap/cruxe` and `cruxe doctor`
+- [x] T447 [P] Validate all MCP config templates: verified all templates map to `cruxe serve-mcp --workspace ${CRUXE_WORKSPACE}` and confirmed tools are listed via `tools/list` (18 tools)
 - [x] T448 [P] Proofread all integration guides: reviewed command paths/steps and ensured guide structure consistency
 - [x] T449 Validate `configs/mcp/tool-schemas.json` against MCP specification: schema generated from MCP `tools/list`, JSON-validated, and documented with regeneration/validation commands
 - [x] T450 [P] Verify changelog generation: created 10 conventional commits in a temp repo, tagged `v0.0.1`, and verified `git-cliff` groups output into `Features`, `Fixes`, and `Documentation`

@@ -35,13 +35,13 @@ jobs:
         run: |
           mkdir -p artifacts
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'codecompass-x86_64-unknown-linux-musl.tar.gz' --dir artifacts
+            --pattern 'cruxe-x86_64-unknown-linux-musl.tar.gz' --dir artifacts
 
       - name: Verify static linking and Linux E2E
         run: |
           set -euo pipefail
-          tar -xzf artifacts/codecompass-x86_64-unknown-linux-musl.tar.gz -C artifacts
-          BIN="$PWD/artifacts/codecompass-x86_64-unknown-linux-musl/codecompass"
+          tar -xzf artifacts/cruxe-x86_64-unknown-linux-musl.tar.gz -C artifacts
+          BIN="$PWD/artifacts/cruxe-x86_64-unknown-linux-musl/cruxe"
           chmod +x "$BIN"
 
           "$BIN" --version
@@ -91,15 +91,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern 'codecompass-x86_64-pc-windows-msvc.zip' --dir artifacts
-          Expand-Archive -Path artifacts\codecompass-x86_64-pc-windows-msvc.zip -DestinationPath artifacts -Force
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern 'cruxe-x86_64-pc-windows-msvc.zip' --dir artifacts
+          Expand-Archive -Path artifacts\cruxe-x86_64-pc-windows-msvc.zip -DestinationPath artifacts -Force
 
       - name: Windows E2E
         shell: pwsh
         run: |
-          $bin = (Get-ChildItem -Path artifacts -Recurse -Filter codecompass.exe | Select-Object -First 1).FullName
+          $bin = (Get-ChildItem -Path artifacts -Recurse -Filter cruxe.exe | Select-Object -First 1).FullName
           if (-not $bin) {
-            Write-Error "codecompass.exe not found in extracted release artifact"
+            Write-Error "cruxe.exe not found in extracted release artifact"
             exit 1
           }
           & $bin --version
@@ -139,7 +139,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAP_DIR="${RUNNER_TEMP}/codecompass-tap"
+          TAP_DIR="${RUNNER_TEMP}/cruxe-tap"
           mkdir -p "${TAP_DIR}/Formula"
           echo "TAP_DIR=${TAP_DIR}" >> "$GITHUB_ENV"
 
@@ -236,10 +236,10 @@ jobs:
             exit 1
           fi
 
-          cat > "${TAP_DIR}/Formula/codecompass.rb" <<RUBY
-          class Codecompass < Formula
+          cat > "${TAP_DIR}/Formula/cruxe.rb" <<RUBY
+          class Cruxe < Formula
             desc "Code search and navigation engine for AI coding assistants"
-            homepage "https://github.com/signalridge/codecompass"
+            homepage "https://github.com/signalridge/cruxe"
             version "${TAG#v}"
             license "MIT"
 
@@ -264,11 +264,11 @@ jobs:
             end
 
             def install
-              bin.install "codecompass"
+              bin.install "cruxe"
             end
 
             test do
-              output = shell_output("#{bin}/codecompass --version")
+              output = shell_output("#{bin}/cruxe --version")
               assert_match(version.to_s, output)
             end
           end
@@ -279,8 +279,8 @@ jobs:
             git init -q
             git config user.name ci
             git config user.email ci@example.com
-            git add Formula/codecompass.rb
-            git commit -q -m "Add codecompass formula for ${TAG}"
+            git add Formula/cruxe.rb
+            git commit -q -m "Add cruxe formula for ${TAG}"
           )
 
       - name: Homebrew audit and install verification
@@ -288,9 +288,9 @@ jobs:
           set -euo pipefail
           brew untap signalridge/tap >/dev/null 2>&1 || true
           brew tap --custom-remote signalridge/tap "$TAP_DIR"
-          brew audit --strict signalridge/tap/codecompass
-          brew install --build-from-source signalridge/tap/codecompass
-          codecompass --version
+          brew audit --strict signalridge/tap/cruxe
+          brew install --build-from-source signalridge/tap/cruxe
+          cruxe --version
 
           mkdir -p sample/src
           cat > sample/src/lib.rs <<'RS'
@@ -306,9 +306,9 @@ jobs:
             git commit -q -m 'init'
           )
 
-          codecompass init --path "$PWD/sample"
-          codecompass index --path "$PWD/sample"
+          cruxe init --path "$PWD/sample"
+          cruxe index --path "$PWD/sample"
           (
             cd sample
-            codecompass doctor
+            cruxe doctor
           )

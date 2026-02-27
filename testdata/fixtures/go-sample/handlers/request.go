@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log"
 
-	"codecompass/auth"
-	"codecompass/config"
-	"codecompass/database"
+	"cruxe/auth"
+	"cruxe/config"
+	"cruxe/database"
 )
 
 // Request represents a simplified HTTP request.

@@ -52,11 +52,11 @@ specs/005-vcs-core/
 
 ```text
 crates/
-  codecompass-vcs/             # VcsAdapter + Git2 + worktree leases
-  codecompass-indexer/         # overlay lifecycle, staging, sync_incremental
-  codecompass-query/           # tombstones + overlay_merge + VCS routing
-  codecompass-state/           # branch/tombstone/lease state tables
-  codecompass-mcp/             # core routing updates for search/locate
+  cruxe-vcs/             # VcsAdapter + Git2 + worktree leases
+  cruxe-indexer/         # overlay lifecycle, staging, sync_incremental
+  cruxe-query/           # tombstones + overlay_merge + VCS routing
+  cruxe-state/           # branch/tombstone/lease state tables
+  cruxe-mcp/             # core routing updates for search/locate
 ```
 
 ## Pre-Analysis

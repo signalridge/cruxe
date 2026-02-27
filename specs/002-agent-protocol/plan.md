@@ -56,20 +56,20 @@ or technology decisions. The 001-core-mvp data model is referenced as-is.
 
 ```text
 crates/
-├── codecompass-core/
+├── cruxe-core/
 │   └── src/
 │       └── types.rs          # Add DetailLevel enum, FreshnessPolicy enum, RankingReasons struct
-├── codecompass-query/
+├── cruxe-query/
 │   └── src/
 │       ├── ranking.rs        # Add ranking_reasons collection to reranker
 │       ├── freshness.rs      # NEW: pre-query freshness check + policy logic
 │       ├── search.rs         # Add detail_level/compact/freshness_policy params
 │       └── locate.rs         # Add detail_level/compact params
-├── codecompass-state/
+├── cruxe-state/
 │   └── src/
 │       ├── symbols.rs        # Add get_file_outline query (SQLite)
 │       └── tantivy_index.rs  # Add prewarm logic
-├── codecompass-mcp/
+├── cruxe-mcp/
 │   └── src/
 │       ├── tools/
 │       │   ├── mod.rs        # Register get_file_outline, health_check
@@ -79,7 +79,7 @@ crates/
 │       │   └── health_check.rs      # NEW: health check tool handler
 │       ├── protocol.rs       # Add RankingReasons to metadata, DetailLevel to input schemas
 │       └── server.rs         # Add prewarm call before accepting connections
-└── codecompass-cli/
+└── cruxe-cli/
     └── src/
         └── commands/
             └── serve_mcp.rs  # Add --no-prewarm flag

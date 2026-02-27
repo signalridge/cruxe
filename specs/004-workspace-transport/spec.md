@@ -25,9 +25,9 @@
 
 An AI coding agent working across multiple projects in the same session sends a
 `search_code` request with a `workspace` parameter pointing to a second project.
-CodeCompass resolves the workspace, routes the query to the correct project index,
+Cruxe resolves the workspace, routes the query to the correct project index,
 and returns results scoped to that workspace. If the workspace has not been indexed
-yet and `--auto-workspace` is enabled, CodeCompass triggers on-demand indexing and
+yet and `--auto-workspace` is enabled, Cruxe triggers on-demand indexing and
 returns partial results with appropriate status metadata. When MCP server startup
 pins a workspace context, the server auto-injects that workspace for requests that
 omit `workspace`.
@@ -36,7 +36,7 @@ omit `workspace`.
 single session. Without multi-workspace support, users must restart the MCP server
 or run separate instances per project, creating friction.
 
-**Independent Test**: Start `codecompass serve-mcp --auto-workspace --allowed-root /tmp`,
+**Independent Test**: Start `cruxe serve-mcp --auto-workspace --allowed-root /tmp`,
 send a `search_code` request with `workspace: "/tmp/project-b"` (a valid but
 unindexed repo), verify the response includes `indexing_status: "indexing"` and
 a subsequent query returns indexed results.
@@ -61,7 +61,7 @@ a subsequent query returns indexed results.
    **When** the path is resolved via `realpath`, **Then** it resolves to `/etc/passwd`,
    fails the `--allowed-root` check, and returns `workspace_not_allowed`.
 6. **Given** the `workspace` parameter is omitted, **When** any tool is called,
-   **Then** the default registered project (from `codecompass init`) is used.
+   **Then** the default registered project (from `cruxe init`) is used.
 7. **Given** `--auto-workspace` is enabled, **When** 10 workspaces are already
    auto-discovered and an 11th is requested, **Then** the least-recently-used
    workspace is evicted before registering the new one (configurable max).
@@ -117,8 +117,8 @@ emitted before the completion notification.
 
 ### User Story 3 - HTTP Transport Mode (Priority: P2)
 
-A developer wants to share a single CodeCompass instance across multiple terminal
-sessions or tools. They start `codecompass serve-mcp --transport http --port 9100`
+A developer wants to share a single Cruxe instance across multiple terminal
+sessions or tools. They start `cruxe serve-mcp --transport http --port 9100`
 and configure their AI agents to connect via HTTP. The `/health` endpoint confirms
 the server is ready before the agent sends tool requests.
 
@@ -126,7 +126,7 @@ the server is ready before the agent sends tool requests.
 HTTP transport enables multi-client scenarios (multiple editors, CI integration,
 shared team workstation) without running separate server instances.
 
-**Independent Test**: Start `codecompass serve-mcp --transport http --port 9100`,
+**Independent Test**: Start `cruxe serve-mcp --transport http --port 9100`,
 `curl http://127.0.0.1:9100/health` returns 200 with status `"ready"`, then send
 an MCP `tools/list` request via HTTP POST and verify the response.
 
@@ -186,7 +186,7 @@ an MCP `tools/list` request via HTTP POST and verify the response.
 - **FR-300**: All query/path MCP tools (existing and future additions) MUST accept an
   optional `workspace` string parameter specifying the target workspace path.
 - **FR-301**: When `workspace` is omitted, the system MUST use the default registered
-  project (from `codecompass init` or `--workspace` flag on startup).
+  project (from `cruxe init` or `--workspace` flag on startup).
 - **FR-302**: When `workspace` points to an indexed project, the system MUST route
   queries to that project's indices.
 - **FR-303**: When `workspace` points to an unknown path and `--auto-workspace` is

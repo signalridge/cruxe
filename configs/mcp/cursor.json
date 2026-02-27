@@ -1,15 +1,15 @@
 {
   "mcpServers": {
-    "codecompass": {
-      "command": "codecompass",
+    "cruxe": {
+      "command": "cruxe",
       "args": [
         "serve-mcp",
         "--workspace",
-        "${CODECOMPASS_WORKSPACE}"
+        "${CRUXE_WORKSPACE}"
       ],
       "env": {
         "RUST_LOG": "error",
-        "CODECOMPASS_CONFIG": "${CODECOMPASS_CONFIG}"
+        "CRUXE_CONFIG": "${CRUXE_CONFIG}"
       }
     }
   }

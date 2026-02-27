@@ -21,7 +21,7 @@ Starting in v0.3.0, all MCP tools accept an optional `workspace` parameter.
 
 ### Workspace Resolution Logic
 
-1. `workspace` omitted -> use default project (from `codecompass init` or `--workspace` startup flag).
+1. `workspace` omitted -> use default project (from `cruxe init` or `--workspace` startup flag).
 2. `workspace` is a known registered project -> route to that project's indices.
 3. `workspace` is unknown + `--auto-workspace` disabled -> return `workspace_not_registered` error.
 4. `workspace` is unknown + `--auto-workspace` enabled:
@@ -248,9 +248,9 @@ with this job. Clients can also use this token to query `index_status`.
 ### Server Startup
 
 ```bash
-codecompass serve-mcp --transport http --port 9100
-codecompass serve-mcp --transport http --port 9100 --bind 0.0.0.0
-codecompass serve-mcp --transport http --port 9100 --auto-workspace --allowed-root /home/dev
+cruxe serve-mcp --transport http --port 9100
+cruxe serve-mcp --transport http --port 9100 --bind 0.0.0.0
+cruxe serve-mcp --transport http --port 9100 --auto-workspace --allowed-root /home/dev
 ```
 
 ### `GET /health`
@@ -306,7 +306,7 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
 | `projects[].ref` | string | Current default ref for this project. |
 | `projects[].file_count` | int | Number of indexed files. |
 | `projects[].symbol_count` | int | Number of indexed symbols. |
-| `version` | string | CodeCompass version. |
+| `version` | string | Cruxe version. |
 | `uptime_seconds` | int | Seconds since server started. |
 | `interrupted_recovery_report` | object/null | Startup reconciliation report (same shape as `index_status`). Null when no interrupted jobs were detected. |
 | `workspace_warmset` | object | Warmset status for startup prewarm optimization (capacity is configurable; examples use `3`). |
@@ -407,7 +407,7 @@ Minimum mapping requirements:
 ## CLI Flags (Updated `serve-mcp`)
 
 ```
-codecompass serve-mcp [OPTIONS]
+cruxe serve-mcp [OPTIONS]
 
 Options:
   --transport <TRANSPORT>      Transport mode [default: stdio] [values: stdio, http]

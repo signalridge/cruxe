@@ -46,8 +46,8 @@ Out of scope:
 
 Each template in `configs/mcp/*.json` MUST:
 
-- define one `codecompass` MCP server entry;
-- invoke `codecompass serve-mcp` (stdio mode by default);
+- define one `cruxe` MCP server entry;
+- invoke `cruxe serve-mcp` (stdio mode by default);
 - include an overridable workspace/project path parameter;
 - avoid embedding secrets or host-specific absolute paths.
 

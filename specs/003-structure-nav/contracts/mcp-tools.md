@@ -19,7 +19,7 @@ Included in every tool response:
 ```json
 {
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
     "indexing_status": "not_indexed | indexing | ready | failed",
     "result_completeness": "complete | partial | truncated",
@@ -330,7 +330,7 @@ enabling agents to manage their context window explicitly.
     "total_candidates": 12,
     "returned": 3,
     "strategy": "breadth",
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -365,7 +365,7 @@ enabling agents to manage their context window explicitly.
     "total_candidates": 12,
     "returned": 1,
     "strategy": "depth",
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -389,7 +389,7 @@ When the token budget is reached before all candidates are included:
     "remaining_candidates": 35,
     "strategy": "breadth",
     "suggestion": "Use locate_symbol for specific symbols, or increase max_tokens",
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "partial",

@@ -107,7 +107,7 @@ includes a `ranking_reasons` field:
 {
   "results": [ ... ],
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "indexing_status": "ready",
     "result_completeness": "complete",
@@ -245,7 +245,7 @@ against the `symbol_relations` table — no Tantivy involvement.
     }
   ],
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh",
     "ref": "main",
     "symbol_count": 8
@@ -329,7 +329,7 @@ Return project-level operational status for the server's default project.
     }
   ],
   "metadata": {
-    "codecompass_protocol_version": "1.0"
+    "cruxe_protocol_version": "1.0"
   }
 }
 ```
@@ -352,7 +352,7 @@ If `startup_checks.index.status` is:
 - `compatible`: query tools proceed normally.
 - `not_indexed`: query tools may return empty/partial results until indexing completes.
 - `reindex_required` or `corrupt_manifest`: query tools return `index_incompatible`
-  with remediation guidance (`codecompass index --force`).
+  with remediation guidance (`cruxe index --force`).
 
 ### Active Job Shape (when present)
 
@@ -389,7 +389,7 @@ If `startup_checks.index.status` is:
 
 | Command | Change |
 |---------|--------|
-| `codecompass serve-mcp` | Add `--no-prewarm` flag to disable Tantivy index prewarming on startup |
+| `cruxe serve-mcp` | Add `--no-prewarm` flag to disable Tantivy index prewarming on startup |
 
 Config file additions (`config.toml`):
 

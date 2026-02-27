@@ -1,6 +1,6 @@
-# CodeCompass - Design Specification
+# Cruxe - Design Specification
 
-> Authoritative design specifications for CodeCompass. Cross-cutting project documents live in sibling files within specs/meta/.
+> Authoritative design specifications for Cruxe. Cross-cutting project documents live in sibling files within specs/meta/.
 
 ## Related Documents
 
@@ -16,7 +16,7 @@
 
 ## 1. Executive Decision
 
-CodeCompass will be built with a **Rust-first, zero-external-service architecture**:
+Cruxe will be built with a **Rust-first, zero-external-service architecture**:
 
 - `Rust` for CLI, indexer, query planner, and MCP server.
 - `Tantivy` (embedded) as the default full-text search backend for v1.
@@ -51,7 +51,7 @@ Tantivy (embedded Rust full-text search engine, equivalent to Lucene) is selecte
 
 Rationale:
 
-1. **True single binary**: `cargo install codecompass` works without installing/running a separate service.
+1. **True single binary**: `cargo install cruxe` works without installing/running a separate service.
    Meilisearch requires a separate process, port management, health checks, and version compatibility.
 2. **Branch overlay via index segments**: Tantivy's segment model maps naturally to the base+overlay
    indexing strategy. Each branch overlay can be an isolated segment set, merged at query time.
@@ -73,11 +73,11 @@ No existing open-source project delivers all three of:
 2. **Symbol-level precision (`file:line`)** — most alternatives return text chunks, not code entities.
 3. **Zero external service dependency** — most require Meilisearch, Elasticsearch, Qdrant, or cloud APIs.
 
-This is the defensible gap CodeCompass fills.
+This is the defensible gap Cruxe fills.
 
 ### 1.3 Storage architecture decision: Tantivy + SQLite (no LMDB)
 
-CodeCompass uses exactly two embedded storage engines. No third storage layer is needed.
+Cruxe uses exactly two embedded storage engines. No third storage layer is needed.
 
 | Layer | Engine | Purpose |
 |-------|--------|---------|
@@ -87,7 +87,7 @@ CodeCompass uses exactly two embedded storage engines. No third storage layer is
 **Why not LMDB**:
 
 LMDB is an embedded key-value store (mmap-based B+tree) used internally by Meilisearch.
-It is not relevant to CodeCompass because:
+It is not relevant to Cruxe because:
 
 1. Tantivy has its own storage format (segment files, similar to Lucene). It does not use or need LMDB.
 2. SQLite provides relational queries (JOIN, WHERE, GROUP BY, CTE) required for the symbol relation
@@ -99,7 +99,7 @@ It is not relevant to CodeCompass because:
 Same reasoning: Tantivy owns search storage, SQLite owns structured data.
 A third KV store adds complexity without new capability.
 
-**SQLite configuration for CodeCompass**:
+**SQLite configuration for Cruxe**:
 
 ```sql
 PRAGMA journal_mode = WAL;          -- concurrent read/write without blocking
@@ -177,13 +177,13 @@ Elastic semantic code search, and Context-Engine-AI:
 
 1. **No open-source project does branch-aware search**.
    All candidates index a single snapshot. Branch isolation, overlay merging,
-   and VCS transition correctness are unique to CodeCompass.
+   and VCS transition correctness are unique to Cruxe.
 
 2. **Chunk-level vs. symbol-level granularity gap**.
    VibeRAG, mcp-local-rag, and mcp-rag-server all return text chunks.
    Augment MCP returns "relevant context" without structured location data.
    Serena provides symbol-level navigation but depends on LSP, not a search index.
-   CodeCompass's tree-sitter-based symbol index with `file:line` precision fills this gap.
+   Cruxe's tree-sitter-based symbol index with `file:line` precision fills this gap.
 
 3. **Augment's "intelligent context trimming" is a token budget problem**.
    Augment's value proposition includes "smart compression" of context for agents.
@@ -192,17 +192,17 @@ Elastic semantic code search, and Context-Engine-AI:
 
 4. **External service dependency is the norm, not the exception**.
    Meilisearch, Elasticsearch, Qdrant, AWS Bedrock, Zilliz Cloud — every candidate
-   requires at least one external service. CodeCompass with Tantivy embedded is the
+   requires at least one external service. Cruxe with Tantivy embedded is the
    only zero-dependency option.
 
 5. **MCP security is an unsolved ecosystem problem**.
    Prompt injection, tool chain RCE, DNS rebinding — all documented in the wild.
    mcp-rag-server's REPO_ROOT constraint + DNS rebinding protection + /health readiness
-   is the best reference baseline. CodeCompass must match or exceed this.
+   is the best reference baseline. Cruxe must match or exceed this.
 
 6. **VibeRAG's intent-routed retrieval is the right design pattern**.
    Classifying queries into definitions/files/blocks/usages before retrieval
-   (rather than one-size-fits-all search) aligns with CodeCompass's query intent router.
+   (rather than one-size-fits-all search) aligns with Cruxe's query intent router.
 
 7. **Sourcebot and Serena show that structural code understanding (not just text search)
    is the quality differentiator**. Goto definition, find references, call graph —
@@ -216,31 +216,31 @@ Elastic semantic code search, and Context-Engine-AI:
 
 Second-pass investigation of `zilliztech/claude-context` and
 `yoanbernabeu/grepai` confirms several patterns worth standardizing in
-CodeCompass now (not as optional backlog notes):
+Cruxe now (not as optional backlog notes):
 
 1. **Background indexing + explicit status state machine is table-stakes**.
    `claude-context` exposes clear indexing lifecycle states and allows search while
-   indexing with partial-result messaging. CodeCompass should keep non-blocking
+   indexing with partial-result messaging. Cruxe should keep non-blocking
    indexing and standardize status semantics across all tools.
 
 2. **Watcher UX matters as much as retrieval quality**.
    `grepai` makes freshness practical with one command surface (`watch`,
    `--background`, `--status`, `--stop`) and debounced incremental updates.
-   CodeCompass should adopt the same lifecycle ergonomics in Rust-first form.
+   Cruxe should adopt the same lifecycle ergonomics in Rust-first form.
 
 3. **Structural path boost should be default-on for code agents**.
    `grepai` path-based penalties/bonuses (tests/mocks/generated/docs down;
-   `src/lib/app` up) are simple and effective. CodeCompass should codify this as
+   `src/lib/app` up) are simple and effective. Cruxe should codify this as
    deterministic ranking policy, not an experimental option.
 
 4. **Token-thrifty output modes are now mandatory**.
    `grepai` compact/TOON patterns and `claude-context` partial-state messaging both
-   reduce agent retries and token burn. CodeCompass should pair `detail_level` with
+   reduce agent retries and token burn. Cruxe should pair `detail_level` with
    `compact` serialization and explicit truncation metadata.
 
 5. **Semantic should remain optional and local-first**.
    `claude-context` quality often depends on external vector infrastructure.
-   CodeCompass should preserve zero-external-service default and gate semantic
+   Cruxe should preserve zero-external-service default and gate semantic
    behind `off | rerank_only | hybrid`, with local model-first execution.
 
 ## 3. Product Vision
@@ -290,7 +290,7 @@ Build a distributable code search and location tool that:
 - local watcher + manual sync triggers,
 - multi-workspace auto-discovery (dynamic workspace registration via MCP requests),
 - `get_file_outline` tool (file-level symbol skeleton without full file read),
-- `.codecompassignore` file support (layered on top of `.gitignore`),
+- `.cruxeignore` file support (layered on top of `.gitignore`),
 - MCP health/readiness endpoint (HTTP transport) and initialize status (stdio transport),
 - index progress notifications via MCP notification protocol,
 - Tantivy index prewarming on `serve-mcp` startup.
@@ -353,21 +353,21 @@ Sources (Local FS / Local Worktrees)
 
 ### Canonical repository layout (Rust workspace)
 
-> **Note**: The original design listed ~10 crates (`codecompass-config`, `codecompass-parser`,
-> `codecompass-ranker`, `codecompass-protocol`, etc.). During spec creation (001-core-mvp),
+> **Note**: The original design listed ~10 crates (`cruxe-config`, `cruxe-parser`,
+> `cruxe-ranker`, `cruxe-protocol`, etc.). During spec creation (001-core-mvp),
 > these were consolidated into 6 implementation crates plus 1 deferred crate to reduce
 > inter-crate complexity and simplify the dependency graph.
 
 ```text
 Cargo.toml
 crates/
-  codecompass-cli/       # Binary entry point (clap commands, CLI UX)
-  codecompass-core/      # Shared types, errors, config, constants (config folded in)
-  codecompass-state/     # SQLite state store + Tantivy index management
-  codecompass-indexer/   # File scanning, tree-sitter parsing, index writing (parser folded in)
-  codecompass-query/     # Search, locate, query planner, ranking (ranker folded in)
-  codecompass-mcp/       # MCP server, tool handlers, stdio transport (protocol folded in)
-  codecompass-vcs/       # VCS adapter, branch overlay, worktree manager (deferred to spec 005)
+  cruxe-cli/       # Binary entry point (clap commands, CLI UX)
+  cruxe-core/      # Shared types, errors, config, constants (config folded in)
+  cruxe-state/     # SQLite state store + Tantivy index management
+  cruxe-indexer/   # File scanning, tree-sitter parsing, index writing (parser folded in)
+  cruxe-query/     # Search, locate, query planner, ranking (ranker folded in)
+  cruxe-mcp/       # MCP server, tool handlers, stdio transport (protocol folded in)
+  cruxe-vcs/       # VCS adapter, branch overlay, worktree manager (deferred to spec 005)
 configs/
 testdata/
 ```
@@ -387,7 +387,7 @@ testdata/
 - local embedding/rerank runtime (optional): `fastembed` (ONNX-backed, Rust-native)
 - token estimation: word-count heuristic (`ceil(word_count * 1.3)`) or optional `tiktoken-rs` (for context budget)
 - content hashing: `blake3` (fast, collision-resistant, used for `file_manifest.content_hash`)
-- gitignore/ignore patterns: `ignore` crate (handles `.gitignore` + `.codecompassignore` with same semantics)
+- gitignore/ignore patterns: `ignore` crate (handles `.gitignore` + `.cruxeignore` with same semantics)
 
 ## 7. Retrieval and Ranking Strategy
 
@@ -595,9 +595,9 @@ The following set is prioritized by expected impact for code-location quality.
     - borrowed from Augment MCP's `--mcp-auto-workspace`.
     - see [Section 10.7](#107-multi-workspace-auto-discovery) for detailed design.
 
-18. **`.codecompassignore` file support**
-    - layered ignore: built-in defaults -> `.gitignore` -> `.codecompassignore`.
-    - see [Section 10.8](#108-ignore-file-support-codecompassignore) for detailed design.
+18. **`.cruxeignore` file support**
+    - layered ignore: built-in defaults -> `.gitignore` -> `.cruxeignore`.
+    - see [Section 10.8](#108-ignore-file-support-cruxeignore) for detailed design.
 
 19. **MCP health/readiness**
     - HTTP `/health` endpoint and stdio `health_check` tool.
@@ -969,7 +969,7 @@ Branch indexing model with Tantivy segments:
 - `branch overlay`:
   - for each active branch, maintain a separate Tantivy index directory containing
     full replacement records for each changed file relative to merge-base with `main`.
-  - overlay directory: `~/.codecompass/indices/<project>/overlay_<branch>/`.
+  - overlay directory: `~/.cruxe/indices/<project>/overlay_<branch>/`.
   - SQLite `branch_tombstones` table tracks deleted/replaced paths per branch
     (so base results for those paths are suppressed at query time).
 - `query merge`:
@@ -1031,7 +1031,7 @@ When full rebuild is required:
 
 ### 9.4 Version mode abstraction (single-version + VCS-like)
 
-To support both repositories with and without Git-like history, CodeCompass will define two runtime modes:
+To support both repositories with and without Git-like history, Cruxe will define two runtime modes:
 
 1. **Single-version mode (no VCS metadata)**
    - treat the workspace as one mutable revision (`live`).
@@ -1059,7 +1059,7 @@ Introduce a `VCSAdapter` abstraction to avoid hard-coupling indexing logic to Gi
 
 Worktree manager rules:
 
-- default root: `~/.codecompass/worktrees/<project>/<ref>/`.
+- default root: `~/.cruxe/worktrees/<project>/<ref>/`.
 - refcount-based lease for cleanup safety.
 - no force remove by default; manual prune command required.
 - worktree metadata persisted in local state DB for recovery after restart.
@@ -1081,7 +1081,7 @@ For VCS mode queries, execution plan:
 Index update timing must be explicit and deterministic:
 
 1. **Initial/manual trigger**
-   - `codecompass index` or MCP `index_repo` starts bootstrap indexing.
+   - `cruxe index` or MCP `index_repo` starts bootstrap indexing.
 
 2. **Event-driven trigger (preferred)**
    - watch only registered repository/worktree roots.
@@ -1166,9 +1166,9 @@ State layers:
 
 Minimal commands:
 
-- `codecompass state export --project <id> --out <file>`
-- `codecompass state import --project <id> --in <file>`
-- `codecompass state inspect --project <id>`
+- `cruxe state export --project <id> --out <file>`
+- `cruxe state import --project <id> --in <file>`
+- `cruxe state inspect --project <id>`
 
 ## 10. MCP Tool Surface (v1)
 
@@ -1202,7 +1202,7 @@ for multi-workspace support (see [Section 10.7](#107-multi-workspace-auto-discov
 
 `search_code` and `locate_symbol` responses should include:
 
-- `codecompass_protocol_version`: `"1.0"`.
+- `cruxe_protocol_version`: `"1.0"`.
 - `freshness_status`: `fresh | stale | syncing`.
 - `indexing_status`: `not_indexed | indexing | ready | failed`.
 - `result_completeness`: `complete | partial | truncated`.
@@ -1350,7 +1350,7 @@ Token estimation uses a word-count heuristic: `estimated_tokens = ceil(whitespac
 Optional `tiktoken-rs` integration for exact counts can be enabled via config.
 
 This is a key differentiator: all competitors return "top-k then done".
-CodeCompass actively helps the agent manage its context window.
+Cruxe actively helps the agent manage its context window.
 
 ### 10.5 Branch diff context tool (`diff_context`)
 
@@ -1498,7 +1498,7 @@ All tools that accept a query or path also accept an optional `workspace` parame
 
 Behavior:
 
-1. If `workspace` is omitted, use the default registered project (from `codecompass init`).
+1. If `workspace` is omitted, use the default registered project (from `cruxe init`).
 2. If `workspace` is provided and already indexed:
    - route the query to that project's indices.
 3. If `workspace` is provided but **not yet indexed** and `--auto-workspace` is disabled:
@@ -1528,7 +1528,7 @@ Warmset policy (latency optimization):
   first-query latency on active projects.
 - expose warmset hit/miss metadata in `health_check` for operator visibility.
 
-### 10.8 Ignore file support (`.codecompassignore`)
+### 10.8 Ignore file support (`.cruxeignore`)
 
 File filtering chain (applied in order, all additive):
 
@@ -1537,10 +1537,10 @@ File filtering chain (applied in order, all additive):
    - Directories: `.git/`, `node_modules/`, `__pycache__/`, `.tox/`, `target/` (Rust), `build/`
    - Patterns: `*.min.js`, `*.min.css`, `*.generated.*`, `*.pb.go`, `*_generated.rs`
 2. **`.gitignore`**: respected automatically in VCS mode.
-3. **`.codecompassignore`**: additional patterns specific to code search indexing.
+3. **`.cruxeignore`**: additional patterns specific to code search indexing.
    Uses the same syntax as `.gitignore` (gitignore-style glob patterns).
 
-Example `.codecompassignore`:
+Example `.cruxeignore`:
 
 ```gitignore
 # Skip vendored code (already in .gitignore for some projects, explicit here for search)
@@ -1558,12 +1558,12 @@ testdata/fixtures/large/
 docs/_build/
 ```
 
-Load order: built-in defaults -> `.gitignore` -> `.codecompassignore` (union, not override).
+Load order: built-in defaults -> `.gitignore` -> `.cruxeignore` (union, not override).
 
 CLI support:
 
-- `codecompass doctor` reports which ignore rules are active and how many files are excluded.
-- `codecompass index --show-ignored` lists files that would be skipped (dry-run mode).
+- `cruxe doctor` reports which ignore rules are active and how many files are excluded.
+- `cruxe index --show-ignored` lists files that would be skipped (dry-run mode).
 
 ### 10.9 MCP health and readiness
 
@@ -1685,12 +1685,12 @@ Cold index first-query target: < 2000ms (mmap page fault cost).
 
 ### 10.12 MCP-first, service-ready boundary (not MCP-only)
 
-CodeCompass remains **MCP-first** for agent workflows, but architecture is intentionally
+Cruxe remains **MCP-first** for agent workflows, but architecture is intentionally
 **service-ready** without introducing daemon complexity prematurely.
 
 Interface layers:
 
-1. CLI (`codecompass ...`) for humans and CI automation.
+1. CLI (`cruxe ...`) for humans and CI automation.
 2. MCP (stdio + HTTP transport) as the primary agent integration surface.
 3. Internal service boundary (query/index/status traits) that can be daemonized later if needed.
 
@@ -1711,14 +1711,14 @@ When none of these triggers exist, the simpler single-process MCP model is prefe
 ## 11. CLI UX (Rust binary)
 
 ```bash
-codecompass init
-codecompass index --workspace /path/to/repo
-codecompass sync --workspace /path/to/repo
-codecompass search "where is rate limiter implemented" --workspace /path/to/backend --lang go
-codecompass serve-mcp --workspace /path/to/backend --project backend --allowed-root /Users/dev
-codecompass doctor
-codecompass state export --project backend --out .codecompass-state.tar.zst
-codecompass state import --project backend --in .codecompass-state.tar.zst
+cruxe init
+cruxe index --workspace /path/to/repo
+cruxe sync --workspace /path/to/repo
+cruxe search "where is rate limiter implemented" --workspace /path/to/backend --lang go
+cruxe serve-mcp --workspace /path/to/backend --project backend --allowed-root /Users/dev
+cruxe doctor
+cruxe state export --project backend --out .cruxe-state.tar.zst
+cruxe state import --project backend --in .cruxe-state.tar.zst
 ```
 
 ## 12. Competitive Landscape and Backend Alternatives
@@ -1741,7 +1741,7 @@ This section captures both market references and backend tradeoffs.
 3. **Serena**
    - symbol-level semantic retrieval and editing via MCP.
    - borrow: symbol-level precision over chunk-level, structured code entity model.
-   - avoid for v1: LSP dependency; CodeCompass uses tree-sitter directly.
+   - avoid for v1: LSP dependency; Cruxe uses tree-sitter directly.
 
 4. **VibeRAG**
    - intent-routed codebase search (definitions/files/blocks/usages) + LanceDB + watcher.
@@ -1788,12 +1788,12 @@ This section captures both market references and backend tradeoffs.
 
 12. **GitHub MCP Server (official)**
     - platform-level repo/PR/Issue/Actions context via MCP.
-    - borrow: complementary "remote context" pattern; CodeCompass handles local, GitHub MCP handles platform.
+    - borrow: complementary "remote context" pattern; Cruxe handles local, GitHub MCP handles platform.
     - avoid as replacement: no semantic search, no local index, no branch-aware search.
 
-### 12.2 Positioning of CodeCompass
+### 12.2 Positioning of Cruxe
 
-CodeCompass should position itself as:
+Cruxe should position itself as:
 
 - **local-first, AI-native code locator** (MCP-first integration),
 - **branch/worktree-correct search engine** (hard requirement, key differentiator),
@@ -1818,7 +1818,7 @@ This positioning fills a practical gap:
   - Sub-millisecond warm query latency for symbol lookups.
 - Cons:
   - Less turnkey than Meilisearch for rapid prototyping.
-  - No built-in HTTP API (but CodeCompass provides MCP, so not needed).
+  - No built-in HTTP API (but Cruxe provides MCP, so not needed).
   - Vector search support is experimental/planned (use the embedded vector layer
     with optional adapter enablement when needed).
 
@@ -1937,7 +1937,7 @@ This positioning fills a practical gap:
     -> Use `symbol_stable_id` for diff and graph continuity.
     -> Treat `line_start` as location metadata, not identity.
 
-14. `.codecompassignore` inconsistency with `.gitignore`
+14. `.cruxeignore` inconsistency with `.gitignore`
     -> Use the same glob parsing library for both (e.g., `ignore` crate in Rust).
     -> `doctor` command reports effective ignore rules for verification.
 
@@ -1982,11 +1982,11 @@ This positioning fills a practical gap:
   - minor schema update: additive fields + background backfill.
   - major schema update: create new index set, backfill, then cut over.
 - maintain migration command:
-  - `codecompass migrate-index --from vX --to vY`.
+  - `cruxe migrate-index --from vX --to vY`.
 
 ### 15.1 Startup compatibility checks and reindex gate
 
-At startup (CLI + MCP), CodeCompass should run a lightweight compatibility check:
+At startup (CLI + MCP), Cruxe should run a lightweight compatibility check:
 
 - compare persisted `schema_version` with the binary's required version,
 - validate index manifest readability,
@@ -1999,7 +1999,7 @@ At startup (CLI + MCP), CodeCompass should run a lightweight compatibility check
 Behavior contract:
 
 - if `reindex_required` or `corrupt_manifest`, query tools return an explicit actionable error
-  (`index_incompatible`) with remediation (`codecompass index --force`),
+  (`index_incompatible`) with remediation (`cruxe index --force`),
 - incremental sync refuses to proceed until compatibility is restored,
 - status surfaces (`index_status`, `health_check`) include required and current schema versions.
 
@@ -2045,7 +2045,7 @@ Behavior contract:
 15. **Multi-workspace**: auto-eviction period for unused workspaces?
     -- **RESOLVED**: 7 days since `last_used_at`. Configurable via `--workspace-eviction-days`.
 
-16. **`.codecompassignore`**: should it support `!` (negation/re-include) patterns?
+16. **`.cruxeignore`**: should it support `!` (negation/re-include) patterns?
     -- **RESOLVED**: Yes, same as `.gitignore` semantics. The `ignore` crate handles this natively.
 
 17. **Prewarm**: should it be blocking or non-blocking?

@@ -93,7 +93,7 @@ structure.
 
 ### User Story 3 - Agent Checks System Health Before Querying (Priority: P2)
 
-An AI agent or developer calls `health_check` to verify that CodeCompass is
+An AI agent or developer calls `health_check` to verify that Cruxe is
 operational before issuing search queries. The tool reports Tantivy index
 health, SQLite integrity, grammar availability, active indexing job status,
 and prewarm readiness. This lets agents decide whether to proceed with queries
@@ -128,7 +128,7 @@ transitions from `"warming"` to `"ready"`.
 
 ### User Story 4 - Fast First Query via Index Prewarming (Priority: P2)
 
-A developer starts `codecompass serve-mcp` and immediately issues a search
+A developer starts `cruxe serve-mcp` and immediately issues a search
 query. Because Tantivy uses mmap, the first query on a cold index would pay
 page fault latency (potentially > 2000ms). With prewarming enabled (default),
 the server forces mmap pages into memory on startup, so the first real query
@@ -194,7 +194,7 @@ includes a `ranking_reasons` object with the expected scoring factors.
 
 ### User Story 6 - Agent Gets Reliable Results Despite Stale Index (Priority: P2)
 
-An AI agent queries CodeCompass, but the index is stale (developer has made
+An AI agent queries Cruxe, but the index is stale (developer has made
 changes since last sync). Under the default `balanced` policy, the agent
 receives results with a stale indicator in metadata, and an async sync is
 triggered in the background. Under `strict` policy, the query is blocked
@@ -245,7 +245,7 @@ freshness policy level and verify the expected behavior.
 - What happens when index schema is incompatible after upgrade?
   `health_check` and `index_status` expose `startup_checks.index.status =
   reindex_required`; query tools return actionable `index_incompatible` errors
-  until `codecompass index --force` completes.
+  until `cruxe index --force` completes.
 
 ## Requirements
 

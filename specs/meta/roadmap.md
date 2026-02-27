@@ -1,11 +1,11 @@
-# CodeCompass Development Roadmap
+# Cruxe Development Roadmap
 
 > Canonical phase/version roadmap.
 > Design details live in [design.md](design.md); this file focuses on sequencing and release gates.
 
 ## Executive Summary
 
-CodeCompass ships as a Rust-first, zero-external-service code navigation engine.
+Cruxe ships as a Rust-first, zero-external-service code navigation engine.
 Delivery is optimized around two principles:
 
 1. **Correctness before breadth** (especially VCS correctness)
@@ -113,7 +113,7 @@ Execution rule:
 | Identifier-aware rewrite | [design.md §7.4](design.md#74-augment-inspired-search-behaviors-to-adopt-local-first) | Query normalization enhancement |
 | Overlay eviction policy | [design.md §9.1](design.md#91-branch-aware-indexing-strategy-default-no-full-reindex) | Lifecycle optimization |
 | Segment force-merge | [design.md §9.1](design.md#91-branch-aware-indexing-strategy-default-no-full-reindex) | Index maintenance |
-| `codecompass migrate-index` | [design.md §15](design.md#15-schema-versioning-and-migration-plan) | Schema migration command |
+| `cruxe migrate-index` | [design.md §15](design.md#15-schema-versioning-and-migration-plan) | Schema migration command |
 | Local watch daemon lifecycle | [design.md §9.7](design.md#97-index-update-timing-and-trigger-policy-authoritative) | `watch` + `--background/--status/--stop` ergonomics |
 | Periodic reconcile trigger | [design.md §9.7](design.md#97-index-update-timing-and-trigger-policy-authoritative) | Low-frequency consistency pass |
 | Compact output contract | [design.md §10.3](design.md#103-agent-aware-detail-levels-token-budget-optimization) | Token-thrifty agent responses |

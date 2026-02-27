@@ -1,4 +1,4 @@
-# MCP Tool Contracts: CodeCompass Core MVP
+# MCP Tool Contracts: Cruxe Core MVP
 
 Transport: JSON-RPC 2.0 over stdio (v1). HTTP transport deferred to Phase 1.5.
 
@@ -12,7 +12,7 @@ Included in every tool response:
 ```json
 {
   "metadata": {
-    "codecompass_protocol_version": "1.0",
+    "cruxe_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
     "indexing_status": "not_indexed | indexing | ready | failed",
     "result_completeness": "complete | partial | truncated",
@@ -165,8 +165,8 @@ Definitions are ranked before references (definition-first policy).
 | Code | Meaning |
 |------|---------|
 | `invalid_input` | Missing required input (`name`). |
-| `project_not_found` | Workspace not initialized. Run `codecompass init`. |
-| `index_incompatible` | Index schema is incompatible (`reindex_required` / `corrupt_manifest`). Run `codecompass index --force`. |
+| `project_not_found` | Workspace not initialized. Run `cruxe init`. |
+| `index_incompatible` | Index schema is incompatible (`reindex_required` / `corrupt_manifest`). Run `cruxe index --force`. |
 | `internal_error` | Unexpected runtime failure while executing query. |
 
 ---
@@ -237,8 +237,8 @@ Search across symbols, snippets, and files with query intent classification.
 | Code | Meaning |
 |------|---------|
 | `invalid_input` | Missing required input (`query`). |
-| `project_not_found` | Workspace not initialized. Run `codecompass init`. |
-| `index_incompatible` | Index schema is incompatible (`reindex_required` / `corrupt_manifest`). Run `codecompass index --force`. |
+| `project_not_found` | Workspace not initialized. Run `cruxe init`. |
+| `index_incompatible` | Index schema is incompatible (`reindex_required` / `corrupt_manifest`). Run `cruxe index --force`. |
 | `internal_error` | Unexpected runtime failure while executing query. |
 
 ### Query Intent Classification
@@ -306,12 +306,12 @@ These are direct CLI commands, not MCP tools:
 
 | Command | Description |
 |---------|-------------|
-| `codecompass init` | Register project, create indices, detect VCS mode |
-| `codecompass doctor` | Health check: Tantivy, SQLite, tree-sitter, ignore rules |
-| `codecompass index [--force] [--path PATH] [--ref REF]` | Index or re-index a project |
-| `codecompass sync [--force] [--workspace PATH]` | Incremental sync (CLI wrapper over `sync_repo`) |
-| `codecompass search QUERY [--ref REF] [--lang LANG]` | CLI search interface |
-| `codecompass serve-mcp [--workspace PATH]` | Start MCP server (stdio) |
+| `cruxe init` | Register project, create indices, detect VCS mode |
+| `cruxe doctor` | Health check: Tantivy, SQLite, tree-sitter, ignore rules |
+| `cruxe index [--force] [--path PATH] [--ref REF]` | Index or re-index a project |
+| `cruxe sync [--force] [--workspace PATH]` | Incremental sync (CLI wrapper over `sync_repo`) |
+| `cruxe search QUERY [--ref REF] [--lang LANG]` | CLI search interface |
+| `cruxe serve-mcp [--workspace PATH]` | Start MCP server (stdio) |
 
 All CLI commands support `--verbose` / `-v` for increased log output and
 `--config PATH` for custom config file path.

@@ -1,6 +1,6 @@
 {
   "version": "fixtures-lock-v1",
-  "generated_by": "codecompass-008-semantic-hybrid",
+  "generated_by": "cruxe-008-semantic-hybrid",
   "fixtures": [
     {
       "name": "rust-sample",

@@ -1,0 +1,32 @@
+[package]
+name = "cruxe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cruxe"
+path = "src/main.rs"
+
+[dependencies]
+cruxe-core = { workspace = true }
+cruxe-state = { workspace = true }
+cruxe-indexer = { workspace = true }
+cruxe-query = { workspace = true }
+cruxe-mcp = { workspace = true }
+cruxe-vcs = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+tantivy = { workspace = true }
+rusqlite = { workspace = true }
+time = { version = "0.3", features = ["parsing", "formatting"] }
+rayon = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

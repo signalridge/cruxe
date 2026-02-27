@@ -1,0 +1,24 @@
+[package]
+name = "cruxe-indexer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cruxe-core = { workspace = true }
+cruxe-state = { workspace = true }
+cruxe-vcs = { workspace = true }
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+ignore = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rusqlite = { workspace = true }
+tantivy = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

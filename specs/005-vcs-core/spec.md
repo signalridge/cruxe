@@ -25,7 +25,7 @@ milestone before layering advanced VCS analysis tools.
 
 ## Readiness Baseline Update (2026-02-25)
 
-- Added `VcsAdapter` trait boundary in `codecompass-core::vcs_adapter` with a
+- Added `VcsAdapter` trait boundary in `cruxe-core::vcs_adapter` with a
   default Git-backed adapter implementation for FR-410 direction.
 - Added shared `OverlayMergeKey` domain type to avoid ad-hoc tuple/string merge-key drift.
 
@@ -185,7 +185,7 @@ the branch version (not base), and `legacy.rs` returns no results.
 
 ### User Story 5 - VCS Adapter Abstraction (Priority: P2)
 
-A maintainer needs to extend CodeCompass with support for a non-Git VCS (or a
+A maintainer needs to extend Cruxe with support for a non-Git VCS (or a
 different Git backend). The system provides a `VcsAdapter` trait that isolates all
 VCS operations (diff computation, merge-base detection, ancestry checks, ref
 listing) behind a clean boundary. The Git2 implementation is the default. Index

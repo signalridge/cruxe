@@ -1,0 +1,21 @@
+[package]
+name = "cruxe-query"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cruxe-core = { workspace = true }
+cruxe-indexer = { workspace = true }
+cruxe-state = { workspace = true }
+cruxe-vcs = { workspace = true }
+tantivy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

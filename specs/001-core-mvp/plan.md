@@ -1,4 +1,4 @@
-# Implementation Plan: CodeCompass Core MVP
+# Implementation Plan: Cruxe Core MVP
 
 **Branch**: `001-core-mvp` | **Date**: 2026-02-23 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/001-core-mvp/spec.md`
@@ -55,7 +55,7 @@ specs/001-core-mvp/
 ```text
 Cargo.toml                    # Workspace root
 crates/
-├── codecompass-cli/          # Binary entry point (clap commands)
+├── cruxe-cli/          # Binary entry point (clap commands)
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs
@@ -66,7 +66,7 @@ crates/
 │           ├── index.rs
 │           ├── search.rs
 │           └── serve_mcp.rs
-├── codecompass-core/         # Shared types, errors, config, constants
+├── cruxe-core/         # Shared types, errors, config, constants
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
@@ -74,7 +74,7 @@ crates/
 │       ├── config.rs
 │       ├── types.rs          # Project, Symbol, Snippet, File, Ref types
 │       └── constants.rs      # REF_LIVE, default limits, schema versions
-├── codecompass-state/        # SQLite state store + Tantivy index management
+├── cruxe-state/        # SQLite state store + Tantivy index management
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
@@ -86,7 +86,7 @@ crates/
 │       ├── jobs.rs           # index_jobs state machine
 │       ├── tantivy_index.rs  # Tantivy index creation, schema setup
 │       └── tokenizers.rs     # Custom code tokenizers
-├── codecompass-indexer/      # Scanner, parser, index writer
+├── cruxe-indexer/      # Scanner, parser, index writer
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
@@ -101,7 +101,7 @@ crates/
 │       ├── symbol_extract.rs # Symbol record builder
 │       ├── snippet_extract.rs # Snippet record builder
 │       └── writer.rs         # Tantivy + SQLite batch writer
-├── codecompass-query/        # Search, locate, query planner
+├── cruxe-query/        # Search, locate, query planner
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs
@@ -110,7 +110,7 @@ crates/
 │       ├── search.rs         # search_code implementation
 │       ├── locate.rs         # locate_symbol implementation
 │       └── ranking.rs        # Rule-based rerank
-└── codecompass-mcp/          # MCP server (stdio transport)
+└── cruxe-mcp/          # MCP server (stdio transport)
     ├── Cargo.toml
     └── src/
         ├── lib.rs
@@ -137,7 +137,7 @@ testdata/
 ```
 
 **Structure Decision**: Rust workspace with 6 crates, split by responsibility.
-`codecompass-core` contains shared types and config (no separate config crate —
+`cruxe-core` contains shared types and config (no separate config crate —
 config logic is lightweight). Crates are added incrementally: Phase 0 starts with
 `cli`, `core`, `state`; Phase 1 adds `indexer`, `query`, `mcp`.
 

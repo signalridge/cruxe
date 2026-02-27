@@ -893,144 +893,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
-name = "codecompass"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "codecompass-core",
- "codecompass-indexer",
- "codecompass-mcp",
- "codecompass-query",
- "codecompass-state",
- "codecompass-vcs",
- "rayon",
- "rusqlite",
- "serde_json",
- "tantivy 0.22.1",
- "tempfile",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "codecompass-core"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "dirs",
- "git2",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "codecompass-indexer"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "codecompass-core",
- "codecompass-state",
- "codecompass-vcs",
- "ignore",
- "rusqlite",
- "serde",
- "tantivy 0.22.1",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "tree-sitter",
- "tree-sitter-go",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
-]
-
-[[package]]
-name = "codecompass-mcp"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "codecompass-core",
- "codecompass-indexer",
- "codecompass-query",
- "codecompass-state",
- "codecompass-vcs",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "codecompass-query"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "codecompass-core",
- "codecompass-indexer",
- "codecompass-state",
- "codecompass-vcs",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tantivy 0.22.1",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "codecompass-state"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "blake3",
- "codecompass-core",
- "fastembed",
- "fs4",
- "futures",
- "lancedb",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tantivy 0.22.1",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zstd",
-]
-
-[[package]]
-name = "codecompass-vcs"
-version = "0.1.0"
-dependencies = [
- "codecompass-core",
- "codecompass-state",
- "git2",
- "rusqlite",
- "serde",
- "tempfile",
- "tracing",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1223,6 +1085,144 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+
+[[package]]
+name = "cruxe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "cruxe-core",
+ "cruxe-indexer",
+ "cruxe-mcp",
+ "cruxe-query",
+ "cruxe-state",
+ "cruxe-vcs",
+ "rayon",
+ "rusqlite",
+ "serde_json",
+ "tantivy 0.22.1",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "cruxe-core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "dirs",
+ "git2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "cruxe-indexer"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cruxe-core",
+ "cruxe-state",
+ "cruxe-vcs",
+ "ignore",
+ "rusqlite",
+ "serde",
+ "tantivy 0.22.1",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
+name = "cruxe-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "cruxe-core",
+ "cruxe-indexer",
+ "cruxe-query",
+ "cruxe-state",
+ "cruxe-vcs",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cruxe-query"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cruxe-core",
+ "cruxe-indexer",
+ "cruxe-state",
+ "cruxe-vcs",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tantivy 0.22.1",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "cruxe-state"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "blake3",
+ "cruxe-core",
+ "fastembed",
+ "fs4",
+ "futures",
+ "lancedb",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tantivy 0.22.1",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "cruxe-vcs"
+version = "0.1.0"
+dependencies = [
+ "cruxe-core",
+ "cruxe-state",
+ "git2",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tracing",
+]
 
 [[package]]
 name = "crypto-common"
@@ -2828,9 +2828,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "ureq",
+ "ureq 2.12.1",
  "windows-sys 0.60.2",
 ]
+
+[[package]]
+name = "hmac-sha256"
+version = "1.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec9d92d097f4749b64e8cc33d924d9f40a2d4eb91402b458014b781f5733d60f"
 
 [[package]]
 name = "htmlescape"
@@ -4081,16 +4087,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libloading"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
-dependencies = [
- "cfg-if",
- "windows-link",
-]
-
-[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4233,6 +4229,12 @@ checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
 dependencies = [
  "twox-hash",
 ]
+
+[[package]]
+name = "lzma-rust2"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1670343e58806300d87950e3401e820b519b9384281bbabfb15e3636689ffd69"
 
 [[package]]
 name = "macro_rules_attribute"
@@ -4710,11 +4712,11 @@ version = "2.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a5df903c0d2c07b56950f1058104ab0c8557159f2741782223704de9be73c3c"
 dependencies = [
- "libloading",
  "ndarray 0.17.2",
  "ort-sys",
  "smallvec",
  "tracing",
+ "ureq 3.2.0",
 ]
 
 [[package]]
@@ -4722,6 +4724,11 @@ name = "ort-sys"
 version = "2.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06503bb33f294c5f1ba484011e053bfa6ae227074bdb841e9863492dc5960d4b"
+dependencies = [
+ "hmac-sha256",
+ "lzma-rust2",
+ "ureq 3.2.0",
+]
 
 [[package]]
 name = "ownedbytes"
@@ -7047,6 +7054,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "ureq"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdc97a28575b85cfedf2a7e7d3cc64b3e11bd8ac766666318003abbacc7a21fc"
+dependencies = [
+ "base64 0.22.1",
+ "log",
+ "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
+ "socks",
+ "ureq-proto",
+ "utf-8",
+ "webpki-roots 1.0.6",
+]
+
+[[package]]
+name = "ureq-proto"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d81f9efa9df032be5934a46a068815a10a042b494b6a58cb0a1a97bb5467ed6f"
+dependencies = [
+ "base64 0.22.1",
+ "http",
+ "httparse",
+ "log",
+]
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7057,6 +7093,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf8-ranges"

@@ -15,7 +15,7 @@ Note: semantic runtime fail-soft boundaries (`TextEmbedding::try_new` Err→fall
 ## What Changes
 
 - Resolve confirmed protocol/schema/tooling drifts: fix error-code mapping (`IndexNotReady` for `SchemaStatus::NotIndexed`, `ProjectNotFound` in `map_state_error`), add missing MCP tool schema parameters/constraints, remove duplicate database indexes, and update stale spec/DDL docs.
-- Remove confirmed dead code: `codecompass-core::vcs_adapter` module (zero external callers), unused aggregate `Error`/`Result` type and dead sub-error types (`IndexError`, `McpError`, `QueryError`), `DefaultDiffEntry` type alias.
+- Remove confirmed dead code: `cruxe-core::vcs_adapter` module (zero external callers), unused aggregate `Error`/`Result` type and dead sub-error types (`IndexError`, `McpError`, `QueryError`), `DefaultDiffEntry` type alias.
 - Remove review-confirmed low-risk redundancies (`needless_collect` in `tantivy_index.rs`, redundant `.clone()` in `DiffEntry::renamed`) and perform evidence-backed dead-code pass for touched modules.
 - Fix overlay merge asymmetry: add tombstone re-provision check to `merged_locate` consistent with `merged_search`.
 - Extend benchmark/governance wiring so semantic phase-8 benchmark signals run through the standard benchmark harness path.
@@ -35,14 +35,14 @@ Note: semantic runtime fail-soft boundaries (`TextEmbedding::try_new` Err→fall
 ## Impact
 
 - Affected code:
-  - `crates/codecompass-core/src/error.rs` (remove dead types), `crates/codecompass-core/src/vcs_adapter.rs` (delete), `crates/codecompass-core/src/lib.rs` (remove module decl)
-  - `crates/codecompass-state/src/tantivy_index.rs` (needless_collect), `crates/codecompass-state/src/schema.rs` (V12 migration for duplicate index)
-  - `crates/codecompass-vcs/src/diff.rs` (redundant clone), `crates/codecompass-vcs/src/adapter.rs` (remove `DefaultDiffEntry`)
-  - `crates/codecompass-mcp/src/server/tool_calls.rs` (error-code fix), `crates/codecompass-mcp/src/server/tool_calls/shared.rs` (`ProjectNotFound` mapping)
-  - MCP tool schemas in `crates/codecompass-mcp/src/tools/{suggest_followup_queries,search_code,find_references}.rs`
-  - `crates/codecompass-query/src/overlay_merge.rs` (tombstone re-provision parity)
-  - `crates/codecompass-indexer/src/staging.rs` (visibility reduction)
-  - `crates/codecompass-cli/Cargo.toml` (`serde_json` to dev-deps)
+  - `crates/cruxe-core/src/error.rs` (remove dead types), `crates/cruxe-core/src/vcs_adapter.rs` (delete), `crates/cruxe-core/src/lib.rs` (remove module decl)
+  - `crates/cruxe-state/src/tantivy_index.rs` (needless_collect), `crates/cruxe-state/src/schema.rs` (V12 migration for duplicate index)
+  - `crates/cruxe-vcs/src/diff.rs` (redundant clone), `crates/cruxe-vcs/src/adapter.rs` (remove `DefaultDiffEntry`)
+  - `crates/cruxe-mcp/src/server/tool_calls.rs` (error-code fix), `crates/cruxe-mcp/src/server/tool_calls/shared.rs` (`ProjectNotFound` mapping)
+  - MCP tool schemas in `crates/cruxe-mcp/src/tools/{suggest_followup_queries,search_code,find_references}.rs`
+  - `crates/cruxe-query/src/overlay_merge.rs` (tombstone re-provision parity)
+  - `crates/cruxe-indexer/src/staging.rs` (visibility reduction)
+  - `crates/cruxe-cli/Cargo.toml` (`serde_json` to dev-deps)
   - `scripts/benchmarks/*` and CI workflow files
 - Affected docs/spec artifacts:
   - OpenSpec delta files for modified capabilities

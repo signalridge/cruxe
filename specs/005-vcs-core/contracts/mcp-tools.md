@@ -27,7 +27,7 @@ results MUST include:
 
 And response metadata MUST include the standard Protocol v1 fields:
 
-- `codecompass_protocol_version`
+- `cruxe_protocol_version`
 - `ref`
 - `freshness_status`
 - `indexing_status`

@@ -107,26 +107,26 @@ Defaults are `false`, enforcing local-only behavior by default.
 
 ```text
 crates/
-├── codecompass-core/
+├── cruxe-core/
 │   └── src/
 │       ├── config.rs                # UPDATE: semantic gating/privacy/version config
 │       └── types.rs                 # UPDATE: hybrid/confidence/provenance metadata types
-├── codecompass-state/
+├── cruxe-state/
 │   └── src/
 │       ├── vector_index.rs          # NEW (Track B): embedded vector CRUD keyed by stable symbol identity
 │       └── embedding.rs             # NEW (Track B): fastembed-first provider abstraction + profile support
-├── codecompass-indexer/
+├── cruxe-indexer/
 │   └── src/
 │       ├── embed_writer.rs          # NEW (Track B): embedding generation/storage pipeline
 │       └── writer.rs                # UPDATE: incremental re-embed on changed snippets (Track B)
-├── codecompass-query/
+├── cruxe-query/
 │   └── src/
 │       ├── hybrid.rs                # NEW (Track B): semantic trigger + weighted hybrid fusion
 │       ├── rerank.rs                # NEW: provider trait + fail-soft fallback
 │       ├── confidence.rs            # NEW: composite confidence evaluation
 │       ├── search.rs                # UPDATE: pipeline orchestration + metadata emission
 │       └── ranking.rs               # UPDATE: local reranker as provider-compatible fallback
-└── codecompass-mcp/
+└── cruxe-mcp/
     └── src/tools/search_code.rs     # UPDATE: request overrides + semantic metadata exposure
 
 configs/

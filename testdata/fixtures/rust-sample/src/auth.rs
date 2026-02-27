@@ -98,7 +98,7 @@ pub fn validate_token(auth_header: &str, secret: &[u8]) -> Result<Claims, AuthEr
         role: Role::User,
         exp: u64::MAX,
         iat: 0,
-        issuer: "codecompass".into(),
+        issuer: "cruxe".into(),
     };
 
     if claims.is_expired() {

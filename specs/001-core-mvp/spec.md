@@ -1,4 +1,4 @@
-# Feature Specification: CodeCompass Core MVP
+# Feature Specification: Cruxe Core MVP
 
 **Feature Branch**: `001-core-mvp`
 **Created**: 2026-02-23
@@ -9,7 +9,7 @@
 ## Implementation Alignment Update (2026-02-25)
 
 - Runtime protocol error handling now uses centralized typed codes from
-  `codecompass-core::error::ProtocolErrorCode`.
+  `cruxe-core::error::ProtocolErrorCode`.
 - Config normalization now canonicalizes `freshness_policy` and
   `ranking_explain_level` during load.
 - Core typed foundations now include `OverlayMergeKey` for later VCS overlay
@@ -19,40 +19,40 @@
 
 ### User Story 1 - Initialize a Code Project for Indexing (Priority: P1)
 
-A developer installs CodeCompass via `cargo install codecompass` and runs
-`codecompass init` in their repository root. The system detects whether the
+A developer installs Cruxe via `cargo install cruxe` and runs
+`cruxe init` in their repository root. The system detects whether the
 directory is a Git repo (VCS mode) or a plain directory (single-version mode),
 creates the necessary index directories and SQLite state store, and confirms
-readiness. The developer then runs `codecompass doctor` to verify all components
+readiness. The developer then runs `cruxe doctor` to verify all components
 are healthy.
 
 **Why this priority**: Without project initialization, no other feature can work.
 This is the foundation that all subsequent indexing and search depends on.
 
-**Independent Test**: Run `cargo install codecompass` from a clean environment,
-then `codecompass init` in a sample repo, then `codecompass doctor` — all three
+**Independent Test**: Run `cargo install cruxe` from a clean environment,
+then `cruxe init` in a sample repo, then `cruxe doctor` — all three
 must succeed with zero external dependencies.
 
 **Acceptance Scenarios**:
 
-1. **Given** a directory with a `.git` folder, **When** `codecompass init` is run,
+1. **Given** a directory with a `.git` folder, **When** `cruxe init` is run,
    **Then** a project entry is created in SQLite with `vcs_mode=1`, Tantivy index
    directories are created, and the command exits with success status.
-2. **Given** a directory without `.git`, **When** `codecompass init` is run,
+2. **Given** a directory without `.git`, **When** `cruxe init` is run,
    **Then** a project entry is created with `vcs_mode=0` and `ref='live'`.
-3. **Given** a freshly initialized project, **When** `codecompass doctor` is run,
+3. **Given** a freshly initialized project, **When** `cruxe doctor` is run,
    **Then** it reports Tantivy index health OK, SQLite integrity OK, and
    tree-sitter grammar availability for configured languages.
-4. **Given** `codecompass init` has already been run in the same directory,
-   **When** `codecompass init` is run again, **Then** it detects the existing
+4. **Given** `cruxe init` has already been run in the same directory,
+   **When** `cruxe init` is run again, **Then** it detects the existing
    project and exits gracefully without corrupting state.
 
 ---
 
 ### User Story 2 - Index a Codebase and Locate Symbols (Priority: P1)
 
-A developer runs `codecompass index` to scan their repository. The system
-discovers source files (respecting `.gitignore` and `.codecompassignore`),
+A developer runs `cruxe index` to scan their repository. The system
+discovers source files (respecting `.gitignore` and `.cruxeignore`),
 parses them with tree-sitter, extracts symbol definitions (functions, structs,
 classes, methods, traits, interfaces, enums, constants), and populates both
 the Tantivy full-text indices and the SQLite symbol relations table. The
@@ -63,12 +63,12 @@ and get precise `file:line` results.
 accurate indexing and retrieval, the product delivers no value.
 
 **Independent Test**: Index a known fixture repository, then run
-`codecompass search "validate_token"` and verify it returns the correct file path
+`cruxe search "validate_token"` and verify it returns the correct file path
 and line number for the function definition.
 
 **Acceptance Scenarios**:
 
-1. **Given** a Rust repository with 50 source files, **When** `codecompass index`
+1. **Given** a Rust repository with 50 source files, **When** `cruxe index`
    is run, **Then** all non-ignored files are scanned, symbols are extracted, and
    the Tantivy `symbols`, `snippets`, and `files` indices are populated.
 2. **Given** an indexed repository, **When** `locate_symbol` is called with
@@ -77,7 +77,7 @@ and line number for the function definition.
 3. **Given** a repository with both a function definition and call sites,
    **When** `locate_symbol` is called, **Then** definitions are ranked before
    references (definition-first policy).
-4. **Given** a `.codecompassignore` file that excludes `testdata/fixtures/large/`,
+4. **Given** a `.cruxeignore` file that excludes `testdata/fixtures/large/`,
    **When** indexing runs, **Then** files in that directory are not indexed.
 5. **Given** a file with `CamelCase` identifiers, **When** searching for `"camel"`,
    **Then** the custom `code_camel` tokenizer splits the identifier and returns
@@ -115,23 +115,23 @@ fixture file and verify the result points to the correct location.
 
 ### User Story 4 - Serve MCP Tools to AI Coding Agents (Priority: P2)
 
-A developer configures CodeCompass as an MCP server (stdio transport) in their
+A developer configures Cruxe as an MCP server (stdio transport) in their
 AI coding agent (Claude Code, Cursor, etc.). The agent can call `index_repo`,
 `sync_repo`, `search_code`, `locate_symbol`, and `index_status` tools. Responses
 follow Protocol v1 with `freshness_status`, `indexing_status`, and
 `result_completeness` metadata fields.
 
 **Why this priority**: MCP integration is the primary distribution channel.
-Without it, CodeCompass is just a CLI tool. With it, every AI agent gains
+Without it, Cruxe is just a CLI tool. With it, every AI agent gains
 code navigation superpowers.
 
-**Independent Test**: Start `codecompass serve-mcp`, send a JSON-RPC
+**Independent Test**: Start `cruxe serve-mcp`, send a JSON-RPC
 `tools/list` request via stdin, verify all expected tools are listed with
 correct schemas. Then call `locate_symbol` and verify a valid response.
 
 **Acceptance Scenarios**:
 
-1. **Given** `codecompass serve-mcp` is running, **When** a `tools/list` request
+1. **Given** `cruxe serve-mcp` is running, **When** a `tools/list` request
    is sent, **Then** the response includes `index_repo`, `sync_repo`,
    `search_code`, `locate_symbol`, and `index_status`.
 2. **Given** an indexed project, **When** `locate_symbol` is called via MCP with
@@ -178,11 +178,11 @@ verify results reflect branch-specific file contents.
   WAL mode with 5s busy_timeout handles this transparently. If timeout exceeds,
   the operation retries with exponential backoff.
 - What happens when Tantivy index is corrupted?
-  `doctor` detects corruption and recommends `codecompass index --force` for
+  `doctor` detects corruption and recommends `cruxe index --force` for
   full rebuild.
-- What happens when `.codecompassignore` has syntax errors?
+- What happens when `.cruxeignore` has syntax errors?
   Invalid patterns are logged as warnings and skipped; valid patterns still apply.
-- What happens when `codecompass index` is interrupted mid-operation?
+- What happens when `cruxe index` is interrupted mid-operation?
   Next run detects incomplete state via `file_manifest` content hashes and
   re-indexes only the files that were not fully committed.
 
@@ -190,13 +190,13 @@ verify results reflect branch-specific file contents.
 
 ### Functional Requirements
 
-- **FR-001**: System MUST provide a `codecompass init` command that registers a project,
+- **FR-001**: System MUST provide a `cruxe init` command that registers a project,
   creates index directories, and detects VCS vs single-version mode.
-- **FR-002**: System MUST provide a `codecompass doctor` command that verifies Tantivy
+- **FR-002**: System MUST provide a `cruxe doctor` command that verifies Tantivy
   index health, SQLite integrity, tree-sitter grammar availability, and active ignore
   rules with excluded file counts.
 - **FR-003**: System MUST scan source files respecting a three-layer ignore chain:
-  built-in defaults, `.gitignore`, `.codecompassignore` (using gitignore-compatible
+  built-in defaults, `.gitignore`, `.cruxeignore` (using gitignore-compatible
   glob syntax including `!` negation patterns).
 - **FR-004**: System MUST extract symbol definitions from source files using tree-sitter
   for Rust, TypeScript, Python, and Go as the v1 language set.
@@ -221,7 +221,7 @@ verify results reflect branch-specific file contents.
 - **FR-012**: System MUST provide an MCP server (stdio transport) exposing `index_repo`,
   `sync_repo`, `search_code`, `locate_symbol`, and `index_status` tools.
 - **FR-013**: System MUST include Protocol v1 metadata in all search responses:
-  `codecompass_protocol_version`, `freshness_status`, `indexing_status`,
+  `cruxe_protocol_version`, `freshness_status`, `indexing_status`,
   `result_completeness`, `ref`; canonical enums:
   - `indexing_status`: `not_indexed | indexing | ready | failed`
   - `result_completeness`: `complete | partial | truncated`
@@ -247,7 +247,7 @@ verify results reflect branch-specific file contents.
   index state as `compatible | not_indexed | reindex_required | corrupt_manifest`.
 - **FR-022**: When index state is `reindex_required` or `corrupt_manifest`, query
   tools MUST fail with actionable error code `index_incompatible` and remediation
-  guidance (`codecompass index --force`).
+  guidance (`cruxe index --force`).
 
 ### Key Entities
 
@@ -267,7 +267,7 @@ verify results reflect branch-specific file contents.
 
 ### Measurable Outcomes
 
-- **SC-001**: Developers can install and initialize CodeCompass in under 2 minutes on a
+- **SC-001**: Developers can install and initialize Cruxe in under 2 minutes on a
   clean machine with Rust toolchain available.
 - **SC-002**: Symbol lookup returns the correct definition location as the top-1 result
   for at least 90% of benchmark queries on fixture repositories.
@@ -276,7 +276,7 @@ verify results reflect branch-specific file contents.
 - **SC-004**: The MCP server responds to tool calls within 500ms p95 on a warm index.
 - **SC-005**: The single binary has zero external service dependencies — no database
   server, no search engine, no container runtime required.
-- **SC-006**: AI coding agents can discover and use CodeCompass tools via standard MCP
+- **SC-006**: AI coding agents can discover and use Cruxe tools via standard MCP
   protocol without custom integration code.
 - **SC-007**: For repeated queries against unchanged source snapshots, `symbol_id` and
   `symbol_stable_id` remain stable across responses in >= 99% of sampled results.

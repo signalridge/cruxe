@@ -31,7 +31,7 @@ impl Default for Config {
         Self {
             bind_address: "127.0.0.1".into(),
             port: DEFAULT_PORT,
-            database_url: "postgres://localhost/codecompass_dev".into(),
+            database_url: "postgres://localhost/cruxe_dev".into(),
             jwt_secret: "development-secret-do-not-use-in-prod".into(),
             pool_size: DEFAULT_POOL_SIZE,
             debug: true,

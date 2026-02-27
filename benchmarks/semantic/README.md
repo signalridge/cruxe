@@ -42,4 +42,4 @@ The `query-pack.v1.json` currently includes 100 NL queries stratified across:
 - Python: 25
 - Go: 25
 
-The structure and counts are validated by automated tests in `crates/codecompass-query/src/semantic_advisor.rs` and `crates/codecompass-query/tests/semantic_query_pack.rs`.
+The structure and counts are validated by automated tests in `crates/cruxe-query/src/semantic_advisor.rs` and `crates/cruxe-query/tests/semantic_query_pack.rs`.

@@ -27,7 +27,7 @@ It delivers:
 - Runtime SQLite handle management is now explicitly bounded to avoid
   unbounded file-descriptor growth in long-lived multi-workspace servers.
 - High-fanout MCP fixture tests now use configurable bounded parallelism
-  (`CODECOMPASS_TEST_FIXTURE_PARALLELISM`) instead of global serial execution.
+  (`CRUXE_TEST_FIXTURE_PARALLELISM`) instead of global serial execution.
 - Cross-process maintenance lock (parent-scoped
   `locks/state-maintenance-<path-hash>.lock`) now coordinates destructive state
   mutations across import/prune/sync publish paths.
@@ -190,10 +190,10 @@ helpers eliminate ref-related errors in agentic workflows.
 
 ### User Story 5 - Portable State Export/Import (Priority: P2)
 
-A platform engineer runs `codecompass state export` to create a
+A platform engineer runs `cruxe state export` to create a
 `PortableStateBundle` archive containing the SQLite database, Tantivy index
 artifacts, and version metadata. The bundle is transferred to an ephemeral CI
-runner where `codecompass state import` restores full searchable state without
+runner where `cruxe state import` restores full searchable state without
 re-indexing. An overlay prune maintenance command cleans up stale overlays while
 respecting active worktree leases.
 
@@ -207,11 +207,11 @@ match the pre-export state.
 
 **Acceptance Scenarios**:
 
-1. **Given** a fully indexed project, **When** `codecompass state export` is run,
+1. **Given** a fully indexed project, **When** `cruxe state export` is run,
    **Then** a `PortableStateBundle` archive is created containing SQLite state,
    Tantivy index directories, and a metadata manifest with schema version and
    export timestamp.
-2. **Given** a valid `PortableStateBundle`, **When** `codecompass state import`
+2. **Given** a valid `PortableStateBundle`, **When** `cruxe state import`
    is run in a clean environment, **Then** the SQLite database and Tantivy
    indices are restored, and subsequent `search_code` queries return the same
    results as on the exporting machine.
@@ -223,7 +223,7 @@ match the pre-export state.
    only the files changed since the exported commit, without requiring a full
    re-index.
 5. **Given** a project with stale overlay indices from deleted branches, **When**
-   `codecompass prune-overlays` is run, **Then** overlays without matching
+   `cruxe prune-overlays` is run, **Then** overlays without matching
    worktree leases are removed, but overlays with active leases are preserved.
 6. **Given** a `state export` or `state import` failure (e.g., disk full),
    **When** the command fails, **Then** the error is reported cleanly and

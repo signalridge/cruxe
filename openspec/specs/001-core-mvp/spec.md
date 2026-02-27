@@ -58,15 +58,15 @@ propagation policy for:
 - auto-discovered workspace bootstrap indexing
 
 Binary resolution order MUST be deterministic:
-1. `CODECOMPASS_INDEX_BIN` override
-2. sibling `codecompass` binary next to current executable
+1. `CRUXE_INDEX_BIN` override
+2. sibling `cruxe` binary next to current executable
 3. current executable path
-4. `PATH` fallback (`codecompass`)
+4. `PATH` fallback (`cruxe`)
 
 Launcher environment propagation MUST include:
-- `CODECOMPASS_PROJECT_ID`
-- `CODECOMPASS_STORAGE_DATA_DIR`
-- `CODECOMPASS_JOB_ID` (for job-backed operations)
+- `CRUXE_PROJECT_ID`
+- `CRUXE_STORAGE_DATA_DIR`
+- `CRUXE_JOB_ID` (for job-backed operations)
 
 #### Scenario: index_repo uses canonical launcher policy
 - **WHEN** `index_repo` starts a new indexing subprocess

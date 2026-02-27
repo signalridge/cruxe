@@ -6,10 +6,10 @@
 
 | Path | Risk | Guardrail |
 |---|---|---|
-| `crates/codecompass-mcp/src/server.rs` | transport/runtime coupling | Single-owner per PR for dispatcher/runtime edits |
-| `crates/codecompass-mcp/src/server/tool_calls/**` | tool contract drift | Domain module ownership (`query/structure/context/index/health/status`) |
-| `crates/codecompass-state/src/schema.rs` | migration conflicts | One migration author at a time; append-only migration policy |
-| `crates/codecompass-core/src/config.rs` | compatibility regressions | Typed normalization changes require config regression tests |
+| `crates/cruxe-mcp/src/server.rs` | transport/runtime coupling | Single-owner per PR for dispatcher/runtime edits |
+| `crates/cruxe-mcp/src/server/tool_calls/**` | tool contract drift | Domain module ownership (`query/structure/context/index/health/status`) |
+| `crates/cruxe-state/src/schema.rs` | migration conflicts | One migration author at a time; append-only migration policy |
+| `crates/cruxe-core/src/config.rs` | compatibility regressions | Typed normalization changes require config regression tests |
 | `specs/**` + `openspec/**` | traceability drift | Code changes must include matching spec/change updates |
 
 ## Suggested Module Owners
@@ -26,8 +26,8 @@
 
 The following workstreams can proceed in parallel with low conflict risk:
 
-1. `codecompass-query/**` relevance tuning + `specs/008-*` updates.
-2. `codecompass-state/src/edges.rs` traversal/index tests + `specs/006-007`.
+1. `cruxe-query/**` relevance tuning + `specs/008-*` updates.
+2. `cruxe-state/src/edges.rs` traversal/index tests + `specs/006-007`.
 3. CI/security workflow updates under `.github/**`.
 4. Docs-only updates in `specs/meta/**` (except migration-critical docs).
 

@@ -1,4 +1,4 @@
-# Research: CodeCompass Core MVP
+# Research: Cruxe Core MVP
 
 ## Decision 1: Full-Text Search Engine — Tantivy
 
@@ -6,7 +6,7 @@
 search backend.
 
 **Rationale**:
-- True single binary: compiles into the CodeCompass binary, no separate process.
+- True single binary: compiles into the Cruxe binary, no separate process.
 - Segment model maps naturally to base+overlay indexing for branch isolation.
 - Zero cold-start dependency: in-process mmap, no "wait for service ready".
 - Full control over tokenization: custom code tokenizers compiled in.
@@ -84,7 +84,7 @@ relations, file manifest, branch state, index jobs, workspace registry).
 
 ## Decision 7: Index Directory Layout
 
-**Decision**: Store all index data under `~/.codecompass/data/<project_id>/`.
+**Decision**: Store all index data under `~/.cruxe/data/<project_id>/`.
 
 **Rationale**:
 - Separates index data from source code (no pollution of repo).
@@ -93,7 +93,7 @@ relations, file manifest, branch state, index jobs, workspace registry).
 
 **Layout**:
 ```
-~/.codecompass/
+~/.cruxe/
   data/
     <project_id>/
       base/
@@ -109,11 +109,11 @@ relations, file manifest, branch state, index jobs, workspace registry).
 ## Decision 8: Error Handling Strategy
 
 **Decision**: Use `thiserror` for per-crate error types with a unified top-level
-error type in `codecompass-core`.
+error type in `cruxe-core`.
 
 **Rationale**:
 - Each crate defines its own error enum for specificity.
-- `codecompass-core::Error` wraps all crate errors for CLI/MCP error reporting.
+- `cruxe-core::Error` wraps all crate errors for CLI/MCP error reporting.
 - `anyhow` is used only in the CLI binary for ad-hoc context; library crates
   use typed errors exclusively.
 
@@ -122,10 +122,10 @@ error type in `codecompass-core`.
 **Decision**: Use module-path-based span names.
 
 **Convention**:
-- Top-level commands: `codecompass::cmd::{init,doctor,index,search,serve_mcp}`
-- Index operations: `codecompass::index::{scan,parse,write,commit}`
-- Query operations: `codecompass::query::{plan,retrieve,rerank,respond}`
-- State operations: `codecompass::state::{db,manifest,jobs}`
+- Top-level commands: `cruxe::cmd::{init,doctor,index,search,serve_mcp}`
+- Index operations: `cruxe::index::{scan,parse,write,commit}`
+- Query operations: `cruxe::query::{plan,retrieve,rerank,respond}`
+- State operations: `cruxe::state::{db,manifest,jobs}`
 
 ## Decision 10: Configuration File Format and Precedence
 
@@ -133,11 +133,11 @@ error type in `codecompass-core`.
 
 **Precedence** (highest to lowest):
 1. CLI flags / environment variables
-2. Project config: `<repo>/.codecompass/config.toml`
-3. Global config: `~/.codecompass/config.toml`
+2. Project config: `<repo>/.cruxe/config.toml`
+3. Global config: `~/.cruxe/config.toml`
 4. Built-in defaults
 
 **Rationale**:
 - TOML is the Rust ecosystem standard (Cargo.toml).
 - Three-layer precedence matches standard dev tool conventions.
-- Environment variables use `CODECOMPASS_` prefix.
+- Environment variables use `CRUXE_` prefix.

@@ -1,4 +1,4 @@
-# CodeCompass Default Configuration
+# Cruxe Default Configuration
 
 [index]
 # Maximum file size to index (bytes)
@@ -10,7 +10,7 @@ languages = ["rust", "typescript", "python", "go"]
 
 [storage]
 # Base data directory (~ expands to home)
-data_dir = "~/.codecompass"
+data_dir = "~/.cruxe"
 # SQLite busy timeout (ms)
 busy_timeout_ms = 5000
 # SQLite cache size (negative = KB)
@@ -29,19 +29,19 @@ max_response_bytes = 65536
 [search.intent]
 # Intent strategy rule order. Supported values:
 # "error_pattern", "path", "quoted_error", "symbol", "natural_language"
-# Env override: CODECOMPASS_SEARCH_INTENT_RULE_ORDER (CSV)
+# Env override: CRUXE_SEARCH_INTENT_RULE_ORDER (CSV)
 rule_order = ["error_pattern", "path", "quoted_error", "symbol", "natural_language"]
 # Substring patterns matched for Error intent.
-# Env override: CODECOMPASS_SEARCH_INTENT_ERROR_PATTERNS (CSV)
+# Env override: CRUXE_SEARCH_INTENT_ERROR_PATTERNS (CSV)
 error_patterns = ["error:", "Error:", "panic:", "FATAL", "exception", "Exception", "traceback", "at line", "thread '"]
 # File suffixes treated as path-like (case-insensitive).
-# Env override: CODECOMPASS_SEARCH_INTENT_PATH_EXTENSIONS (CSV)
+# Env override: CRUXE_SEARCH_INTENT_PATH_EXTENSIONS (CSV)
 path_extensions = [".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".c", ".h", ".cpp", ".rb", ".swift"]
 # Two-word symbol query prefixes, e.g. "fn validate_token".
-# Env override: CODECOMPASS_SEARCH_INTENT_SYMBOL_KIND_KEYWORDS (CSV)
+# Env override: CRUXE_SEARCH_INTENT_SYMBOL_KIND_KEYWORDS (CSV)
 symbol_kind_keywords = ["fn", "func", "function", "struct", "class", "enum", "trait", "interface", "type", "const", "method"]
 # Whether wrapped quotes like "connection refused" / `panic text` imply Error intent.
-# Env override: CODECOMPASS_SEARCH_INTENT_ENABLE_WRAPPED_QUOTED_ERROR_LITERAL (bool)
+# Env override: CRUXE_SEARCH_INTENT_ENABLE_WRAPPED_QUOTED_ERROR_LITERAL (bool)
 enable_wrapped_quoted_error_literal = true
 
 [search.semantic]

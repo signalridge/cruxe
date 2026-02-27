@@ -33,8 +33,8 @@ release/
 .DS_Store
 Thumbs.db
 
-# CodeCompass data (local indices)
-.codecompass/
+# Cruxe data (local indices)
+.cruxe/
 research/
 
 # Generated benchmark reports

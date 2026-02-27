@@ -7,7 +7,7 @@
 
 ## Summary
 
-Add structural navigation capabilities to CodeCompass: populate `symbol_edges`
+Add structural navigation capabilities to Cruxe: populate `symbol_edges`
 with import relationships extracted via tree-sitter, implement `get_symbol_hierarchy`
 for parent chain traversal, `find_related_symbols` for scope-based discovery, and
 `get_code_context` with token budget-aware response construction. These tools
@@ -18,7 +18,7 @@ entire files.
 
 **Language/Version**: Rust (latest stable, 2024 edition)
 **Builds On**: All crates from 001-core-mvp, Protocol v1 from 002-agent-protocol
-**Modified Crates**: `codecompass-indexer` (import extraction), `codecompass-query` (hierarchy + related + context), `codecompass-mcp` (new tool handlers), `codecompass-state` (edge CRUD), `codecompass-core` (token estimation)
+**Modified Crates**: `cruxe-indexer` (import extraction), `cruxe-query` (hierarchy + related + context), `cruxe-mcp` (new tool handlers), `cruxe-state` (edge CRUD), `cruxe-core` (token estimation)
 **New Dependencies**: None (uses existing tree-sitter, rusqlite, tantivy, serde)
 **Storage Changes**: No new tables. Populates existing `symbol_edges` table (schema-ready from 001-core-mvp).
 **Performance Goals**: hierarchy/related p95 < 200ms warm, get_code_context p95 < 500ms warm
@@ -53,10 +53,10 @@ specs/003-structure-nav/
 
 ```text
 crates/
-├── codecompass-core/
+├── cruxe-core/
 │   └── src/
 │       └── tokens.rs            # NEW: Token estimation utility
-├── codecompass-indexer/
+├── cruxe-indexer/
 │   └── src/
 │       ├── import_extract.rs    # NEW: Import statement parser dispatcher
 │       └── languages/
@@ -64,15 +64,15 @@ crates/
 │           ├── typescript.rs     # MODIFY: Add import extraction functions
 │           ├── python.rs         # MODIFY: Add import extraction functions
 │           └── go.rs             # MODIFY: Add import extraction functions
-├── codecompass-state/
+├── cruxe-state/
 │   └── src/
 │       └── edges.rs             # NEW: symbol_edges CRUD operations
-├── codecompass-query/
+├── cruxe-query/
 │   └── src/
 │       ├── hierarchy.rs         # NEW: get_symbol_hierarchy implementation
 │       ├── related.rs           # NEW: find_related_symbols implementation
 │       └── context.rs           # NEW: get_code_context implementation
-└── codecompass-mcp/
+└── cruxe-mcp/
     └── src/
         └── tools/
             ├── mod.rs            # MODIFY: Register new tools
@@ -91,7 +91,7 @@ separate avoids a monolithic module.
 
 ### Import Edge Extraction Pipeline
 
-1. During `codecompass index`, after symbol extraction per file, run import
+1. During `cruxe index`, after symbol extraction per file, run import
    extraction on the same tree-sitter parse tree.
 2. For each import/use/require node, extract the qualified name of the imported
    symbol.

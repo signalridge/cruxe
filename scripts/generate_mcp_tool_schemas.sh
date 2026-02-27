@@ -10,11 +10,11 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 request='{"jsonrpc":"2.0","id":"schema-export","method":"tools/list","params":{}}'
-stderr_log="$(mktemp -t codecompass-mcp-stderr.XXXXXX)"
+stderr_log="$(mktemp -t cruxe-mcp-stderr.XXXXXX)"
 
 response="$({
   printf '%s\n' "$request" |
-    RUST_LOG=error cargo run -q -p codecompass -- serve-mcp --workspace "$WORKSPACE_PATH" --no-prewarm 2>"$stderr_log" |
+    RUST_LOG=error cargo run -q -p cruxe -- serve-mcp --workspace "$WORKSPACE_PATH" --no-prewarm 2>"$stderr_log" |
     grep -m 1 '^{"jsonrpc":"2.0"' || true
 })"
 
@@ -28,7 +28,7 @@ fi
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
-version="$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "codecompass") | .version')"
+version="$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "cruxe") | .version')"
 generated_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 echo "$response" |
@@ -38,7 +38,7 @@ echo "$response" |
         generated_at: $generated_at,
         generator: "scripts/generate_mcp_tool_schemas.sh",
         source: "tools/list",
-        binary: "codecompass",
+        binary: "cruxe",
         binary_version: $version,
         tool_count: ($tools | length),
         tools: $tools

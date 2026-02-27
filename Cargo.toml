@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "crates/codecompass-cli",
-    "crates/codecompass-core",
-    "crates/codecompass-state",
-    "crates/codecompass-indexer",
-    "crates/codecompass-query",
-    "crates/codecompass-mcp",
-    "crates/codecompass-vcs",
+    "crates/cruxe-cli",
+    "crates/cruxe-core",
+    "crates/cruxe-state",
+    "crates/cruxe-indexer",
+    "crates/cruxe-query",
+    "crates/cruxe-mcp",
+    "crates/cruxe-vcs",
 ]
 resolver = "2"
 
@@ -14,7 +14,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/signalridge/codecompass"
+repository = "https://github.com/signalridge/cruxe"
 
 [workspace.dependencies]
 # Shared
@@ -33,19 +33,19 @@ tempfile = "3"
 git2 = { version = "0.19", default-features = false }
 rayon = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-fastembed = { version = "5.11", default-features = false, features = ["hf-hub-rustls-tls", "ort-load-dynamic", "image-models"] }
+fastembed = { version = "5.11", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls", "image-models"] }
 lancedb = { version = "0.26.2", default-features = false }
 arrow-array = "57.2"
 arrow-schema = "57.2"
 futures = "0.3"
 
 # Internal crates
-codecompass-core = { path = "crates/codecompass-core" }
-codecompass-state = { path = "crates/codecompass-state" }
-codecompass-indexer = { path = "crates/codecompass-indexer" }
-codecompass-query = { path = "crates/codecompass-query" }
-codecompass-mcp = { path = "crates/codecompass-mcp" }
-codecompass-vcs = { path = "crates/codecompass-vcs" }
+cruxe-core = { path = "crates/cruxe-core" }
+cruxe-state = { path = "crates/cruxe-state" }
+cruxe-indexer = { path = "crates/cruxe-indexer" }
+cruxe-query = { path = "crates/cruxe-query" }
+cruxe-mcp = { path = "crates/cruxe-mcp" }
+cruxe-vcs = { path = "crates/cruxe-vcs" }
 
 [profile.dist]
 inherits = "release"

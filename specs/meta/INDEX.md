@@ -1,6 +1,6 @@
 # Specs Index
 
-> Master index for all CodeCompass specification artifacts.
+> Master index for all Cruxe specification artifacts.
 > This is the canonical entry point for design, execution order, and implementation-ready specs.
 
 ## Architecture

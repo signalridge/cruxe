@@ -1,6 +1,6 @@
 # Development Guide
 
-> Conventions, environment setup, and workflow rules for CodeCompass contributors.
+> Conventions, environment setup, and workflow rules for Cruxe contributors.
 > This is the single reference for how to develop against any spec.
 
 > See also: [design.md](design.md) for architecture specifications, [INDEX.md](INDEX.md) for the master index.
@@ -32,8 +32,8 @@
 
 ```bash
 # Clone
-git clone https://github.com/signalridge/codecompass.git
-cd codecompass
+git clone https://github.com/signalridge/cruxe.git
+cd cruxe
 
 # Verify toolchain
 rustup show
@@ -56,34 +56,34 @@ cargo fmt --check --all
 
 ```
 crates/
-  codecompass-cli/       # Binary crate: CLI entry point
-  codecompass-core/      # Library: shared types, config, errors
-  codecompass-state/     # Library: SQLite + Tantivy storage
-  codecompass-indexer/   # Library: file scanning, tree-sitter parsing
-  codecompass-query/     # Library: search, locate, ranking
-  codecompass-mcp/       # Library: MCP server, tool handlers, protocol
-  codecompass-vcs/       # Library: Git adapter, worktree manager (spec 005+)
+  cruxe-cli/       # Binary crate: CLI entry point
+  cruxe-core/      # Library: shared types, config, errors
+  cruxe-state/     # Library: SQLite + Tantivy storage
+  cruxe-indexer/   # Library: file scanning, tree-sitter parsing
+  cruxe-query/     # Library: search, locate, ranking
+  cruxe-mcp/       # Library: MCP server, tool handlers, protocol
+  cruxe-vcs/       # Library: Git adapter, worktree manager (spec 005+)
 ```
 
 ### Crate Dependency DAG
 
 ```
-codecompass-cli
-  ├── codecompass-mcp
-  │     ├── codecompass-query
-  │     │     ├── codecompass-state
-  │     │     │     └── codecompass-core
-  │     │     └── codecompass-core
-  │     ├── codecompass-indexer
-  │     │     ├── codecompass-state
-  │     │     └── codecompass-core
-  │     └── codecompass-core
-  ├── codecompass-vcs (spec 005+)
-  │     └── codecompass-core
-  └── codecompass-core
+cruxe-cli
+  ├── cruxe-mcp
+  │     ├── cruxe-query
+  │     │     ├── cruxe-state
+  │     │     │     └── cruxe-core
+  │     │     └── cruxe-core
+  │     ├── cruxe-indexer
+  │     │     ├── cruxe-state
+  │     │     └── cruxe-core
+  │     └── cruxe-core
+  ├── cruxe-vcs (spec 005+)
+  │     └── cruxe-core
+  └── cruxe-core
 ```
 
-**Rule**: No circular dependencies. `codecompass-core` is the leaf crate depended on by all others.
+**Rule**: No circular dependencies. `cruxe-core` is the leaf crate depended on by all others.
 
 ## Coding Conventions
 
@@ -116,13 +116,13 @@ fn main() -> anyhow::Result<()> {
 
 | Item | Convention | Example |
 |------|-----------|---------|
-| Crate names | `codecompass-{name}` (kebab-case) | `codecompass-state` |
+| Crate names | `cruxe-{name}` (kebab-case) | `cruxe-state` |
 | Module names | snake_case | `tantivy_index.rs` |
 | Struct/Enum | PascalCase | `SymbolRecord`, `QueryIntent` |
 | Functions | snake_case | `locate_symbol`, `build_query` |
 | Constants | SCREAMING_SNAKE | `SCHEMA_VERSION`, `MAX_FILE_SIZE` |
 | Test functions | `test_` prefix + descriptive | `test_locate_returns_correct_line` |
-| Tracing spans | `module::operation` | `codecompass::index::scan` |
+| Tracing spans | `module::operation` | `cruxe::index::scan` |
 
 ### Tracing
 
@@ -140,10 +140,10 @@ pub fn index_project(db: &Database, project: &Project) -> Result<IndexResult> {
 ```
 
 Span naming convention:
-- Top-level commands: `codecompass::cmd::{init,doctor,index,search,serve_mcp}`
-- Index operations: `codecompass::index::{scan,parse,write,commit}`
-- Query operations: `codecompass::query::{plan,retrieve,rerank,respond}`
-- State operations: `codecompass::state::{db,manifest,jobs}`
+- Top-level commands: `cruxe::cmd::{init,doctor,index,search,serve_mcp}`
+- Index operations: `cruxe::index::{scan,parse,write,commit}`
+- Query operations: `cruxe::query::{plan,retrieve,rerank,respond}`
+- State operations: `cruxe::state::{db,manifest,jobs}`
 
 ### Testing
 
@@ -161,7 +161,7 @@ mod tests {
 }
 
 // Integration tests: in tests/ directory of each crate
-// crates/codecompass-query/tests/search_integration.rs
+// crates/cruxe-query/tests/search_integration.rs
 #[test]
 fn test_search_returns_correct_results() {
     let fixture = setup_indexed_fixture("rust-sample");
@@ -299,11 +299,11 @@ Tasks WITHOUT `[P]` must be executed sequentially in the order listed.
 When developing features that read configuration:
 
 1. CLI flags / environment variables (highest priority)
-2. Project config: `<repo>/.codecompass/config.toml`
-3. Global config: `~/.codecompass/config.toml`
+2. Project config: `<repo>/.cruxe/config.toml`
+3. Global config: `~/.cruxe/config.toml`
 4. Built-in defaults in `configs/default.toml` (lowest priority)
 
-Environment variable prefix: `CODECOMPASS_`
+Environment variable prefix: `CRUXE_`
 
 ## Performance-Sensitive Code
 

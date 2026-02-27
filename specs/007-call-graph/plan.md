@@ -49,7 +49,7 @@ specs/007-call-graph/
 
 ```text
 crates/
-├── codecompass-indexer/
+├── cruxe-indexer/
 │   └── src/
 │       ├── call_extract.rs          # NEW: Call edge extraction from tree-sitter AST
 │       ├── languages/
@@ -58,15 +58,15 @@ crates/
 │       │   ├── python.rs            # ADD: call site query patterns
 │       │   └── go.rs                # ADD: call site query patterns
 │       └── writer.rs                # UPDATE: write call edges to symbol_edges
-├── codecompass-state/
+├── cruxe-state/
 │   └── src/
 │       └── edges.rs                 # NEW: symbol_edges CRUD for call edges
-├── codecompass-query/
+├── cruxe-query/
 │   └── src/
 │       ├── call_graph.rs            # NEW: call graph traversal (BFS with depth limit)
 │       ├── symbol_compare.rs        # NEW: cross-ref symbol comparison
 │       └── followup.rs              # NEW: follow-up query suggestion engine
-├── codecompass-mcp/
+├── cruxe-mcp/
 │   └── src/
 │       └── tools/
 │           ├── get_call_graph.rs    # NEW: MCP tool handler
@@ -81,7 +81,7 @@ testdata/
     └── call-graph-depth2.json       # Expected output for depth-2 query
 ```
 
-**Structure Decision**: Call edge extraction is a new module in `codecompass-indexer`
+**Structure Decision**: Call edge extraction is a new module in `cruxe-indexer`
 rather than extending `symbol_extract.rs`, because call analysis requires a second pass
 over the AST after symbols are extracted (callee resolution depends on the symbol index).
 The `call_extract.rs` module runs after symbol extraction within the same indexing pipeline.

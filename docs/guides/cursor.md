@@ -2,16 +2,16 @@
 
 ## Prerequisites
 
-- `codecompass` installed on `PATH`
+- `cruxe` installed on `PATH`
 - Cursor with MCP configuration support
-- A repository already indexed by CodeCompass
+- A repository already indexed by Cruxe
 
 ## 1) Initialize Project
 
 ```bash
-codecompass init
-codecompass index
-codecompass doctor
+cruxe init
+cruxe index
+cruxe doctor
 ```
 
 ## 2) Configure MCP in Cursor
@@ -20,8 +20,8 @@ Use `configs/mcp/cursor.json` as the base template.
 
 Set:
 
-- `${CODECOMPASS_WORKSPACE}` -> absolute path of the repo
-- `${CODECOMPASS_CONFIG}` -> optional config file path
+- `${CRUXE_WORKSPACE}` -> absolute path of the repo
+- `${CRUXE_CONFIG}` -> optional config file path
 
 Cursor template format uses `mcpServers`.
 
@@ -29,7 +29,7 @@ Cursor template format uses `mcpServers`.
 
 1. Restart Cursor.
 2. Open MCP settings/tool panel.
-3. Confirm CodeCompass tools are listed.
+3. Confirm Cruxe tools are listed.
 4. Run `health_check`.
 
 ## 4) Recommended Query Flow
@@ -44,11 +44,11 @@ Cursor template format uses `mcpServers`.
 
 - Validate JSON syntax in Cursor MCP config.
 - Confirm workspace path exists.
-- Run `codecompass serve-mcp --workspace <path>` locally to verify the command.
+- Run `cruxe serve-mcp --workspace <path>` locally to verify the command.
 
 ### Incomplete results
 
-- Re-index: `codecompass sync --workspace <path>`.
+- Re-index: `cruxe sync --workspace <path>`.
 - If branch changed, call `switch_ref`.
 - Increase `limit` in `search_code`.
 

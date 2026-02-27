@@ -18,7 +18,7 @@
 
 ### User Story 1 - Populate Import Edges from Source Code (Priority: P1)
 
-A developer (or the indexer pipeline) runs `codecompass index` on a repository.
+A developer (or the indexer pipeline) runs `cruxe index` on a repository.
 In addition to extracting symbol definitions (already implemented in 001-core-mvp),
 the system now parses import/use/require statements via tree-sitter and populates
 the `symbol_edges` table with `imports` edges. Each edge links the importing
@@ -51,7 +51,7 @@ actual import statements in source.
    completes, **Then** an import edge is created for the package-level import.
 5. **Given** a file with no import statements, **When** indexing completes,
    **Then** no `imports` edges are created for that file.
-6. **Given** a re-index (`codecompass index`) after file changes, **When** a file's
+6. **Given** a re-index (`cruxe index`) after file changes, **When** a file's
    imports change, **Then** old import edges for that file are replaced with the
    new set (idempotent per-file replacement).
 
@@ -220,7 +220,7 @@ the response does not exceed 500.
 - **FR-210**: `get_code_context` MUST include `estimated_tokens`, `truncated`, and
   `metadata` fields in every response.
 - **FR-211**: All new MCP tools MUST include Protocol v1 metadata in responses
-  (`codecompass_protocol_version`, `freshness_status`, `indexing_status`,
+  (`cruxe_protocol_version`, `freshness_status`, `indexing_status`,
   `result_completeness`, `ref`) and use canonical enums:
   `indexing_status` = `not_indexed | indexing | ready | failed`,
   `result_completeness` = `complete | partial | truncated`.

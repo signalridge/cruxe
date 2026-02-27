@@ -16,10 +16,10 @@ and remain unchanged. This document covers:
 ## Overlay Directory Layout
 
 Each project maintains a base index and zero or more overlay indices. The directory
-structure under the CodeCompass data root:
+structure under the Cruxe data root:
 
 ```text
-~/.codecompass/data/<project_id>/
+~/.cruxe/data/<project_id>/
   base/
     symbols/          # Tantivy index: base symbols (default branch)
     snippets/         # Tantivy index: base snippets
@@ -212,7 +212,7 @@ Lifecycle:
 5. On restart, worktrees with `refcount > 0` are reset to `refcount = 0`
    (stale detection) and their status is set to `stale` for review.
 
-Default worktree root: `~/.codecompass/worktrees/<project_id>/<normalized_ref>/`
+Default worktree root: `~/.cruxe/worktrees/<project_id>/<normalized_ref>/`
 
 ## Tantivy Index Field Additions
 
@@ -231,8 +231,8 @@ into the base index.
 
 ### Inputs
 
-- Base reader: Tantivy reader for `~/.codecompass/data/<project_id>/base/`
-- Overlay reader: Tantivy reader for `~/.codecompass/data/<project_id>/overlay/<branch>/`
+- Base reader: Tantivy reader for `~/.cruxe/data/<project_id>/base/`
+- Overlay reader: Tantivy reader for `~/.cruxe/data/<project_id>/overlay/<branch>/`
 - Tombstone set: `SELECT path FROM branch_tombstones WHERE repo = ? AND ref = ?`
 
 ### Algorithm
@@ -279,7 +279,7 @@ function merged_search(query, ref):
 ### Phase 1: Stage
 
 1. Generate `sync_id` (UUID).
-2. Create staging directory: `~/.codecompass/data/<project_id>/staging/<sync_id>/`
+2. Create staging directory: `~/.cruxe/data/<project_id>/staging/<sync_id>/`
 3. Write all overlay records to staging indices.
 4. Record `sync_id` in `index_jobs` with `status = 'running'`.
 5. Validate record counts match expected changed files.
@@ -307,7 +307,7 @@ function merged_search(query, ref):
 The critical operation is the rename in Phase 2 step 2. On POSIX systems,
 `rename(2)` is atomic within the same filesystem. The staging directory MUST
 be on the same filesystem as the overlay directory (both under
-`~/.codecompass/data/<project_id>/`).
+`~/.cruxe/data/<project_id>/`).
 
 ## State Portability Note
 
