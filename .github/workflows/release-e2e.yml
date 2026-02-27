@@ -155,9 +155,19 @@ jobs:
             jq -r --arg pattern "$pattern" '.assets[] | select(.name | test($pattern)) | .name' assets.json | head -n 1
           }
 
-          pick_sha() {
-            local name="$1"
-            jq -r --arg name "$name" '.assets[] | select(.name == $name) | ((.digest // "") | sub("^sha256:"; ""))' assets.json
+          download_and_hash() {
+            local out_dir="$1"
+            rm -rf "$out_dir"
+            mkdir -p "$out_dir"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
+
+            mac_arm_sha="$(shasum -a 256 "$out_dir/$mac_arm" | awk '{print $1}')"
+            mac_x86_sha="$(shasum -a 256 "$out_dir/$mac_x86" | awk '{print $1}')"
+            linux_arm_sha="$(shasum -a 256 "$out_dir/$linux_arm" | awk '{print $1}')"
+            linux_x86_sha="$(shasum -a 256 "$out_dir/$linux_x86" | awk '{print $1}')"
           }
 
           mac_arm=""
@@ -176,21 +186,19 @@ jobs:
             linux_arm="$(pick_name 'aarch64-unknown-linux-(musl|gnu)\\.tar\\.gz$')"
             linux_x86="$(pick_name 'x86_64-unknown-linux-(musl|gnu)\\.tar\\.gz$')"
 
-            mac_arm_sha="$(pick_sha "$mac_arm")"
-            mac_x86_sha="$(pick_sha "$mac_x86")"
-            linux_arm_sha="$(pick_sha "$linux_arm")"
-            linux_x86_sha="$(pick_sha "$linux_x86")"
-
-            if [[ -n "$mac_arm" && -n "$mac_x86" && -n "$linux_arm" && -n "$linux_x86" && \
-                  -n "$mac_arm_sha" && -n "$mac_x86_sha" && -n "$linux_arm_sha" && -n "$linux_x86_sha" ]]; then
-              break
+            if [[ -n "$mac_arm" && -n "$mac_x86" && -n "$linux_arm" && -n "$linux_x86" ]]; then
+              if download_and_hash "${RUNNER_TEMP}/tap-assets"; then
+                if [[ -n "$mac_arm_sha" && -n "$mac_x86_sha" && -n "$linux_arm_sha" && -n "$linux_x86_sha" ]]; then
+                  break
+                fi
+              fi
             fi
             sleep 5
           done
 
           if [[ -z "$mac_arm" || -z "$mac_x86" || -z "$linux_arm" || -z "$linux_x86" || \
                 -z "$mac_arm_sha" || -z "$mac_x86_sha" || -z "$linux_arm_sha" || -z "$linux_x86_sha" ]]; then
-            echo "Required release assets/digests are not ready for ${TAG}" >&2
+            echo "Required release assets/checksums are not ready for ${TAG}" >&2
             jq -r '.assets[]?.name' assets.json >&2 || true
             exit 1
           fi
