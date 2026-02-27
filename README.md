@@ -74,6 +74,36 @@ codecompass doctor [--path PATH]                        Check project health
 codecompass serve-mcp [--workspace PATH]                Start MCP server (stdio transport)
 ```
 
+## Search Intent Strategy Configuration
+
+Intent classification is configurable via `search.intent` in config TOML (for example in
+`.codecompass/config.toml` or your explicit `--config` file):
+
+```toml
+[search.intent]
+rule_order = ["error_pattern", "path", "quoted_error", "symbol", "natural_language"]
+error_patterns = ["error:", "panic:", "traceback", "thread '"]
+path_extensions = [".rs", ".ts", ".py", ".go"]
+symbol_kind_keywords = ["fn", "struct", "class", "interface"]
+enable_wrapped_quoted_error_literal = true
+```
+
+Supported `rule_order` values:
+
+- `error_pattern`
+- `path`
+- `quoted_error`
+- `symbol`
+- `natural_language`
+
+Runtime environment variable overrides:
+
+- `CODECOMPASS_SEARCH_INTENT_RULE_ORDER` (CSV list)
+- `CODECOMPASS_SEARCH_INTENT_ERROR_PATTERNS` (CSV list)
+- `CODECOMPASS_SEARCH_INTENT_PATH_EXTENSIONS` (CSV list)
+- `CODECOMPASS_SEARCH_INTENT_SYMBOL_KIND_KEYWORDS` (CSV list)
+- `CODECOMPASS_SEARCH_INTENT_ENABLE_WRAPPED_QUOTED_ERROR_LITERAL` (`true/false`, `1/0`, `yes/no`, `on/off`)
+
 ## License
 
 MIT
