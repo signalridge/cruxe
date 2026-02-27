@@ -1,8 +1,7 @@
 use crate::constants;
 use crate::error::ConfigError;
-use crate::types::{FreshnessPolicy, RankingExplainLevel, SemanticMode};
+use crate::types::{FreshnessPolicy, QueryIntent, RankingExplainLevel, SemanticMode};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -50,6 +49,8 @@ pub struct SearchConfig {
     #[serde(default = "default_max_response_bytes")]
     pub max_response_bytes: usize,
     #[serde(default)]
+    pub intent: SearchIntentConfig,
+    #[serde(default)]
     pub semantic: SemanticConfig,
 }
 
@@ -66,23 +67,87 @@ pub struct LoggingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIntentConfig {
+    #[serde(default = "default_intent_rule_order")]
+    pub rule_order: Vec<String>,
+    #[serde(default = "default_intent_error_patterns")]
+    pub error_patterns: Vec<String>,
+    #[serde(default = "default_intent_path_extensions")]
+    pub path_extensions: Vec<String>,
+    #[serde(default = "default_intent_symbol_kind_keywords")]
+    pub symbol_kind_keywords: Vec<String>,
+    #[serde(default = "default_intent_enable_wrapped_quoted_error_literal")]
+    pub enable_wrapped_quoted_error_literal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticConfig {
-    #[serde(default = "default_semantic_mode")]
-    pub semantic_mode: String,
-    #[serde(default = "default_semantic_profile")]
-    pub profile: String,
+    #[serde(default = "default_semantic_mode", alias = "semantic_mode")]
+    pub mode: String,
+    #[serde(default = "default_semantic_ratio")]
+    pub ratio: f64,
+    #[serde(default = "default_lexical_short_circuit_threshold")]
+    pub lexical_short_circuit_threshold: f64,
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
+    #[serde(default = "default_profile_advisor_mode")]
+    pub profile_advisor_mode: String,
     #[serde(default)]
-    pub profiles: BTreeMap<String, SemanticProfileOverrides>,
+    pub external_provider_enabled: bool,
+    #[serde(default)]
+    pub allow_code_payload_to_external: bool,
+    #[serde(default)]
+    pub embedding: SemanticEmbeddingConfig,
+    #[serde(default)]
+    pub rerank: SemanticRerankConfig,
+    #[serde(default)]
+    pub overrides: SemanticOverridesConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SemanticProfileOverrides {
+pub struct SemanticOverridesConfig {
     #[serde(default)]
-    pub min_score: Option<f64>,
+    pub natural_language: SemanticQueryOverride,
     #[serde(default)]
-    pub max_candidates: Option<usize>,
+    pub symbol: SemanticQueryOverride,
     #[serde(default)]
-    pub blend_weight: Option<f64>,
+    pub path: SemanticQueryOverride,
+    #[serde(default)]
+    pub error: SemanticQueryOverride,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SemanticQueryOverride {
+    #[serde(default)]
+    pub ratio: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticEmbeddingConfig {
+    #[serde(default = "default_semantic_embedding_profile", alias = "profile")]
+    pub profile: String,
+    #[serde(default = "default_semantic_embedding_provider")]
+    pub provider: String,
+    #[serde(default = "default_semantic_embedding_model")]
+    pub model: String,
+    #[serde(default = "default_semantic_embedding_model_version")]
+    pub model_version: String,
+    #[serde(default = "default_semantic_embedding_dimensions")]
+    pub dimensions: usize,
+    #[serde(default = "default_semantic_embedding_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_semantic_vector_backend")]
+    pub vector_backend: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticRerankConfig {
+    #[serde(default = "default_semantic_rerank_provider")]
+    pub provider: String,
+    #[serde(default = "default_semantic_rerank_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 fn default_max_file_size() -> u64 {
@@ -120,11 +185,104 @@ fn default_ranking_explain_level() -> String {
 fn default_max_response_bytes() -> usize {
     64 * 1024
 }
+fn default_intent_rule_order() -> Vec<String> {
+    vec![
+        "error_pattern".into(),
+        "path".into(),
+        "quoted_error".into(),
+        "symbol".into(),
+        "natural_language".into(),
+    ]
+}
+fn default_intent_error_patterns() -> Vec<String> {
+    vec![
+        "error:".into(),
+        "Error:".into(),
+        "panic:".into(),
+        "FATAL".into(),
+        "exception".into(),
+        "Exception".into(),
+        "traceback".into(),
+        "at line".into(),
+        "thread '".into(),
+    ]
+}
+fn default_intent_path_extensions() -> Vec<String> {
+    vec![
+        ".rs".into(),
+        ".ts".into(),
+        ".tsx".into(),
+        ".js".into(),
+        ".jsx".into(),
+        ".py".into(),
+        ".go".into(),
+        ".java".into(),
+        ".c".into(),
+        ".h".into(),
+        ".cpp".into(),
+        ".rb".into(),
+        ".swift".into(),
+    ]
+}
+fn default_intent_symbol_kind_keywords() -> Vec<String> {
+    vec![
+        "fn".into(),
+        "func".into(),
+        "function".into(),
+        "struct".into(),
+        "class".into(),
+        "enum".into(),
+        "trait".into(),
+        "interface".into(),
+        "type".into(),
+        "const".into(),
+        "method".into(),
+    ]
+}
+fn default_intent_enable_wrapped_quoted_error_literal() -> bool {
+    true
+}
 fn default_semantic_mode() -> String {
     "off".into()
 }
-fn default_semantic_profile() -> String {
-    "default".into()
+fn default_semantic_ratio() -> f64 {
+    0.3
+}
+fn default_lexical_short_circuit_threshold() -> f64 {
+    0.85
+}
+fn default_confidence_threshold() -> f64 {
+    0.5
+}
+fn default_profile_advisor_mode() -> String {
+    "off".into()
+}
+fn default_semantic_embedding_profile() -> String {
+    "fast_local".into()
+}
+fn default_semantic_embedding_provider() -> String {
+    "local".into()
+}
+fn default_semantic_embedding_model() -> String {
+    "NomicEmbedTextV15Q".into()
+}
+fn default_semantic_embedding_model_version() -> String {
+    "fastembed-1".into()
+}
+fn default_semantic_embedding_dimensions() -> usize {
+    768
+}
+fn default_semantic_embedding_batch_size() -> usize {
+    32
+}
+fn default_semantic_vector_backend() -> String {
+    "sqlite".into()
+}
+fn default_semantic_rerank_provider() -> String {
+    "none".into()
+}
+fn default_semantic_rerank_timeout_ms() -> u64 {
+    5000
 }
 fn default_log_level() -> String {
     "info".into()
@@ -157,6 +315,7 @@ impl Default for SearchConfig {
             freshness_policy: default_freshness_policy(),
             ranking_explain_level: default_ranking_explain_level(),
             max_response_bytes: default_max_response_bytes(),
+            intent: SearchIntentConfig::default(),
             semantic: SemanticConfig::default(),
         }
     }
@@ -170,12 +329,70 @@ impl Default for LoggingConfig {
     }
 }
 
+impl Default for SearchIntentConfig {
+    fn default() -> Self {
+        Self {
+            rule_order: default_intent_rule_order(),
+            error_patterns: default_intent_error_patterns(),
+            path_extensions: default_intent_path_extensions(),
+            symbol_kind_keywords: default_intent_symbol_kind_keywords(),
+            enable_wrapped_quoted_error_literal: default_intent_enable_wrapped_quoted_error_literal(
+            ),
+        }
+    }
+}
+
+impl SearchIntentConfig {
+    /// Return a normalized copy with canonical rule names, trimmed lists, and
+    /// fallback defaults when user-provided values are invalid/empty.
+    pub fn normalized(&self) -> Self {
+        Self {
+            rule_order: normalize_intent_rule_order(&self.rule_order),
+            error_patterns: normalize_intent_error_patterns(&self.error_patterns),
+            path_extensions: normalize_intent_path_extensions(&self.path_extensions),
+            symbol_kind_keywords: normalize_intent_symbol_kind_keywords(&self.symbol_kind_keywords),
+            enable_wrapped_quoted_error_literal: self.enable_wrapped_quoted_error_literal,
+        }
+    }
+}
+
 impl Default for SemanticConfig {
     fn default() -> Self {
         Self {
-            semantic_mode: default_semantic_mode(),
-            profile: default_semantic_profile(),
-            profiles: BTreeMap::new(),
+            mode: default_semantic_mode(),
+            ratio: default_semantic_ratio(),
+            lexical_short_circuit_threshold: default_lexical_short_circuit_threshold(),
+            confidence_threshold: default_confidence_threshold(),
+            profile_advisor_mode: default_profile_advisor_mode(),
+            external_provider_enabled: false,
+            allow_code_payload_to_external: false,
+            embedding: SemanticEmbeddingConfig::default(),
+            rerank: SemanticRerankConfig::default(),
+            overrides: SemanticOverridesConfig::default(),
+        }
+    }
+}
+
+impl Default for SemanticEmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            profile: default_semantic_embedding_profile(),
+            provider: default_semantic_embedding_provider(),
+            model: default_semantic_embedding_model(),
+            model_version: default_semantic_embedding_model_version(),
+            dimensions: default_semantic_embedding_dimensions(),
+            batch_size: default_semantic_embedding_batch_size(),
+            vector_backend: default_semantic_vector_backend(),
+        }
+    }
+}
+
+impl Default for SemanticRerankConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_semantic_rerank_provider(),
+            timeout_ms: default_semantic_rerank_timeout_ms(),
+            endpoint: None,
         }
     }
 }
@@ -190,11 +407,74 @@ impl SearchConfig {
     }
 
     pub fn semantic_mode_typed(&self) -> SemanticMode {
-        parse_semantic_mode(&self.semantic.semantic_mode).unwrap_or(SemanticMode::Off)
+        parse_semantic_mode(&self.semantic.mode).unwrap_or(SemanticMode::Off)
     }
 
-    pub fn semantic_profile_overrides(&self) -> Option<&SemanticProfileOverrides> {
-        self.semantic.profiles.get(&self.semantic.profile)
+    pub fn semantic_enabled(&self) -> bool {
+        self.semantic_mode_typed() != SemanticMode::Off
+    }
+
+    pub fn semantic_ratio_for_intent(
+        &self,
+        intent: QueryIntent,
+        request_override: Option<f64>,
+    ) -> f64 {
+        if let Some(value) = request_override {
+            return clamp_unit_f64_with_warning(
+                value,
+                default_semantic_ratio(),
+                "search.request.semantic_ratio",
+            );
+        }
+
+        let (config_override, field) = match intent {
+            QueryIntent::NaturalLanguage => (
+                self.semantic.overrides.natural_language.ratio,
+                "search.semantic.overrides.natural_language.ratio",
+            ),
+            QueryIntent::Symbol => (
+                self.semantic.overrides.symbol.ratio,
+                "search.semantic.overrides.symbol.ratio",
+            ),
+            QueryIntent::Path => (
+                self.semantic.overrides.path.ratio,
+                "search.semantic.overrides.path.ratio",
+            ),
+            QueryIntent::Error => (
+                self.semantic.overrides.error.ratio,
+                "search.semantic.overrides.error.ratio",
+            ),
+        };
+        clamp_unit_f64_with_warning(
+            config_override.unwrap_or(self.semantic.ratio),
+            default_semantic_ratio(),
+            field,
+        )
+    }
+
+    pub fn confidence_threshold(&self, request_override: Option<f64>) -> f64 {
+        clamp_unit_f64_with_warning(
+            request_override.unwrap_or(self.semantic.confidence_threshold),
+            default_confidence_threshold(),
+            "search.request.confidence_threshold",
+        )
+    }
+}
+
+impl SemanticConfig {
+    pub fn allow_external_provider_calls(&self) -> bool {
+        self.external_provider_enabled && self.allow_code_payload_to_external
+    }
+
+    /// Return the configured vector backend as `Option<&str>` for the dispatch API.
+    /// Returns `None` for the default `"sqlite"` backend.
+    pub fn vector_backend_opt(&self) -> Option<&str> {
+        let backend = self.embedding.vector_backend.as_str();
+        if backend.is_empty() || backend == "sqlite" {
+            None
+        } else {
+            Some(backend)
+        }
     }
 }
 
@@ -245,6 +525,8 @@ impl Config {
 
         // Compatibility: older docs/configs may use [query] instead of [search].
         promote_query_section(&mut merged);
+        // Compatibility: spec-kit 008 uses top-level [semantic].
+        promote_semantic_section(&mut merged);
 
         // Deserialize the merged value into Config (fills remaining fields with defaults)
         let config_str =
@@ -260,11 +542,99 @@ impl Config {
             normalize_freshness_policy(&config.search.freshness_policy);
         config.search.ranking_explain_level =
             normalize_ranking_explain_level(&config.search.ranking_explain_level);
-        config.search.semantic.semantic_mode =
-            normalize_semantic_mode(&config.search.semantic.semantic_mode);
-        if config.search.semantic.profile.trim().is_empty() {
-            config.search.semantic.profile = default_semantic_profile();
+        config.search.intent = config.search.intent.normalized();
+        config.search.semantic.mode = normalize_semantic_mode(&config.search.semantic.mode);
+        config.search.semantic.ratio = clamp_unit_f64_with_warning(
+            config.search.semantic.ratio,
+            default_semantic_ratio(),
+            "search.semantic.ratio",
+        );
+        config.search.semantic.lexical_short_circuit_threshold = clamp_unit_f64_with_warning(
+            config.search.semantic.lexical_short_circuit_threshold,
+            default_lexical_short_circuit_threshold(),
+            "search.semantic.lexical_short_circuit_threshold",
+        );
+        config.search.semantic.confidence_threshold = clamp_unit_f64_with_warning(
+            config.search.semantic.confidence_threshold,
+            default_confidence_threshold(),
+            "search.semantic.confidence_threshold",
+        );
+        config.search.semantic.embedding.profile =
+            normalize_embedding_profile(&config.search.semantic.embedding.profile);
+        config.search.semantic.embedding.provider =
+            normalize_embedding_provider(&config.search.semantic.embedding.provider);
+        if config.search.semantic.embedding.model.trim().is_empty() {
+            config.search.semantic.embedding.model = default_semantic_embedding_model();
         }
+        if config
+            .search
+            .semantic
+            .embedding
+            .model_version
+            .trim()
+            .is_empty()
+        {
+            config.search.semantic.embedding.model_version =
+                default_semantic_embedding_model_version();
+        }
+        if config.search.semantic.embedding.dimensions == 0 {
+            config.search.semantic.embedding.dimensions = default_semantic_embedding_dimensions();
+        }
+        if config.search.semantic.embedding.batch_size == 0 {
+            config.search.semantic.embedding.batch_size = default_semantic_embedding_batch_size();
+        }
+        config.search.semantic.embedding.vector_backend =
+            normalize_vector_backend(&config.search.semantic.embedding.vector_backend);
+        config.search.semantic.rerank.provider =
+            normalize_rerank_provider(&config.search.semantic.rerank.provider);
+        if config.search.semantic.rerank.timeout_ms == 0 {
+            config.search.semantic.rerank.timeout_ms = default_semantic_rerank_timeout_ms();
+        }
+        config.search.semantic.rerank.endpoint = config
+            .search
+            .semantic
+            .rerank
+            .endpoint
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config.search.semantic.overrides.natural_language.ratio = config
+            .search
+            .semantic
+            .overrides
+            .natural_language
+            .ratio
+            .map(|v| {
+                clamp_unit_f64_with_warning(
+                    v,
+                    default_semantic_ratio(),
+                    "search.semantic.overrides.natural_language.ratio",
+                )
+            });
+        config.search.semantic.overrides.symbol.ratio =
+            config.search.semantic.overrides.symbol.ratio.map(|v| {
+                clamp_unit_f64_with_warning(
+                    v,
+                    default_semantic_ratio(),
+                    "search.semantic.overrides.symbol.ratio",
+                )
+            });
+        config.search.semantic.overrides.path.ratio =
+            config.search.semantic.overrides.path.ratio.map(|v| {
+                clamp_unit_f64_with_warning(
+                    v,
+                    default_semantic_ratio(),
+                    "search.semantic.overrides.path.ratio",
+                )
+            });
+        config.search.semantic.overrides.error.ratio =
+            config.search.semantic.overrides.error.ratio.map(|v| {
+                clamp_unit_f64_with_warning(
+                    v,
+                    default_semantic_ratio(),
+                    "search.semantic.overrides.error.ratio",
+                )
+            });
         if config.search.max_response_bytes == 0 {
             config.search.max_response_bytes = default_max_response_bytes();
         }
@@ -359,16 +729,91 @@ fn apply_env_overrides(config: &mut Config) {
     {
         config.search.max_response_bytes = n;
     }
-    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_MODE") {
-        config.search.semantic.semantic_mode = v;
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_INTENT_RULE_ORDER") {
+        config.search.intent.rule_order = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_INTENT_ERROR_PATTERNS") {
+        config.search.intent.error_patterns = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_INTENT_PATH_EXTENSIONS") {
+        config.search.intent.path_extensions = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_INTENT_SYMBOL_KIND_KEYWORDS") {
+        config.search.intent.symbol_kind_keywords = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_INTENT_ENABLE_WRAPPED_QUOTED_ERROR_LITERAL")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.intent.enable_wrapped_quoted_error_literal = parsed;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_MODE") {
+        config.search.semantic.mode = v;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_MODE") {
+        config.search.semantic.mode = v;
     } else if let Ok(v) = std::env::var("CODECOMPASS_QUERY_SEMANTIC_MODE") {
-        config.search.semantic.semantic_mode = v;
+        config.search.semantic.mode = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_RATIO")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.ratio = n;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_RATIO")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.ratio = n;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_CONFIDENCE_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.confidence_threshold = n;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_CONFIDENCE_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.search.semantic.confidence_threshold = n;
     }
     if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_PROFILE") {
-        config.search.semantic.profile = v;
+        config.search.semantic.embedding.profile = v;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_EMBEDDING_PROFILE") {
+        config.search.semantic.embedding.profile = v;
     }
-    if let Ok(v) = std::env::var("CODECOMPASS_DEBUG_RANKING_REASONS") {
-        config.debug.ranking_reasons = v == "true" || v == "1";
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_VECTOR_BACKEND") {
+        config.search.semantic.embedding.vector_backend = v;
+    } else if let Ok(v) = std::env::var("CODECOMPASS_SEARCH_SEMANTIC_VECTOR_BACKEND") {
+        config.search.semantic.embedding.vector_backend = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_RERANK_PROVIDER") {
+        config.search.semantic.rerank.provider = v;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_EXTERNAL_PROVIDER_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.semantic.external_provider_enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_SEMANTIC_ALLOW_CODE_PAYLOAD_TO_EXTERNAL")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.semantic.allow_code_payload_to_external = parsed;
+    }
+    if let Ok(v) = std::env::var("CODECOMPASS_DEBUG_RANKING_REASONS")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.debug.ranking_reasons = parsed;
+    }
+}
+
+fn parse_csv_env_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn parse_env_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -398,6 +843,42 @@ fn promote_query_section(merged: &mut toml::Value) {
             && let Some(value) = query_table.get(key)
         {
             search_table.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+fn promote_semantic_section(merged: &mut toml::Value) {
+    let Some(root) = merged.as_table_mut() else {
+        return;
+    };
+
+    let Some(semantic_value) = root.get("semantic").cloned() else {
+        return;
+    };
+
+    let search_value = root
+        .entry("search")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let Some(search_table) = search_value.as_table_mut() else {
+        return;
+    };
+
+    let search_semantic = search_table
+        .entry("semantic")
+        .or_insert_with(|| semantic_value.clone());
+    merge_missing_toml_values(search_semantic, &semantic_value);
+}
+
+fn merge_missing_toml_values(base: &mut toml::Value, overlay: &toml::Value) {
+    if let (toml::Value::Table(base_map), toml::Value::Table(overlay_map)) = (base, overlay) {
+        for (key, overlay_val) in overlay_map {
+            if let Some(base_val) = base_map.get_mut(key) {
+                if base_val.is_table() && overlay_val.is_table() {
+                    merge_missing_toml_values(base_val, overlay_val);
+                }
+            } else {
+                base_map.insert(key.clone(), overlay_val.clone());
+            }
         }
     }
 }
@@ -449,8 +930,8 @@ fn normalize_ranking_explain_level(raw: &str) -> String {
 fn parse_semantic_mode(raw: &str) -> Option<SemanticMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "off" => Some(SemanticMode::Off),
-        "shadow" => Some(SemanticMode::Shadow),
-        "on" | "enabled" => Some(SemanticMode::On),
+        "rerank_only" | "rerankonly" | "shadow" => Some(SemanticMode::RerankOnly),
+        "hybrid" | "on" | "enabled" => Some(SemanticMode::Hybrid),
         _ => None,
     }
 }
@@ -458,14 +939,162 @@ fn parse_semantic_mode(raw: &str) -> Option<SemanticMode> {
 fn semantic_mode_to_str(mode: SemanticMode) -> &'static str {
     match mode {
         SemanticMode::Off => "off",
-        SemanticMode::Shadow => "shadow",
-        SemanticMode::On => "on",
+        SemanticMode::RerankOnly => "rerank_only",
+        SemanticMode::Hybrid => "hybrid",
     }
 }
 
 fn normalize_semantic_mode(raw: &str) -> String {
     let mode = parse_semantic_mode(raw).unwrap_or(SemanticMode::Off);
     semantic_mode_to_str(mode).to_string()
+}
+
+fn normalize_embedding_profile(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "fast_local" => "fast_local".to_string(),
+        "code_quality" => "code_quality".to_string(),
+        "high_quality" => "high_quality".to_string(),
+        "external" => "external".to_string(),
+        _ => default_semantic_embedding_profile(),
+    }
+}
+
+fn normalize_embedding_provider(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "local" => "local".to_string(),
+        "voyage" => "voyage".to_string(),
+        "openai" => "openai".to_string(),
+        _ => default_semantic_embedding_provider(),
+    }
+}
+
+fn normalize_rerank_provider(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => "none".to_string(),
+        "cohere" => "cohere".to_string(),
+        "voyage" => "voyage".to_string(),
+        _ => default_semantic_rerank_provider(),
+    }
+}
+
+fn normalize_vector_backend(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "lancedb" | "lance" => "lancedb".to_string(),
+        "sqlite" | "" => "sqlite".to_string(),
+        _ => default_semantic_vector_backend(),
+    }
+}
+
+fn normalize_intent_rule_name(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "error_pattern" | "error" => Some("error_pattern"),
+        "path" => Some("path"),
+        "quoted_error" | "quoted" => Some("quoted_error"),
+        "symbol" => Some("symbol"),
+        "natural_language" | "nl" | "default" => Some("natural_language"),
+        _ => None,
+    }
+}
+
+fn normalize_intent_rule_order(raw: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in raw {
+        let Some(rule) = normalize_intent_rule_name(value) else {
+            continue;
+        };
+        if !normalized.iter().any(|existing| existing == rule) {
+            normalized.push(rule.to_string());
+        }
+    }
+
+    if normalized.is_empty() {
+        return default_intent_rule_order();
+    }
+    if !normalized.iter().any(|rule| rule == "natural_language") {
+        normalized.push("natural_language".to_string());
+    }
+    normalized
+}
+
+fn normalize_intent_error_patterns(raw: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in raw.iter().map(|value| value.trim()) {
+        if value.is_empty() {
+            continue;
+        }
+        let value = value.to_string();
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    if normalized.is_empty() {
+        default_intent_error_patterns()
+    } else {
+        normalized
+    }
+}
+
+fn normalize_intent_path_extensions(raw: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in raw
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    {
+        let value = if value.starts_with('.') {
+            value
+        } else {
+            format!(".{value}")
+        };
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    if normalized.is_empty() {
+        default_intent_path_extensions()
+    } else {
+        normalized
+    }
+}
+
+fn normalize_intent_symbol_kind_keywords(raw: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in raw
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    {
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    if normalized.is_empty() {
+        default_intent_symbol_kind_keywords()
+    } else {
+        normalized
+    }
+}
+
+fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
+    if !value.is_finite() {
+        tracing::warn!(
+            field,
+            value,
+            fallback,
+            "invalid non-finite config value; falling back to default"
+        );
+        return fallback;
+    }
+    let clamped = value.clamp(0.0, 1.0);
+    if (clamped - value).abs() > f64::EPSILON {
+        tracing::warn!(
+            field,
+            value,
+            clamped,
+            "config value out of range; clamped to [0.0, 1.0]"
+        );
+    }
+    clamped
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -501,9 +1130,106 @@ mod tests {
     #[test]
     fn normalize_semantic_mode_values() {
         assert_eq!(normalize_semantic_mode("off"), "off");
-        assert_eq!(normalize_semantic_mode("shadow"), "shadow");
-        assert_eq!(normalize_semantic_mode("ENABLED"), "on");
+        assert_eq!(normalize_semantic_mode("shadow"), "rerank_only");
+        assert_eq!(normalize_semantic_mode("ENABLED"), "hybrid");
         assert_eq!(normalize_semantic_mode("unknown"), "off");
+    }
+
+    #[test]
+    fn normalize_semantic_provider_values() {
+        assert_eq!(normalize_embedding_profile("high_quality"), "high_quality");
+        assert_eq!(normalize_embedding_profile("unknown"), "fast_local");
+        assert_eq!(normalize_embedding_provider("VOYAGE"), "voyage");
+        assert_eq!(normalize_embedding_provider(""), "local");
+        assert_eq!(normalize_rerank_provider("cohere"), "cohere");
+        assert_eq!(normalize_rerank_provider("oops"), "none");
+    }
+
+    #[test]
+    fn normalize_intent_policy_values() {
+        assert_eq!(
+            normalize_intent_rule_order(&[
+                "path".to_string(),
+                "unknown".to_string(),
+                "path".to_string(),
+            ]),
+            vec!["path".to_string(), "natural_language".to_string()]
+        );
+        assert_eq!(
+            normalize_intent_error_patterns(&[
+                "".to_string(),
+                "panic payload".to_string(),
+                "panic payload".to_string(),
+            ]),
+            vec!["panic payload".to_string()]
+        );
+        assert_eq!(
+            normalize_intent_path_extensions(&[
+                "rs".to_string(),
+                " .KT ".to_string(),
+                "rs".to_string(),
+                "".to_string(),
+            ]),
+            vec![".rs".to_string(), ".kt".to_string()]
+        );
+        assert_eq!(
+            normalize_intent_symbol_kind_keywords(&[
+                "Fn".to_string(),
+                "".to_string(),
+                "METHOD".to_string(),
+                "fn".to_string(),
+            ]),
+            vec!["fn".to_string(), "method".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_env_bool_supports_common_truthy_falsey_values() {
+        assert_eq!(parse_env_bool("true"), Some(true));
+        assert_eq!(parse_env_bool("TRUE"), Some(true));
+        assert_eq!(parse_env_bool(" yes "), Some(true));
+        assert_eq!(parse_env_bool("on"), Some(true));
+        assert_eq!(parse_env_bool("1"), Some(true));
+
+        assert_eq!(parse_env_bool("false"), Some(false));
+        assert_eq!(parse_env_bool("FALSE"), Some(false));
+        assert_eq!(parse_env_bool(" no "), Some(false));
+        assert_eq!(parse_env_bool("off"), Some(false));
+        assert_eq!(parse_env_bool("0"), Some(false));
+
+        assert_eq!(parse_env_bool("maybe"), None);
+    }
+
+    #[test]
+    fn search_intent_config_normalized_produces_canonical_values() {
+        let raw = SearchIntentConfig {
+            rule_order: vec![
+                " PATH ".to_string(),
+                "path".to_string(),
+                "unknown".to_string(),
+            ],
+            error_patterns: vec![
+                "".to_string(),
+                "panic payload".to_string(),
+                "panic payload".to_string(),
+            ],
+            path_extensions: vec!["rs".to_string(), " .RS ".to_string()],
+            symbol_kind_keywords: vec!["Fn".to_string(), "fn".to_string(), "METHOD".to_string()],
+            enable_wrapped_quoted_error_literal: false,
+        };
+
+        let normalized = raw.normalized();
+        assert_eq!(
+            normalized.rule_order,
+            vec!["path".to_string(), "natural_language".to_string()]
+        );
+        assert_eq!(normalized.error_patterns, vec!["panic payload".to_string()]);
+        assert_eq!(normalized.path_extensions, vec![".rs".to_string()]);
+        assert_eq!(
+            normalized.symbol_kind_keywords,
+            vec!["fn".to_string(), "method".to_string()]
+        );
+        assert!(!normalized.enable_wrapped_quoted_error_literal);
     }
 
     #[test]
@@ -544,7 +1270,43 @@ mod tests {
     }
 
     #[test]
-    fn load_with_file_normalizes_invalid_values_and_legacy_debug_flag() {
+    fn promote_semantic_section_copies_missing_fields() {
+        let mut merged: toml::Value = toml::from_str(
+            r#"
+            [search]
+            default_ref = "main"
+
+            [semantic]
+            mode = "hybrid"
+            ratio = 0.7
+
+            [semantic.rerank]
+            provider = "cohere"
+            timeout_ms = 1500
+            "#,
+        )
+        .unwrap();
+
+        promote_semantic_section(&mut merged);
+        let semantic = merged
+            .get("search")
+            .and_then(|v| v.get("semantic"))
+            .and_then(|v| v.as_table())
+            .unwrap();
+        assert_eq!(
+            semantic.get("mode").and_then(|v| v.as_str()),
+            Some("hybrid")
+        );
+        assert_eq!(semantic.get("ratio").and_then(|v| v.as_float()), Some(0.7));
+        let rerank = semantic.get("rerank").and_then(|v| v.as_table()).unwrap();
+        assert_eq!(
+            rerank.get("provider").and_then(|v| v.as_str()),
+            Some("cohere")
+        );
+    }
+
+    #[test]
+    fn load_with_file_normalizes_invalid_values_clamps_ratios_and_legacy_debug_flag() {
         let temp = tempdir().unwrap();
         let config_path = temp.path().join("config.toml");
         std::fs::write(
@@ -556,8 +1318,22 @@ mod tests {
             max_response_bytes = 0
 
             [search.semantic]
-            semantic_mode = "future_mode"
+            mode = "future_mode"
+            ratio = 9.0
+            lexical_short_circuit_threshold = -1.0
+            confidence_threshold = 2.0
+
+            [search.semantic.embedding]
             profile = ""
+            provider = "unknown"
+            model = ""
+            model_version = ""
+            dimensions = 0
+            batch_size = 0
+
+            [search.semantic.rerank]
+            provider = "invalid"
+            timeout_ms = 0
 
             [debug]
             ranking_reasons = true
@@ -569,8 +1345,21 @@ mod tests {
         assert_eq!(loaded.search.freshness_policy, "balanced");
         assert_eq!(loaded.search.ranking_explain_level, "full");
         assert_eq!(loaded.search.max_response_bytes, 64 * 1024);
-        assert_eq!(loaded.search.semantic.semantic_mode, "off");
-        assert_eq!(loaded.search.semantic.profile, "default");
+        assert_eq!(loaded.search.semantic.mode, "off");
+        assert_eq!(loaded.search.semantic.ratio, 1.0);
+        assert_eq!(loaded.search.semantic.lexical_short_circuit_threshold, 0.0);
+        assert_eq!(loaded.search.semantic.confidence_threshold, 1.0);
+        assert_eq!(loaded.search.semantic.embedding.profile, "fast_local");
+        assert_eq!(loaded.search.semantic.embedding.provider, "local");
+        assert_eq!(loaded.search.semantic.embedding.model, "NomicEmbedTextV15Q");
+        assert_eq!(
+            loaded.search.semantic.embedding.model_version,
+            "fastembed-1"
+        );
+        assert_eq!(loaded.search.semantic.embedding.dimensions, 768);
+        assert_eq!(loaded.search.semantic.embedding.batch_size, 32);
+        assert_eq!(loaded.search.semantic.rerank.provider, "none");
+        assert_eq!(loaded.search.semantic.rerank.timeout_ms, 5000);
         assert_eq!(
             loaded.search.freshness_policy_typed(),
             FreshnessPolicy::Balanced
@@ -583,19 +1372,72 @@ mod tests {
     }
 
     #[test]
-    fn semantic_profile_override_lookup_uses_selected_profile() {
+    fn semantic_ratio_override_precedence_is_request_then_intent_then_default() {
         let mut cfg = SearchConfig::default();
-        cfg.semantic.profile = "high_recall".to_string();
-        cfg.semantic.profiles.insert(
-            "high_recall".to_string(),
-            SemanticProfileOverrides {
-                min_score: Some(0.12),
-                max_candidates: Some(128),
-                blend_weight: Some(0.7),
-            },
+        cfg.semantic.ratio = 0.3;
+        cfg.semantic.overrides.natural_language.ratio = Some(0.6);
+
+        assert_eq!(
+            cfg.semantic_ratio_for_intent(QueryIntent::NaturalLanguage, None),
+            0.6
         );
-        let selected = cfg.semantic_profile_overrides().unwrap();
-        assert_eq!(selected.max_candidates, Some(128));
-        assert_eq!(selected.min_score, Some(0.12));
+        assert_eq!(
+            cfg.semantic_ratio_for_intent(QueryIntent::NaturalLanguage, Some(0.9)),
+            0.9
+        );
+        assert_eq!(cfg.semantic_ratio_for_intent(QueryIntent::Path, None), 0.3);
+    }
+
+    #[test]
+    fn semantic_external_provider_gate_requires_both_flags() {
+        let semantic = SemanticConfig {
+            external_provider_enabled: true,
+            allow_code_payload_to_external: false,
+            ..Default::default()
+        };
+        assert!(!semantic.allow_external_provider_calls());
+        let semantic = SemanticConfig {
+            external_provider_enabled: true,
+            allow_code_payload_to_external: true,
+            ..Default::default()
+        };
+        assert!(semantic.allow_external_provider_calls());
+    }
+
+    #[test]
+    fn load_with_file_normalizes_intent_config_fields() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search.intent]
+            rule_order = ["path", "unknown", "path"]
+            error_patterns = ["", "panic payload"]
+            path_extensions = ["rs", " .kt "]
+            symbol_kind_keywords = ["Fn", "", "METHOD"]
+            enable_wrapped_quoted_error_literal = false
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(
+            loaded.search.intent.rule_order,
+            vec!["path".to_string(), "natural_language".to_string()]
+        );
+        assert_eq!(
+            loaded.search.intent.error_patterns,
+            vec!["panic payload".to_string()]
+        );
+        assert_eq!(
+            loaded.search.intent.path_extensions,
+            vec![".rs".to_string(), ".kt".to_string()]
+        );
+        assert_eq!(
+            loaded.search.intent.symbol_kind_keywords,
+            vec!["fn".to_string(), "method".to_string()]
+        );
+        assert!(!loaded.search.intent.enable_wrapped_quoted_error_literal);
     }
 }
