@@ -233,6 +233,13 @@ jobs:
                 -z "$mac_arm_sha" || -z "$mac_x86_sha" || -z "$linux_arm_sha" || -z "$linux_x86_sha" ]]; then
             echo "Required release assets/checksums are not ready for ${TAG}" >&2
             jq -r '.assets[]?.name' assets.json >&2 || true
+            echo "Resolved binary names: mac_arm=${mac_arm} mac_x86=${mac_x86} linux_arm=${linux_arm} linux_x86=${linux_x86}" >&2
+            echo "Resolved checksums: mac_arm_sha=${mac_arm_sha} mac_x86_sha=${mac_x86_sha} linux_arm_sha=${linux_arm_sha} linux_x86_sha=${linux_x86_sha}" >&2
+            ls -la "${RUNNER_TEMP}/tap-assets" >&2 || true
+            for f in "${RUNNER_TEMP}/tap-assets"/*.sha256; do
+              [[ -e "$f" ]] || continue
+              echo "sha file $(basename "$f"): $(head -n 1 "$f")" >&2
+            done
             exit 1
           fi
 
