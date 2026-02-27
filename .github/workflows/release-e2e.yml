@@ -175,16 +175,21 @@ jobs:
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > assets.json
           }
 
+          extract_checksum() {
+            local file_path="$1"
+            awk 'match($0, /[0-9A-Fa-f]{64}/) { print tolower(substr($0, RSTART, RLENGTH)); found=1; exit } END { if (!found) exit 1 }' "$file_path"
+          }
+
           download_and_hash() {
             local out_dir="$1"
             rm -rf "$out_dir"
             mkdir -p "$out_dir"
             retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir "$out_dir" >/dev/null 2>&1 || return 1
 
-            mac_arm_sha="$(awk '{print $1}' "$out_dir/${mac_arm}.sha256" 2>/dev/null | head -n 1)"
-            mac_x86_sha="$(awk '{print $1}' "$out_dir/${mac_x86}.sha256" 2>/dev/null | head -n 1)"
-            linux_arm_sha="$(awk '{print $1}' "$out_dir/${linux_arm}.sha256" 2>/dev/null | head -n 1)"
-            linux_x86_sha="$(awk '{print $1}' "$out_dir/${linux_x86}.sha256" 2>/dev/null | head -n 1)"
+            mac_arm_sha="$(extract_checksum "$out_dir/${mac_arm}.sha256" 2>/dev/null || true)"
+            mac_x86_sha="$(extract_checksum "$out_dir/${mac_x86}.sha256" 2>/dev/null || true)"
+            linux_arm_sha="$(extract_checksum "$out_dir/${linux_arm}.sha256" 2>/dev/null || true)"
+            linux_x86_sha="$(extract_checksum "$out_dir/${linux_x86}.sha256" 2>/dev/null || true)"
 
             [[ "$mac_arm_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
             [[ "$mac_x86_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
@@ -201,7 +206,7 @@ jobs:
           linux_arm_sha=""
           linux_x86_sha=""
 
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 90); do
             if ! retry 3 2 fetch_assets_json; then
               sleep 5
               continue
