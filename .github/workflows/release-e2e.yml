@@ -1,0 +1,314 @@
+name: release-e2e
+
+on:
+  workflow_run:
+    workflows:
+      - release
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to validate"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux-musl-e2e:
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+        startsWith(inputs.tag, 'v')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+    steps:
+      - name: Download Linux musl artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'codecompass-x86_64-unknown-linux-musl.tar.gz' --dir artifacts
+
+      - name: Verify static linking and Linux E2E
+        run: |
+          set -euo pipefail
+          tar -xzf artifacts/codecompass-x86_64-unknown-linux-musl.tar.gz -C artifacts
+          BIN="$PWD/artifacts/codecompass-x86_64-unknown-linux-musl/codecompass"
+          chmod +x "$BIN"
+
+          "$BIN" --version
+          ldd_out="$(ldd "$BIN" 2>&1 || true)"
+          echo "$ldd_out"
+          if echo "$ldd_out" | grep -Eq 'not found'; then
+            echo "Found unresolved shared libraries" >&2
+            exit 1
+          fi
+
+          mkdir -p sample/src
+          cat > sample/src/lib.rs <<'RS'
+          pub fn add(a: i32, b: i32) -> i32 { a + b }
+          RS
+
+          (
+            cd sample
+            git init -q
+            git config user.name test
+            git config user.email test@example.com
+            git add .
+            git commit -q -m 'init'
+          )
+
+          "$BIN" init --path "$PWD/sample"
+          "$BIN" index --path "$PWD/sample"
+          (
+            cd sample
+            "$BIN" search add --ref main --limit 5
+          )
+
+  windows-e2e:
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+        startsWith(inputs.tag, 'v')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: windows-2022
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+    steps:
+      - name: Download Windows artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern 'codecompass-x86_64-pc-windows-msvc.zip' --dir artifacts
+          Expand-Archive -Path artifacts\codecompass-x86_64-pc-windows-msvc.zip -DestinationPath artifacts -Force
+
+      - name: Windows E2E
+        shell: pwsh
+        run: |
+          $bin = (Get-ChildItem -Path artifacts -Recurse -Filter codecompass.exe | Select-Object -First 1).FullName
+          if (-not $bin) {
+            Write-Error "codecompass.exe not found in extracted release artifact"
+            exit 1
+          }
+          & $bin --version
+
+          New-Item -ItemType Directory -Path sample\src -Force | Out-Null
+          Set-Content -Path sample\src\lib.rs -Value 'pub fn add(a: i32, b: i32) -> i32 { a + b }'
+
+          Push-Location sample
+          git init -q
+          git config user.name test
+          git config user.email test@example.com
+          git add .
+          git commit -q -m 'init'
+          Pop-Location
+
+          & $bin init --path (Resolve-Path sample)
+          & $bin index --path (Resolve-Path sample)
+          Push-Location sample
+          & $bin search add --ref main --limit 5
+          Pop-Location
+
+  homebrew-audit-install:
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+        startsWith(inputs.tag, 'v')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: macos-14
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tap formula from release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAP_DIR="${RUNNER_TEMP}/codecompass-tap"
+          mkdir -p "${TAP_DIR}/Formula"
+          echo "TAP_DIR=${TAP_DIR}" >> "$GITHUB_ENV"
+
+          pick_name() {
+            local pattern="$1"
+            jq -r --arg pattern "$pattern" '.assets[] | select(.name | test($pattern)) | .name' assets.json | head -n 1
+          }
+
+          retry() {
+            local attempts="$1"
+            local delay_seconds="$2"
+            shift 2
+            local i
+            for i in $(seq 1 "$attempts"); do
+              if "$@"; then
+                return 0
+              fi
+              if [[ "$i" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+            done
+            return 1
+          }
+
+          fetch_assets_json() {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > assets.json
+          }
+
+          extract_checksum() {
+            local file_path="$1"
+            awk 'match($0, /[0-9A-Fa-f]{64}/) { print tolower(substr($0, RSTART, RLENGTH)); found=1; exit } END { if (!found) exit 1 }' "$file_path"
+          }
+
+          download_and_hash() {
+            local out_dir="$1"
+            rm -rf "$out_dir"
+            mkdir -p "$out_dir"
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${mac_arm}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${mac_x86}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${linux_arm}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${linux_x86}.sha256" --dir "$out_dir" >/dev/null 2>&1 || return 1
+
+            mac_arm_sha="$(extract_checksum "$out_dir/${mac_arm}.sha256" 2>/dev/null || true)"
+            mac_x86_sha="$(extract_checksum "$out_dir/${mac_x86}.sha256" 2>/dev/null || true)"
+            linux_arm_sha="$(extract_checksum "$out_dir/${linux_arm}.sha256" 2>/dev/null || true)"
+            linux_x86_sha="$(extract_checksum "$out_dir/${linux_x86}.sha256" 2>/dev/null || true)"
+
+            [[ "$mac_arm_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$mac_x86_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$linux_arm_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$linux_x86_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+          }
+
+          mac_arm=""
+          mac_x86=""
+          linux_arm=""
+          linux_x86=""
+          mac_arm_sha=""
+          mac_x86_sha=""
+          linux_arm_sha=""
+          linux_x86_sha=""
+
+          for _ in $(seq 1 90); do
+            if ! retry 3 2 fetch_assets_json; then
+              sleep 5
+              continue
+            fi
+            mac_arm="$(pick_name 'aarch64-apple-darwin\.tar\.gz$')"
+            mac_x86="$(pick_name 'x86_64-apple-darwin\.tar\.gz$')"
+            linux_arm="$(pick_name 'aarch64-unknown-linux-(musl|gnu)\.tar\.gz$')"
+            linux_x86="$(pick_name 'x86_64-unknown-linux-(musl|gnu)\.tar\.gz$')"
+
+            if [[ -n "$mac_arm" && -n "$mac_x86" && -n "$linux_arm" && -n "$linux_x86" ]]; then
+              if download_and_hash "${RUNNER_TEMP}/tap-assets"; then
+                if [[ -n "$mac_arm_sha" && -n "$mac_x86_sha" && -n "$linux_arm_sha" && -n "$linux_x86_sha" ]]; then
+                  break
+                fi
+              fi
+            fi
+            sleep 5
+          done
+
+          if [[ -z "$mac_arm" || -z "$mac_x86" || -z "$linux_arm" || -z "$linux_x86" || \
+                -z "$mac_arm_sha" || -z "$mac_x86_sha" || -z "$linux_arm_sha" || -z "$linux_x86_sha" ]]; then
+            echo "Required release assets/checksums are not ready for ${TAG}" >&2
+            jq -r '.assets[]?.name' assets.json >&2 || true
+            echo "Resolved binary names: mac_arm=${mac_arm} mac_x86=${mac_x86} linux_arm=${linux_arm} linux_x86=${linux_x86}" >&2
+            echo "Resolved checksums: mac_arm_sha=${mac_arm_sha} mac_x86_sha=${mac_x86_sha} linux_arm_sha=${linux_arm_sha} linux_x86_sha=${linux_x86_sha}" >&2
+            ls -la "${RUNNER_TEMP}/tap-assets" >&2 || true
+            for f in "${RUNNER_TEMP}/tap-assets"/*.sha256; do
+              [[ -e "$f" ]] || continue
+              echo "sha file $(basename "$f"): $(head -n 1 "$f")" >&2
+            done
+            exit 1
+          fi
+
+          cat > "${TAP_DIR}/Formula/codecompass.rb" <<RUBY
+          class Codecompass < Formula
+            desc "Code search and navigation engine for AI coding assistants"
+            homepage "https://github.com/signalridge/codecompass"
+            version "${TAG#v}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${mac_arm}"
+                sha256 "${mac_arm_sha}"
+              else
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${mac_x86}"
+                sha256 "${mac_x86_sha}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${linux_arm}"
+                sha256 "${linux_arm_sha}"
+              else
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${linux_x86}"
+                sha256 "${linux_x86_sha}"
+              end
+            end
+
+            def install
+              bin.install "codecompass"
+            end
+
+            test do
+              output = shell_output("#{bin}/codecompass --version")
+              assert_match(version.to_s, output)
+            end
+          end
+          RUBY
+
+          (
+            cd "${TAP_DIR}"
+            git init -q
+            git config user.name ci
+            git config user.email ci@example.com
+            git add Formula/codecompass.rb
+            git commit -q -m "Add codecompass formula for ${TAG}"
+          )
+
+      - name: Homebrew audit and install verification
+        run: |
+          set -euo pipefail
+          brew untap signalridge/tap >/dev/null 2>&1 || true
+          brew tap --custom-remote signalridge/tap "$TAP_DIR"
+          brew audit --strict signalridge/tap/codecompass
+          brew install --build-from-source signalridge/tap/codecompass
+          codecompass --version
+
+          mkdir -p sample/src
+          cat > sample/src/lib.rs <<'RS'
+          pub fn add(a: i32, b: i32) -> i32 { a + b }
+          RS
+
+          (
+            cd sample
+            git init -q
+            git config user.name test
+            git config user.email test@example.com
+            git add .
+            git commit -q -m 'init'
+          )
+
+          codecompass init --path "$PWD/sample"
+          codecompass index --path "$PWD/sample"
+          (
+            cd sample
+            codecompass doctor
+          )

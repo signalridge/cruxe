@@ -17,6 +17,16 @@ Code search and navigation engine for AI coding assistants.
 cargo install --path crates/codecompass-cli
 ```
 
+### Prebuilt Releases
+
+Prebuilt archives are published on GitHub Releases for:
+
+- macOS: `aarch64`, `x86_64`
+- Linux: `x86_64`, `aarch64` (musl static)
+- Windows: `x86_64`
+
+Checksums are published alongside each release.
+
 ## Quick Start
 
 ```bash
@@ -47,6 +57,18 @@ To use CodeCompass as an MCP server (e.g. with Claude Desktop or similar tools),
   }
 }
 ```
+
+Ready-to-use templates are available in `configs/mcp/`:
+
+- `claude-code.json`
+- `cursor.json`
+- `codex.json`
+- `generic.json`
+- `tool-schemas.json` (machine-readable tool schema export)
+
+Human-readable schema reference: `docs/reference/mcp-tools-schema.md`
+Agent guides: `docs/guides/`
+Auto-indexing templates: `configs/templates/`
 
 ## Architecture
 
