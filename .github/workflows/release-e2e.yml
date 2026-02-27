@@ -155,14 +155,34 @@ jobs:
             jq -r --arg pattern "$pattern" '.assets[] | select(.name | test($pattern)) | .name' assets.json | head -n 1
           }
 
+          retry() {
+            local attempts="$1"
+            local delay_seconds="$2"
+            shift 2
+            local i
+            for i in $(seq 1 "$attempts"); do
+              if "$@"; then
+                return 0
+              fi
+              if [[ "$i" -lt "$attempts" ]]; then
+                sleep "$delay_seconds"
+              fi
+            done
+            return 1
+          }
+
+          fetch_assets_json() {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > assets.json
+          }
+
           download_and_hash() {
             local out_dir="$1"
             rm -rf "$out_dir"
             mkdir -p "$out_dir"
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$mac_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_arm" --dir "$out_dir" >/dev/null 2>&1 || return 1
+            retry 3 2 gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$linux_x86" --dir "$out_dir" >/dev/null 2>&1 || return 1
 
             mac_arm_sha="$(shasum -a 256 "$out_dir/$mac_arm" | awk '{print $1}')"
             mac_x86_sha="$(shasum -a 256 "$out_dir/$mac_x86" | awk '{print $1}')"
@@ -180,7 +200,10 @@ jobs:
           linux_x86_sha=""
 
           for _ in $(seq 1 60); do
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > assets.json
+            if ! retry 3 2 fetch_assets_json; then
+              sleep 5
+              continue
+            fi
             mac_arm="$(pick_name 'aarch64-apple-darwin\\.tar\\.gz$')"
             mac_x86="$(pick_name 'x86_64-apple-darwin\\.tar\\.gz$')"
             linux_arm="$(pick_name 'aarch64-unknown-linux-(musl|gnu)\\.tar\\.gz$')"
