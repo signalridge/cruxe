@@ -26,6 +26,10 @@ pub fn definition() -> ToolDefinition {
                     "type": "object",
                     "description": "Result summary from the previous query (top_score, total_candidates, query_intent, etc.)."
                 },
+                "ref": {
+                    "type": "string",
+                    "description": "Branch/ref scope."
+                },
                 "confidence_threshold": {
                     "type": "number",
                     "description": "Threshold below which results are considered low-confidence. Default: 0.5."

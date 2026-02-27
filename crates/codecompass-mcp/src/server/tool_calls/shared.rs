@@ -417,6 +417,14 @@ pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, O
                 "remediation": "codecompass index --force",
             })),
         ),
+        StateError::ProjectNotFound { project_id } => (
+            ProtocolErrorCode::ProjectNotFound,
+            format!("Project not found: {project_id}"),
+            Some(json!({
+                "details": format!("project_not_found: project_id={project_id}"),
+                "remediation": "Run `codecompass init` to register this workspace.",
+            })),
+        ),
         other => (
             ProtocolErrorCode::InternalError,
             format!("Tool execution failed: {}", other),

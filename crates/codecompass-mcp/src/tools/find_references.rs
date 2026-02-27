@@ -22,7 +22,8 @@ pub fn definition() -> ToolDefinition {
                 },
                 "kind": {
                     "type": "string",
-                    "description": "Optional edge type filter (imports, calls, implements, extends, references)."
+                    "description": "Optional edge type filter.",
+                    "enum": ["imports", "calls", "implements", "extends", "references"]
                 },
                 "limit": {
                     "type": "integer",

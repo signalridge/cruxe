@@ -50,11 +50,15 @@ pub fn definition() -> ToolDefinition {
                 },
                 "semantic_ratio": {
                     "type": "number",
-                    "description": "Optional semantic blend ratio cap override (0.0-1.0). Runtime may reduce actual usage."
+                    "description": "Optional semantic blend ratio cap override (0.0-1.0). Runtime may reduce actual usage.",
+                    "minimum": 0.0,
+                    "maximum": 1.0
                 },
                 "confidence_threshold": {
                     "type": "number",
-                    "description": "Optional low-confidence threshold override (0.0-1.0)."
+                    "description": "Optional low-confidence threshold override (0.0-1.0).",
+                    "minimum": 0.0,
+                    "maximum": 1.0
                 }
             },
             "required": ["query"]
