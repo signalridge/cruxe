@@ -32,7 +32,7 @@
 
 **Purpose**: Homebrew distribution for macOS (and Linux Homebrew) users
 
-- [ ] T420 [US2] Create Homebrew tap repository: `signalridge/homebrew-tap` on GitHub with initial README
+- [x] T420 [US2] Create Homebrew tap repository: verified `signalridge/homebrew-tap` exists on GitHub and contains initial `README.md`
 - [x] T421 [US2] Write Homebrew formula in `Formula/codecompass.rb`: added multi-platform formula template with URL/checksum slots and `codecompass --version` test block
 - [x] T422 [US2] Create Homebrew auto-update workflow in `.github/workflows/homebrew-update.yml`: added release/workflow_dispatch updater that opens a PR against `signalridge/homebrew-tap`
 - [ ] T423 [US2] Test Homebrew formula: run `brew install --build-from-source` locally, verify `codecompass --version` and `codecompass doctor` succeed
@@ -95,10 +95,10 @@
 - [ ] T444 [P] End-to-end test on Linux x86_64: download release binary in Docker (ubuntu:latest), verify init + index + search
 - [ ] T445 [P] End-to-end test on Windows x86_64: download release binary, verify init + index + search (if Windows CI available)
 - [ ] T446 Verify Homebrew formula: `brew install signalridge/tap/codecompass && codecompass doctor`
-- [ ] T447 [P] Validate all MCP config templates: copy each template into the respective agent's config, verify tools are listed
+- [x] T447 [P] Validate all MCP config templates: verified all templates map to `codecompass serve-mcp --workspace ${CODECOMPASS_WORKSPACE}` and confirmed tools are listed via `tools/list` (18 tools)
 - [x] T448 [P] Proofread all integration guides: reviewed command paths/steps and ensured guide structure consistency
 - [x] T449 Validate `configs/mcp/tool-schemas.json` against MCP specification: schema generated from MCP `tools/list`, JSON-validated, and documented with regeneration/validation commands
-- [ ] T450 [P] Verify changelog generation: create 10 conventional commits (mix of feat, fix, docs), tag, verify changelog groups them correctly
+- [x] T450 [P] Verify changelog generation: created 10 conventional commits in a temp repo, tagged `v0.0.1`, and verified `git-cliff` groups output into `Features`, `Fixes`, and `Documentation`
 
 ---
 
