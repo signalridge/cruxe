@@ -35,22 +35,11 @@ impl Default for IntentPolicy {
 impl From<&SearchIntentConfig> for IntentPolicy {
     fn from(config: &SearchIntentConfig) -> Self {
         let config = config.normalized();
-
-        let mut rule_order = Vec::new();
-        for value in &config.rule_order {
-            let Some(rule) = parse_intent_rule(value) else {
-                continue;
-            };
-            if !rule_order.contains(&rule) {
-                rule_order.push(rule);
-            }
-        }
-        if rule_order.is_empty() {
-            rule_order = default_intent_rule_order();
-        }
-        if !rule_order.contains(&IntentRule::NaturalLanguage) {
-            rule_order.push(IntentRule::NaturalLanguage);
-        }
+        let rule_order = config
+            .rule_order
+            .iter()
+            .filter_map(|value| parse_intent_rule(value))
+            .collect();
 
         IntentPolicy {
             rule_order,
@@ -246,16 +235,6 @@ fn parse_intent_rule(raw: &str) -> Option<IntentRule> {
         "natural_language" => Some(IntentRule::NaturalLanguage),
         _ => None,
     }
-}
-
-fn default_intent_rule_order() -> Vec<IntentRule> {
-    vec![
-        IntentRule::ErrorPattern,
-        IntentRule::Path,
-        IntentRule::QuotedError,
-        IntentRule::Symbol,
-        IntentRule::NaturalLanguage,
-    ]
 }
 
 #[cfg(test)]
