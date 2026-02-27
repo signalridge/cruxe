@@ -20,87 +20,141 @@ pub struct ProtocolMetadata {
     pub safety_limit_applied: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_ratio_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_triggered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_skipped_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_provider_blocked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_model_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_fallback_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low_confidence: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence_threshold: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_margin: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_agreement: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_intent_confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent_escalation_hint: Option<String>,
 }
 
 impl ProtocolMetadata {
-    /// Create metadata with default "healthy" values.
-    pub fn new(r#ref: &str) -> Self {
+    /// Internal base constructor — all `Option` fields default to `None`.
+    fn base(
+        r#ref: &str,
+        freshness_status: FreshnessStatus,
+        indexing_status: IndexingStatus,
+        result_completeness: ResultCompleteness,
+        schema_status: SchemaStatus,
+    ) -> Self {
         Self {
             codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
-            freshness_status: FreshnessStatus::Fresh,
-            indexing_status: IndexingStatus::Ready,
-            result_completeness: ResultCompleteness::Complete,
+            freshness_status,
+            indexing_status,
+            result_completeness,
             r#ref: r#ref.to_string(),
-            schema_status: SchemaStatus::Compatible,
+            schema_status,
             ranking_reasons: None,
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
             warnings: None,
+            semantic_mode: None,
+            semantic_enabled: None,
+            semantic_ratio_used: None,
+            semantic_triggered: None,
+            semantic_skipped_reason: None,
+            semantic_fallback: None,
+            external_provider_blocked: None,
+            embedding_model_version: None,
+            rerank_provider: None,
+            rerank_fallback: None,
+            rerank_fallback_reason: None,
+            low_confidence: None,
+            suggested_action: None,
+            confidence_threshold: None,
+            top_score: None,
+            score_margin: None,
+            channel_agreement: None,
+            query_intent_confidence: None,
+            intent_escalation_hint: None,
         }
+    }
+
+    /// Create metadata with default "healthy" values.
+    pub fn new(r#ref: &str) -> Self {
+        Self::base(
+            r#ref,
+            FreshnessStatus::Fresh,
+            IndexingStatus::Ready,
+            ResultCompleteness::Complete,
+            SchemaStatus::Compatible,
+        )
     }
 
     /// Create metadata indicating no index is available.
     pub fn not_indexed(r#ref: &str) -> Self {
-        Self {
-            codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
-            freshness_status: FreshnessStatus::Stale,
-            indexing_status: IndexingStatus::NotIndexed,
-            result_completeness: ResultCompleteness::Partial,
-            r#ref: r#ref.to_string(),
-            schema_status: SchemaStatus::NotIndexed,
-            ranking_reasons: None,
-            suppressed_duplicate_count: None,
-            safety_limit_applied: None,
-            warnings: None,
-        }
+        Self::base(
+            r#ref,
+            FreshnessStatus::Stale,
+            IndexingStatus::NotIndexed,
+            ResultCompleteness::Partial,
+            SchemaStatus::NotIndexed,
+        )
     }
 
     /// Create metadata indicating indexing is in progress.
     pub fn syncing(r#ref: &str) -> Self {
-        Self {
-            codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
-            freshness_status: FreshnessStatus::Syncing,
-            indexing_status: IndexingStatus::Indexing,
-            result_completeness: ResultCompleteness::Partial,
-            r#ref: r#ref.to_string(),
-            schema_status: SchemaStatus::Compatible,
-            ranking_reasons: None,
-            suppressed_duplicate_count: None,
-            safety_limit_applied: None,
-            warnings: None,
-        }
+        Self::base(
+            r#ref,
+            FreshnessStatus::Syncing,
+            IndexingStatus::Indexing,
+            ResultCompleteness::Partial,
+            SchemaStatus::Compatible,
+        )
     }
 
     /// Create metadata indicating schema migration is required before querying.
     pub fn reindex_required(r#ref: &str) -> Self {
-        Self {
-            codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
-            freshness_status: FreshnessStatus::Stale,
-            indexing_status: IndexingStatus::Failed,
-            result_completeness: ResultCompleteness::Partial,
-            r#ref: r#ref.to_string(),
-            schema_status: SchemaStatus::ReindexRequired,
-            ranking_reasons: None,
-            suppressed_duplicate_count: None,
-            safety_limit_applied: None,
-            warnings: None,
-        }
+        Self::base(
+            r#ref,
+            FreshnessStatus::Stale,
+            IndexingStatus::Failed,
+            ResultCompleteness::Partial,
+            SchemaStatus::ReindexRequired,
+        )
     }
 
     /// Create metadata indicating the index is corrupted and unusable.
     pub fn corrupt_manifest(r#ref: &str) -> Self {
-        Self {
-            codecompass_protocol_version: constants::PROTOCOL_VERSION.to_string(),
-            freshness_status: FreshnessStatus::Stale,
-            indexing_status: IndexingStatus::Failed,
-            result_completeness: ResultCompleteness::Partial,
-            r#ref: r#ref.to_string(),
-            schema_status: SchemaStatus::CorruptManifest,
-            ranking_reasons: None,
-            suppressed_duplicate_count: None,
-            safety_limit_applied: None,
-            warnings: None,
-        }
+        Self::base(
+            r#ref,
+            FreshnessStatus::Stale,
+            IndexingStatus::Failed,
+            ResultCompleteness::Partial,
+            SchemaStatus::CorruptManifest,
+        )
     }
 
     /// Update freshness based on active job check.

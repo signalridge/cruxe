@@ -386,6 +386,7 @@ mod tests {
             snippet: None,
             chunk_type: None,
             source_layer: None,
+            provenance: "lexical".to_string(),
         };
         let mut second = base.clone();
         second.result_id = "r2".to_string();
@@ -408,6 +409,7 @@ mod tests {
             snippet: None,
             chunk_type: None,
             source_layer: None,
+            provenance: "lexical".to_string(),
         };
 
         let (deduped, kept_indices, suppressed) = dedup_search_results(vec![base, second, third]);

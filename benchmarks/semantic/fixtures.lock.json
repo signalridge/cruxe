@@ -1,0 +1,30 @@
+{
+  "version": "fixtures-lock-v1",
+  "generated_by": "codecompass-008-semantic-hybrid",
+  "fixtures": [
+    {
+      "name": "rust-sample",
+      "repo": "local:testdata/fixtures/rust-sample",
+      "commit": "workspace-snapshot",
+      "path": "testdata/fixtures/rust-sample"
+    },
+    {
+      "name": "typescript-sample",
+      "repo": "local:testdata/fixtures/ts-sample",
+      "commit": "workspace-snapshot",
+      "path": "testdata/fixtures/ts-sample"
+    },
+    {
+      "name": "python-sample",
+      "repo": "local:testdata/fixtures/python-sample",
+      "commit": "workspace-snapshot",
+      "path": "testdata/fixtures/python-sample"
+    },
+    {
+      "name": "go-sample",
+      "repo": "local:testdata/fixtures/go-sample",
+      "commit": "workspace-snapshot",
+      "path": "testdata/fixtures/go-sample"
+    }
+  ]
+}

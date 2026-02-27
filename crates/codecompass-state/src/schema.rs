@@ -1,13 +1,18 @@
+use crate::vector_index::SEMANTIC_VECTOR_DDL;
 use codecompass_core::error::StateError;
 use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(SCHEMA_SQL).map_err(StateError::sqlite)?;
+    // Semantic vector tables are defined once in vector_index::SEMANTIC_VECTOR_DDL
+    // and applied here (baseline) as well as in the V11 migration path.
+    conn.execute_batch(SEMANTIC_VECTOR_DDL)
+        .map_err(StateError::sqlite)?;
     migrate(conn)?;
     info!("SQLite schema created (version {})", CURRENT_SCHEMA_VERSION);
     Ok(())
@@ -281,6 +286,13 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
             }
             Ok(())
         },
+        // V11: semantic vector store metadata + embedded vector rows (hybrid mode).
+        // DDL is shared with vector_index::ensure_schema via the canonical constant.
+        |conn| {
+            conn.execute_batch(SEMANTIC_VECTOR_DDL)
+                .map_err(StateError::sqlite)?;
+            Ok(())
+        },
     ];
 
     for version in (current + 1)..=(CURRENT_SCHEMA_VERSION) {
@@ -471,6 +483,7 @@ CREATE TABLE IF NOT EXISTS known_workspaces (
     last_used_at TEXT NOT NULL,
     index_status TEXT DEFAULT 'unknown'
 );
+
 "#;
 
 #[cfg(test)]
@@ -503,6 +516,8 @@ mod tests {
         assert!(tables.contains(&"worktree_leases".to_string()));
         assert!(tables.contains(&"index_jobs".to_string()));
         assert!(tables.contains(&"known_workspaces".to_string()));
+        assert!(tables.contains(&"semantic_vectors".to_string()));
+        assert!(tables.contains(&"semantic_vector_meta".to_string()));
     }
 
     #[test]
@@ -607,6 +622,26 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
         assert!(symbol_relation_cols.contains(&"content".to_string()));
+
+        let vector_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('semantic_vectors') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(vector_cols.contains(&"embedding_model_version".to_string()));
+        assert!(vector_cols.contains(&"symbol_stable_id".to_string()));
+        assert!(vector_cols.contains(&"vector_json".to_string()));
+
+        let vector_version: String = conn
+            .query_row(
+                "SELECT meta_value FROM semantic_vector_meta WHERE meta_key = 'vector_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(vector_version, "1");
     }
 
     #[test]

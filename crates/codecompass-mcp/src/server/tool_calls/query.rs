@@ -156,6 +156,7 @@ fn execute_search_with_optional_overlay(
     language: Option<&str>,
     limit: usize,
     debug_ranking: bool,
+    search_options: search::SearchExecutionOptions,
 ) -> Result<search::SearchResponse, StateError> {
     let QueryExecutionContext {
         index_set,
@@ -166,7 +167,7 @@ fn execute_search_with_optional_overlay(
     } = ctx;
 
     if let Some(vcs) = resolve_vcs_overlay_context(conn, config, project_id, effective_ref)? {
-        return search::search_code_vcs_merged(
+        return search::search_code_vcs_merged_with_options(
             search::VcsSearchContext {
                 base_index_set: index_set,
                 overlay_index_set: &vcs.overlay_index_set,
@@ -179,10 +180,11 @@ fn execute_search_with_optional_overlay(
             language,
             limit,
             debug_ranking,
+            search_options.clone(),
         );
     }
 
-    search::search_code(
+    search::search_code_with_options(
         index_set,
         conn,
         query,
@@ -190,6 +192,7 @@ fn execute_search_with_optional_overlay(
         language,
         limit,
         debug_ranking,
+        search_options,
     )
 }
 
@@ -467,6 +470,44 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
     let mut metadata = freshness.metadata;
 
     let debug_ranking = ranking_explain_level != codecompass_core::types::RankingExplainLevel::Off;
+    // MCP input validation rejects out-of-range values (hard error) because
+    // the caller is an AI agent that should retry with a corrected value.
+    // Config-layer validation (config.rs) clamp+warns instead, since config
+    // files may have stale or rounded values that should degrade gracefully.
+    let semantic_ratio_override = match arguments.get("semantic_ratio").and_then(|v| v.as_f64()) {
+        Some(value) if value.is_finite() && (0.0..=1.0).contains(&value) => Some(value),
+        Some(_) => {
+            return tool_error_response(
+                id,
+                ProtocolErrorCode::InvalidInput,
+                "Parameter `semantic_ratio` must be a number between 0.0 and 1.0.",
+                None,
+                metadata,
+            );
+        }
+        None => None,
+    };
+    let confidence_threshold_override = match arguments
+        .get("confidence_threshold")
+        .and_then(|v| v.as_f64())
+    {
+        Some(value) if value.is_finite() && (0.0..=1.0).contains(&value) => Some(value),
+        Some(_) => {
+            return tool_error_response(
+                id,
+                ProtocolErrorCode::InvalidInput,
+                "Parameter `confidence_threshold` must be a number between 0.0 and 1.0.",
+                None,
+                metadata,
+            );
+        }
+        None => None,
+    };
+    let search_options = search::SearchExecutionOptions {
+        search_config: config.search.clone(),
+        semantic_ratio_override,
+        confidence_threshold_override,
+    };
     match execute_search_with_optional_overlay(
         QueryExecutionContext {
             index_set,
@@ -479,6 +520,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         language,
         limit,
         debug_ranking,
+        search_options,
     ) {
         Ok(response) => {
             let mut response = response;
@@ -518,6 +560,27 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
                     ranking_explain_level,
                 );
             }
+
+            metadata.semantic_mode = Some(response.metadata.semantic_mode.clone());
+            metadata.semantic_enabled = Some(response.metadata.semantic_enabled);
+            metadata.semantic_ratio_used = Some(response.metadata.semantic_ratio_used);
+            metadata.semantic_triggered = Some(response.metadata.semantic_triggered);
+            metadata.semantic_skipped_reason = response.metadata.semantic_skipped_reason.clone();
+            metadata.semantic_fallback = Some(response.metadata.semantic_fallback);
+            metadata.external_provider_blocked = Some(response.metadata.external_provider_blocked);
+            metadata.embedding_model_version =
+                Some(response.metadata.embedding_model_version.clone());
+            metadata.rerank_provider = Some(response.metadata.rerank_provider.clone());
+            metadata.rerank_fallback = Some(response.metadata.rerank_fallback);
+            metadata.rerank_fallback_reason = response.metadata.rerank_fallback_reason.clone();
+            metadata.low_confidence = Some(response.metadata.low_confidence);
+            metadata.suggested_action = response.metadata.suggested_action.clone();
+            metadata.confidence_threshold = Some(response.metadata.confidence_threshold);
+            metadata.top_score = Some(response.metadata.top_score);
+            metadata.score_margin = Some(response.metadata.score_margin);
+            metadata.channel_agreement = Some(response.metadata.channel_agreement);
+            metadata.query_intent_confidence = Some(response.metadata.query_intent_confidence);
+            metadata.intent_escalation_hint = response.metadata.intent_escalation_hint.clone();
 
             let suggested_next_actions = if safety_limit_applied {
                 deterministic_suggested_actions(

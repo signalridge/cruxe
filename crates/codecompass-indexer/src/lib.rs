@@ -1,4 +1,5 @@
 pub mod call_extract;
+pub mod embed_writer;
 pub mod import_extract;
 pub mod languages;
 pub mod overlay;

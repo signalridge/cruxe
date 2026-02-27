@@ -6,7 +6,8 @@ use codecompass_core::time::now_iso8601;
 use codecompass_core::types::{FileRecord, JobStatus, generate_project_id};
 use codecompass_core::vcs;
 use codecompass_indexer::{
-    call_extract, import_extract, languages, parser, scanner, snippet_extract, symbol_extract,
+    call_extract, embed_writer, import_extract, languages, parser, scanner, snippet_extract,
+    symbol_extract,
     sync_incremental::{self, IncrementalSyncRequest},
     writer,
 };
@@ -160,10 +161,16 @@ pub fn run(
         // `batch.commit()`.  A crash mid-indexing may leave partial SQLite data, but
         // the next incremental or force index run will reconcile both stores.
         let batch = writer::BatchWriter::new(&index_set)?;
+        let mut embedding_writer = embed_writer::EmbeddingWriter::new(
+            &config.search.semantic,
+            &project_id,
+            &effective_ref,
+        )?;
 
         // For force mode, clear existing index/state for target repo/ref before rebuild
         if force {
             batch.delete_ref_docs(&index_set, &effective_ref);
+            embedding_writer.delete_for_ref(&conn)?;
             conn.execute(
                 "DELETE FROM symbol_relations WHERE repo = ?1 AND \"ref\" = ?2",
                 (&project_id, &effective_ref),
@@ -243,6 +250,11 @@ pub fn run(
                         &effective_ref,
                         &deleted_symbol_ids,
                     )?;
+                    embedding_writer.delete_for_file_vectors_with_symbols(
+                        &conn,
+                        &entry.path,
+                        &deleted_symbol_ids,
+                    )?;
                     manifest::delete_manifest(&conn, &project_id, &effective_ref, &entry.path)?;
                     removed_count += 1;
                 }
@@ -285,6 +297,7 @@ pub fn run(
                     .collect()
             });
 
+            let mut pending_embedding_batches = Vec::new();
             for prepared in prepared_chunk {
                 match prepared {
                     PreparedIndexOutcome::Unchanged => {}
@@ -293,9 +306,20 @@ pub fn run(
                         skipped += 1;
                     }
                     PreparedIndexOutcome::Ready(prepared) => {
-                        if let Some(parse_error) = prepared.parse_error.as_deref() {
+                        let PreparedIndexFile {
+                            symbols_for_file,
+                            snippets,
+                            raw_imports,
+                            call_edges,
+                            file_record,
+                            mtime_ns,
+                            parse_error,
+                            had_previous_index,
+                        } = *prepared;
+
+                        if let Some(parse_error) = parse_error.as_deref() {
                             warn!(
-                                path = %prepared.file_record.path,
+                                path = %file_record.path,
                                 error = %parse_error,
                                 "Parse failed"
                             );
@@ -306,31 +330,29 @@ pub fn run(
                                 &index_set,
                                 &project_id,
                                 &effective_ref,
-                                &prepared.file_record.path,
+                                &file_record.path,
                             );
+                        }
+
+                        if had_previous_index {
+                            embedding_writer.delete_for_file_vectors(&conn, &file_record.path)?;
                         }
 
                         symbols::delete_symbols_for_file(
                             &conn,
                             &project_id,
                             &effective_ref,
-                            &prepared.file_record.path,
+                            &file_record.path,
                         )?;
-                        batch.add_symbols(&index_set.symbols, &prepared.symbols_for_file)?;
-                        batch.add_snippets(&index_set.snippets, &prepared.snippets)?;
-                        batch.add_file(&index_set.files, &prepared.file_record)?;
-                        batch.write_sqlite(
-                            &conn,
-                            &prepared.symbols_for_file,
-                            &prepared.file_record,
-                            prepared.mtime_ns,
-                        )?;
+                        batch.add_symbols(&index_set.symbols, &symbols_for_file)?;
+                        batch.add_snippets(&index_set.snippets, &snippets)?;
+                        batch.add_file(&index_set.files, &file_record)?;
+                        batch.write_sqlite(&conn, &symbols_for_file, &file_record, mtime_ns)?;
 
-                        let symbol_delta = prepared.symbols_for_file.len() as u64;
-                        pending_imports
-                            .push((prepared.file_record.path.clone(), prepared.raw_imports));
-                        pending_call_edges
-                            .push((prepared.file_record.path.clone(), prepared.call_edges));
+                        let symbol_delta = symbols_for_file.len() as u64;
+                        pending_imports.push((file_record.path.clone(), raw_imports));
+                        pending_call_edges.push((file_record.path.clone(), call_edges));
+                        pending_embedding_batches.push((symbols_for_file, snippets));
 
                         symbol_count += symbol_delta;
                         indexed_count += 1;
@@ -348,6 +370,13 @@ pub fn run(
                     }
                 }
             }
+
+            embedding_writer.write_embeddings_for_files(
+                &conn,
+                pending_embedding_batches
+                    .iter()
+                    .map(|(symbols, snippets)| (symbols.as_slice(), snippets.as_slice())),
+            )?;
         }
 
         // Resolve imports after all symbols are written so cross-file lookups can
@@ -483,6 +512,7 @@ struct PreparedIndexFile {
     file_record: FileRecord,
     mtime_ns: Option<i64>,
     parse_error: Option<String>,
+    had_previous_index: bool,
 }
 
 enum PreparedIndexOutcome {
@@ -509,6 +539,7 @@ fn prepare_file_for_indexing(
     };
 
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    let had_previous_index = existing_hash.is_some();
     if !force && existing_hash == Some(content_hash.as_str()) {
         return PreparedIndexOutcome::Unchanged;
     }
@@ -583,6 +614,7 @@ fn prepare_file_for_indexing(
         file_record,
         mtime_ns: file_mtime_ns(&file.path),
         parse_error,
+        had_previous_index,
     }))
 }
 

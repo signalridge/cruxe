@@ -1,6 +1,7 @@
 pub mod branch_state;
 pub mod db;
 pub mod edges;
+pub mod embedding;
 pub mod export;
 pub mod import;
 pub mod jobs;
@@ -13,5 +14,6 @@ pub mod symbols;
 pub mod tantivy_index;
 pub mod tokenizers;
 pub mod tombstones;
+pub mod vector_index;
 pub mod workspace;
 pub mod worktree_leases;
