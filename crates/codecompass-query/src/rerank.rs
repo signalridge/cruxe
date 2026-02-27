@@ -53,8 +53,27 @@ pub(crate) trait Rerank: Send + Sync {
     ) -> Result<Vec<RerankResult>, StateError>;
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct LocalRuleReranker;
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalRuleReranker {
+    phrase_boost: f64,
+    token_overlap_weight: f64,
+}
+
+impl Default for LocalRuleReranker {
+    fn default() -> Self {
+        let semantic = SemanticConfig::default();
+        Self::from_semantic(&semantic)
+    }
+}
+
+impl LocalRuleReranker {
+    fn from_semantic(semantic: &SemanticConfig) -> Self {
+        Self {
+            phrase_boost: semantic.local_rerank_phrase_boost,
+            token_overlap_weight: semantic.local_rerank_token_overlap_weight,
+        }
+    }
+}
 
 impl Rerank for LocalRuleReranker {
     fn rerank(
@@ -77,11 +96,11 @@ impl Rerank for LocalRuleReranker {
                 let overlap = token_overlap_ratio(&query_tokens, &text_lower);
                 let phrase_boost =
                     if !normalized_query.is_empty() && text_lower.contains(&normalized_query) {
-                        0.75
+                        self.phrase_boost
                     } else {
                         0.0
                     };
-                let score = doc.base_score + overlap * 2.5 + phrase_boost;
+                let score = doc.base_score + overlap * self.token_overlap_weight + phrase_boost;
                 RerankResult {
                     doc: doc.result_id.clone(),
                     score,
@@ -238,13 +257,14 @@ pub fn rerank_documents(
     }
 
     if matches!(requested_provider.as_str(), "none" | "local") {
-        return local_execution(query, docs, normalized_top_n, false, None, false);
+        return local_execution(query, docs, semantic, normalized_top_n, false, None, false);
     }
 
     if !semantic.allow_external_provider_calls() {
         return local_execution(
             query,
             docs,
+            semantic,
             normalized_top_n,
             true,
             Some("external_provider_blocked".to_string()),
@@ -263,7 +283,15 @@ pub fn rerank_documents(
         },
         Err(err) => {
             let reason = classify_external_fallback_reason(&requested_provider, &err);
-            local_execution(query, docs, normalized_top_n, true, Some(reason), false)
+            local_execution(
+                query,
+                docs,
+                semantic,
+                normalized_top_n,
+                true,
+                Some(reason),
+                false,
+            )
         }
     }
 }
@@ -271,12 +299,13 @@ pub fn rerank_documents(
 fn local_execution(
     query: &str,
     docs: &[RerankDocument],
+    semantic: &SemanticConfig,
     top_n: usize,
     fallback: bool,
     fallback_reason: Option<String>,
     external_provider_blocked: bool,
 ) -> RerankExecution {
-    let local = LocalRuleReranker;
+    let local = LocalRuleReranker::from_semantic(semantic);
     let reranked = local
         .rerank(query, docs, top_n)
         .unwrap_or_else(|_| deterministic_base_scores(docs, top_n));
@@ -588,6 +617,21 @@ mod tests {
             execution.reranked.first().map(|item| item.doc.as_str()),
             Some("a")
         );
+    }
+
+    #[test]
+    fn local_reranker_default_tuning_matches_legacy_scoring_formula() {
+        let docs = vec![make_doc("a", "auth login handler", 1.0)];
+        let semantic = semantic_with_provider("none", false, false, None);
+
+        let execution = rerank_documents("auth login", &docs, &semantic, 10);
+        let query_tokens = tokenize("auth login");
+        let overlap = token_overlap_ratio(&query_tokens, "auth login handler");
+        let expected = 1.0 + overlap * 2.5 + 0.75;
+
+        assert_eq!(execution.provider, "local");
+        assert_eq!(execution.reranked.len(), 1);
+        assert!((execution.reranked[0].score - expected).abs() < 1e-12);
     }
 
     #[test]

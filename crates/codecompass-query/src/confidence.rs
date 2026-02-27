@@ -1,5 +1,6 @@
 use crate::scoring::normalize_relevance_score;
 use crate::search::SearchResult;
+use codecompass_core::config::SemanticConfig;
 use codecompass_core::types::{ConfidenceGuidance, QueryIntent};
 
 pub fn evaluate_confidence(
@@ -7,6 +8,7 @@ pub fn evaluate_confidence(
     query: &str,
     intent: QueryIntent,
     threshold: f64,
+    semantic: &SemanticConfig,
 ) -> ConfidenceGuidance {
     let threshold = threshold.clamp(0.0, 1.0);
     let top_score = results
@@ -22,9 +24,14 @@ pub fn evaluate_confidence(
     };
     let channel_agreement = channel_agreement(results);
 
+    let top_score_weight = semantic.confidence_top_score_weight;
+    let score_margin_weight = semantic.confidence_score_margin_weight;
+    let channel_agreement_weight = semantic.confidence_channel_agreement_weight;
     // Weighted composite with preference for top-score confidence.
-    let composite_confidence =
-        (top_score * 0.55 + score_margin * 0.30 + channel_agreement * 0.15).clamp(0.0, 1.0);
+    let composite_confidence = (top_score * top_score_weight
+        + score_margin * score_margin_weight
+        + channel_agreement * channel_agreement_weight)
+        .clamp(0.0, 1.0);
     let low_confidence = composite_confidence < threshold;
 
     let suggested_action = if low_confidence {
@@ -124,6 +131,7 @@ fn extract_identifier(query: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codecompass_core::config::SemanticConfig;
 
     fn make_result(score: f32, provenance: &str) -> SearchResult {
         SearchResult {
@@ -157,6 +165,7 @@ mod tests {
             "where is auth handled",
             QueryIntent::NaturalLanguage,
             0.5,
+            &SemanticConfig::default(),
         );
         assert!(guidance.low_confidence);
         assert!(guidance.suggested_action.is_some());
@@ -165,7 +174,13 @@ mod tests {
     #[test]
     fn low_confidence_false_when_composite_above_threshold() {
         let results = vec![make_result(8.0, "lexical")];
-        let guidance = evaluate_confidence(&results, "AuthHandler", QueryIntent::Symbol, 0.3);
+        let guidance = evaluate_confidence(
+            &results,
+            "AuthHandler",
+            QueryIntent::Symbol,
+            0.3,
+            &SemanticConfig::default(),
+        );
         assert!(!guidance.low_confidence);
         assert!(guidance.suggested_action.is_none());
     }
@@ -177,6 +192,7 @@ mod tests {
             "where is rate_limit",
             QueryIntent::NaturalLanguage,
             0.6,
+            &SemanticConfig::default(),
         );
         assert!(
             nl.suggested_action
@@ -190,10 +206,39 @@ mod tests {
             "src/auth/mod.rs",
             QueryIntent::Path,
             0.9,
+            &SemanticConfig::default(),
         );
         assert_eq!(
             path.suggested_action.as_deref(),
             Some("Check file path spelling or try search_code with filename")
         );
+    }
+
+    #[test]
+    fn default_weights_preserve_legacy_confidence_formula() {
+        let semantic = SemanticConfig::default();
+        let results = vec![
+            make_result(0.8, "lexical"),
+            make_result(0.6, "semantic"),
+            make_result(0.5, "hybrid"),
+        ];
+        let guidance = evaluate_confidence(
+            &results,
+            "auth login",
+            QueryIntent::NaturalLanguage,
+            0.5,
+            &semantic,
+        );
+
+        let top_score = normalize_relevance_score(0.8);
+        let score_margin = normalize_relevance_score(0.2);
+        let channel_agreement = 0.5 + (1.0 / 3.0) * 0.5;
+        let expected =
+            (top_score * 0.55 + score_margin * 0.30 + channel_agreement * 0.15).clamp(0.0, 1.0);
+
+        assert!((guidance.top_score - top_score).abs() < 1e-6);
+        assert!((guidance.score_margin - score_margin).abs() < 1e-6);
+        assert!((guidance.channel_agreement - channel_agreement).abs() < 1e-6);
+        assert_eq!(guidance.low_confidence, expected < guidance.threshold);
     }
 }

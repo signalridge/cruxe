@@ -581,8 +581,10 @@ fn hybrid_config() -> SearchConfig {
     config.semantic.lexical_short_circuit_threshold = 1.0;
     config.semantic.embedding.provider = "local".to_string();
     config.semantic.embedding.profile = "fast_local".to_string();
-    config.semantic.embedding.model = "NomicEmbedTextV15Q".to_string();
-    config.semantic.embedding.model_version = "fastembed-1".to_string();
+    // Use a deterministic synthetic model-id for benchmark harness vectors.
+    // This keeps dimensionality at VECTOR_DIMS without requiring fastembed runtime.
+    config.semantic.embedding.model = "deterministic32".to_string();
+    config.semantic.embedding.model_version = "synthetic-32".to_string();
     config.semantic.embedding.dimensions = VECTOR_DIMS;
     config.semantic.embedding.batch_size = 128;
     config.semantic.rerank.provider = "none".to_string();

@@ -317,9 +317,15 @@ fn tool_compatibility_error(params: ToolCompatibilityParams<'_>) -> JsonRpcRespo
         }
         SchemaStatus::Compatible => "Index is unavailable.",
     };
+    let error_code = match schema_status {
+        SchemaStatus::NotIndexed | SchemaStatus::Compatible => ProtocolErrorCode::IndexNotReady,
+        SchemaStatus::ReindexRequired | SchemaStatus::CorruptManifest => {
+            ProtocolErrorCode::IndexIncompatible
+        }
+    };
     tool_error_response(
         id,
-        ProtocolErrorCode::IndexIncompatible,
+        error_code,
         message,
         Some(json!({
             "schema_status": schema_status,

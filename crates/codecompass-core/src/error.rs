@@ -1,33 +1,6 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Error {
-    #[error("config error: {0}")]
-    Config(#[from] ConfigError),
-
-    #[error("state error: {0}")]
-    State(#[from] StateError),
-
-    #[error("index error: {0}")]
-    Index(#[from] IndexError),
-
-    #[error("parse error: {0}")]
-    Parse(#[from] ParseError),
-
-    #[error("query error: {0}")]
-    Query(#[from] QueryError),
-
-    #[error("mcp error: {0}")]
-    Mcp(#[from] McpError),
-
-    #[error("vcs error: {0}")]
-    Vcs(#[from] VcsError),
-
-    #[error("workspace error: {0}")]
-    Workspace(#[from] WorkspaceError),
-}
-
-#[derive(Error, Debug)]
 pub enum WorkspaceError {
     #[error("workspace not registered: {path}")]
     NotRegistered { path: String },
@@ -271,60 +244,12 @@ impl StateError {
 }
 
 #[derive(Error, Debug)]
-pub enum IndexError {
-    #[error("index in progress: job_id={job_id}")]
-    InProgress { job_id: String },
-
-    #[error("index incompatible: {reason}")]
-    Incompatible { reason: String },
-
-    #[error("file too large: {path} ({size} bytes)")]
-    FileTooLarge { path: String, size: u64 },
-
-    #[error("unsupported language: {language}")]
-    UnsupportedLanguage { language: String },
-
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("state error: {0}")]
-    State(#[from] StateError),
-}
-
-#[derive(Error, Debug)]
 pub enum ParseError {
     #[error("tree-sitter parse failed: {path}")]
     TreeSitterFailed { path: String },
 
     #[error("grammar not available: {language}")]
     GrammarNotAvailable { language: String },
-
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-#[derive(Error, Debug)]
-pub enum QueryError {
-    #[error("index not ready: {0}")]
-    IndexNotReady(String),
-
-    #[error("invalid query: {0}")]
-    InvalidQuery(String),
-
-    #[error("state error: {0}")]
-    State(#[from] StateError),
-}
-
-#[derive(Error, Debug)]
-pub enum McpError {
-    #[error("invalid request: {0}")]
-    InvalidRequest(String),
-
-    #[error("method not found: {method}")]
-    MethodNotFound { method: String },
-
-    #[error("internal error: {0}")]
-    Internal(String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -338,8 +263,6 @@ pub enum VcsError {
     #[error("git error: {0}")]
     GitError(String),
 }
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {

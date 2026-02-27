@@ -21,7 +21,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = { workspace = true }
-serde_json = { workspace = true }
 blake3 = { workspace = true }
 tantivy = { workspace = true }
 rusqlite = { workspace = true }
@@ -29,4 +28,5 @@ time = { version = "0.3", features = ["parsing", "formatting"] }
 rayon = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }

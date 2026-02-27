@@ -37,11 +37,11 @@ impl DiffEntry {
     }
 
     pub fn renamed(old_path: impl Into<String>, new_path: impl Into<String>) -> Self {
-        let old_path = old_path.into();
-        let new_path = new_path.into();
         Self {
-            path: new_path.clone(),
-            kind: FileChangeKind::Renamed { old_path },
+            path: new_path.into(),
+            kind: FileChangeKind::Renamed {
+                old_path: old_path.into(),
+            },
         }
     }
 }

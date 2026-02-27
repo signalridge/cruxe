@@ -1,4 +1,3 @@
-use crate::diff::DiffEntry;
 use codecompass_core::error::VcsError;
 use std::path::Path;
 
@@ -34,5 +33,3 @@ pub trait VcsAdapter: Send + Sync {
         worktree_path: &Path,
     ) -> Result<(), VcsError>;
 }
-
-pub type DefaultDiffEntry = DiffEntry;
