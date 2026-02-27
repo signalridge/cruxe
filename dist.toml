@@ -1,0 +1,17 @@
+[dist]
+# Keep this in sync with the release workflow install step.
+cargo-dist-version = "0.30.0"
+ci = ["github"]
+installers = []
+# Linux targets use musl for static linking.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-pc-windows-msvc",
+]
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+checksum = "sha256"
+msvc-crt-static = true

@@ -1,0 +1,110 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DIST_VERSION: 0.30.0
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dist
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh | sh
+      - name: Validate release manifest
+        run: dist manifest --output-format=json --no-local-paths > dist-manifest.json
+      - name: Upload dist manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-manifest
+          path: dist-manifest.json
+
+  build-local-artifacts:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-13
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dist
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh | sh
+      - name: Build release archives
+        shell: bash
+        run: dist build --target=${{ matrix.target }} --artifacts=local
+      - name: Upload local artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: target/distrib/*
+
+  build-global-artifacts:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dist
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-installer.sh | sh
+      - name: Build global artifacts (checksums)
+        run: dist build --artifacts=global
+      - name: Install git-cliff
+        run: cargo install git-cliff --locked
+      - name: Generate release changelog
+        run: git-cliff --latest --config cliff.toml --output release-notes.md
+      - name: Upload global artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-global
+          path: |
+            target/distrib/*
+            release-notes.md
+
+  publish:
+    needs:
+      - build-local-artifacts
+      - build-global-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+      - name: Flatten downloaded artifacts
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find dist-artifacts -type f -maxdepth 4 -exec cp {} release-assets/ \;
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          body_path: release-assets/release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
