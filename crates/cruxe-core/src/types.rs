@@ -287,14 +287,34 @@ pub struct RerankResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankingReasons {
     pub result_index: usize,
+    #[serde(default)]
+    pub result_id: String,
     pub exact_match_boost: f64,
     pub qualified_name_boost: f64,
     pub path_affinity: f64,
     pub definition_boost: f64,
     pub kind_match: f64,
     pub test_file_penalty: f64,
+    #[serde(default)]
+    pub confidence_structural_boost: f64,
+    #[serde(default)]
+    pub structural_weighted_centrality: f64,
+    #[serde(default)]
+    pub structural_raw_centrality: f64,
+    #[serde(default = "default_structural_guardrail_multiplier")]
+    pub structural_guardrail_multiplier: f64,
+    #[serde(default = "default_confidence_coverage")]
+    pub confidence_coverage: f64,
     pub bm25_score: f64,
     pub final_score: f64,
+}
+
+fn default_structural_guardrail_multiplier() -> f64 {
+    1.0
+}
+
+fn default_confidence_coverage() -> f64 {
+    1.0
 }
 
 /// Compact ranking factors for basic explainability mode.
