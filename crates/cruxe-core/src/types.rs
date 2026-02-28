@@ -329,6 +329,24 @@ pub struct RerankResult {
     pub provider: String,
 }
 
+/// Per-signal ranking contribution accounting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RankingSignalContribution {
+    pub signal: String,
+    pub raw_value: f64,
+    pub clamped_value: f64,
+    pub effective_value: f64,
+}
+
+/// Additive precedence-audit payload for full explainability mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RankingPrecedenceAudit {
+    pub lexical_dominance_applied: bool,
+    pub exact_match_present: bool,
+    pub secondary_effective_total: f64,
+    pub secondary_effective_cap: f64,
+}
+
 /// Per-result ranking explanation for debug mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankingReasons {
@@ -341,6 +359,10 @@ pub struct RankingReasons {
     pub test_file_penalty: f64,
     pub bm25_score: f64,
     pub final_score: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signal_contributions: Vec<RankingSignalContribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precedence_audit: Option<RankingPrecedenceAudit>,
 }
 
 /// Compact ranking factors for basic explainability mode.
