@@ -349,11 +349,10 @@ pub fn search_code_with_options(
         limit,
         &options.search_config,
         &mut effective_plan_budget,
-    ) {
-        if plan_controller.executed == QueryPlan::LexicalFast && semantic_state.semantic_eligible()
-        {
-            semantic_state.mark_skipped("plan_lexical_fast");
-        }
+    ) && plan_controller.executed == QueryPlan::LexicalFast
+        && semantic_state.semantic_eligible()
+    {
+        semantic_state.mark_skipped("plan_lexical_fast");
     }
 
     if plan_controller.executed != QueryPlan::LexicalFast && semantic_state.semantic_eligible() {
