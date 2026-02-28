@@ -20,9 +20,9 @@ impl QueryPlan {
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "lexical_fast" | "fast" | "lexical" => Some(Self::LexicalFast),
-            "hybrid_standard" | "standard" | "hybrid" => Some(Self::HybridStandard),
-            "semantic_deep" | "deep" | "semantic" => Some(Self::SemanticDeep),
+            "lexical_fast" => Some(Self::LexicalFast),
+            "hybrid_standard" => Some(Self::HybridStandard),
+            "semantic_deep" => Some(Self::SemanticDeep),
             _ => None,
         }
     }
@@ -94,42 +94,26 @@ pub struct PlanController {
     pub selection_reason: SelectionReason,
     pub downgraded: bool,
     pub downgrade_reason: Option<DowngradeReason>,
+    downgrade_reason_flags: u8,
 }
 
 impl PlanController {
     pub fn select(input: PlanSelectionInput<'_>) -> Self {
-        let selected = if !input.config.enabled {
-            QueryPlan::HybridStandard
+        let (selected, selection_reason) = if !input.config.enabled {
+            (QueryPlan::HybridStandard, SelectionReason::DisabledFallback)
         } else if input.config.allow_override {
-            input
-                .override_plan
-                .and_then(QueryPlan::parse)
-                .unwrap_or_else(|| {
-                    select_without_override(
-                        input.intent,
-                        input.lexical_confidence,
-                        input.semantic_runtime_available,
-                        input.config,
-                    )
-                })
+            if let Some(override_plan) = input.override_plan.and_then(QueryPlan::parse) {
+                (override_plan, SelectionReason::Override)
+            } else {
+                select_without_override(
+                    input.intent,
+                    input.lexical_confidence,
+                    input.semantic_runtime_available,
+                    input.config,
+                )
+            }
         } else {
             select_without_override(
-                input.intent,
-                input.lexical_confidence,
-                input.semantic_runtime_available,
-                input.config,
-            )
-        };
-
-        let selection_reason = if !input.config.enabled {
-            SelectionReason::DisabledFallback
-        } else if input.config.allow_override
-            && input.override_plan.is_some()
-            && input.override_plan.and_then(QueryPlan::parse).is_some()
-        {
-            SelectionReason::Override
-        } else {
-            select_reason_without_override(
                 input.intent,
                 input.lexical_confidence,
                 input.semantic_runtime_available,
@@ -143,6 +127,7 @@ impl PlanController {
             selection_reason,
             downgraded: false,
             downgrade_reason: None,
+            downgrade_reason_flags: 0,
         };
 
         // One-way guard: selected deep cannot execute without semantic runtime.
@@ -173,9 +158,8 @@ impl PlanController {
         }
         self.executed = next;
         self.downgraded = true;
-        if self.downgrade_reason.is_none() {
-            self.downgrade_reason = Some(reason);
-        }
+        self.downgrade_reason = Some(reason);
+        self.downgrade_reason_flags |= downgrade_reason_flag(reason);
         record_downgrade_reason(reason);
     }
 
@@ -184,6 +168,10 @@ impl PlanController {
             self.downgrade(DowngradeReason::TimeoutGuard);
         }
     }
+
+    pub fn has_downgrade_reason(&self, reason: DowngradeReason) -> bool {
+        (self.downgrade_reason_flags & downgrade_reason_flag(reason)) != 0
+    }
 }
 
 fn select_without_override(
@@ -191,11 +179,16 @@ fn select_without_override(
     lexical_confidence: f64,
     semantic_runtime_available: bool,
     config: &AdaptivePlanConfig,
-) -> QueryPlan {
+) -> (QueryPlan, SelectionReason) {
     if !semantic_runtime_available {
         return match intent {
-            QueryIntent::Symbol | QueryIntent::Path | QueryIntent::Error => QueryPlan::LexicalFast,
-            QueryIntent::NaturalLanguage => QueryPlan::HybridStandard,
+            QueryIntent::Symbol | QueryIntent::Path | QueryIntent::Error => {
+                (QueryPlan::LexicalFast, SelectionReason::SemanticUnavailable)
+            }
+            QueryIntent::NaturalLanguage => (
+                QueryPlan::HybridStandard,
+                SelectionReason::SemanticUnavailable,
+            ),
         };
     }
 
@@ -204,41 +197,32 @@ fn select_without_override(
         QueryIntent::Symbol | QueryIntent::Path | QueryIntent::Error
     ) && lexical_confidence >= config.high_confidence_threshold
     {
-        return QueryPlan::LexicalFast;
+        return (
+            QueryPlan::LexicalFast,
+            SelectionReason::HighLexicalConfidence,
+        );
     }
 
     if matches!(intent, QueryIntent::NaturalLanguage)
         && lexical_confidence < config.low_confidence_threshold
         && semantic_runtime_available
     {
-        return QueryPlan::SemanticDeep;
+        return (
+            QueryPlan::SemanticDeep,
+            SelectionReason::LowLexicalConfidenceExploratory,
+        );
     }
 
-    QueryPlan::HybridStandard
+    (QueryPlan::HybridStandard, SelectionReason::DefaultHybrid)
 }
 
-fn select_reason_without_override(
-    intent: QueryIntent,
-    lexical_confidence: f64,
-    semantic_runtime_available: bool,
-    config: &AdaptivePlanConfig,
-) -> SelectionReason {
-    if !semantic_runtime_available {
-        return SelectionReason::SemanticUnavailable;
+fn downgrade_reason_flag(reason: DowngradeReason) -> u8 {
+    match reason {
+        DowngradeReason::SemanticUnavailable => 1 << 0,
+        DowngradeReason::BudgetExhausted => 1 << 1,
+        DowngradeReason::TimeoutGuard => 1 << 2,
+        DowngradeReason::ConfigForced => 1 << 3,
     }
-    if matches!(
-        intent,
-        QueryIntent::Symbol | QueryIntent::Path | QueryIntent::Error
-    ) && lexical_confidence >= config.high_confidence_threshold
-    {
-        return SelectionReason::HighLexicalConfidence;
-    }
-    if matches!(intent, QueryIntent::NaturalLanguage)
-        && lexical_confidence < config.low_confidence_threshold
-    {
-        return SelectionReason::LowLexicalConfidenceExploratory;
-    }
-    SelectionReason::DefaultHybrid
 }
 
 pub fn plan_budget(plan: QueryPlan, limit: usize, search_config: &SearchConfig) -> PlanBudget {
@@ -479,6 +463,7 @@ mod tests {
             selection_reason: SelectionReason::DefaultHybrid,
             downgraded: false,
             downgrade_reason: None,
+            downgrade_reason_flags: 0,
         };
         controller.ensure_latency_budget(
             500,
@@ -495,6 +480,48 @@ mod tests {
             controller.downgrade_reason,
             Some(DowngradeReason::TimeoutGuard)
         );
+    }
+
+    #[test]
+    fn downgrade_tracks_all_reasons_and_latest_reason() {
+        let mut controller = PlanController {
+            selected: QueryPlan::SemanticDeep,
+            executed: QueryPlan::SemanticDeep,
+            selection_reason: SelectionReason::Override,
+            downgraded: false,
+            downgrade_reason: None,
+            downgrade_reason_flags: 0,
+        };
+
+        controller.downgrade(DowngradeReason::SemanticUnavailable);
+        controller.downgrade(DowngradeReason::TimeoutGuard);
+
+        assert!(controller.has_downgrade_reason(DowngradeReason::SemanticUnavailable));
+        assert!(controller.has_downgrade_reason(DowngradeReason::TimeoutGuard));
+        assert_eq!(
+            controller.downgrade_reason,
+            Some(DowngradeReason::TimeoutGuard),
+            "latest downgrade reason should remain visible for metadata/warnings"
+        );
+    }
+
+    #[test]
+    fn parse_accepts_only_canonical_plan_values() {
+        assert_eq!(
+            QueryPlan::parse("lexical_fast"),
+            Some(QueryPlan::LexicalFast)
+        );
+        assert_eq!(
+            QueryPlan::parse("hybrid_standard"),
+            Some(QueryPlan::HybridStandard)
+        );
+        assert_eq!(
+            QueryPlan::parse("semantic_deep"),
+            Some(QueryPlan::SemanticDeep)
+        );
+        assert_eq!(QueryPlan::parse("fast"), None);
+        assert_eq!(QueryPlan::parse("hybrid"), None);
+        assert_eq!(QueryPlan::parse("semantic"), None);
     }
 
     #[test]

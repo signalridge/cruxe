@@ -509,15 +509,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             let normalized = raw.trim().to_ascii_lowercase();
             let valid = matches!(
                 normalized.as_str(),
-                "lexical_fast"
-                    | "hybrid_standard"
-                    | "semantic_deep"
-                    | "fast"
-                    | "hybrid"
-                    | "standard"
-                    | "semantic"
-                    | "deep"
-                    | "lexical"
+                "lexical_fast" | "hybrid_standard" | "semantic_deep"
             );
             if !valid {
                 return tool_error_response(

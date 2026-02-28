@@ -26,7 +26,9 @@ use crate::ranking::{
 use crate::rerank::{RerankDocument, rerank_documents};
 use crate::scoring::normalize_relevance_score;
 use crate::{
-    adaptive_plan::{DowngradeReason, PlanController, PlanSelectionInput, QueryPlan, plan_budget},
+    adaptive_plan::{
+        DowngradeReason, PlanBudget, PlanController, PlanSelectionInput, QueryPlan, plan_budget,
+    },
     scoring,
 };
 
@@ -178,6 +180,21 @@ pub struct JoinStatus {
     pub misses: usize,
 }
 
+fn refresh_effective_plan_budget(
+    plan_controller: &PlanController,
+    executed_before: QueryPlan,
+    limit: usize,
+    search_config: &CoreSearchConfig,
+    effective_plan_budget: &mut PlanBudget,
+) -> bool {
+    if plan_controller.executed != executed_before {
+        *effective_plan_budget = plan_budget(plan_controller.executed, limit, search_config);
+        true
+    } else {
+        false
+    }
+}
+
 /// Execute a search across all indices.
 pub fn search_code(
     index_set: &IndexSet,
@@ -326,9 +343,13 @@ pub fn search_code_with_options(
     let executed_before_semantic_guard = plan_controller.executed;
     let elapsed_before_semantic_ms = query_start.elapsed().as_millis() as u64;
     plan_controller.ensure_latency_budget(elapsed_before_semantic_ms, effective_plan_budget);
-    if plan_controller.executed != executed_before_semantic_guard {
-        effective_plan_budget =
-            plan_budget(plan_controller.executed, limit, &options.search_config);
+    if refresh_effective_plan_budget(
+        &plan_controller,
+        executed_before_semantic_guard,
+        limit,
+        &options.search_config,
+        &mut effective_plan_budget,
+    ) {
         if plan_controller.executed == QueryPlan::LexicalFast && semantic_state.semantic_eligible()
         {
             semantic_state.mark_skipped("plan_lexical_fast");
@@ -407,11 +428,14 @@ pub fn search_code_with_options(
                             if semantic_budget_exhausted
                                 && plan_controller.executed == QueryPlan::SemanticDeep
                             {
+                                let executed_before = plan_controller.executed;
                                 plan_controller.downgrade(DowngradeReason::BudgetExhausted);
-                                effective_plan_budget = plan_budget(
-                                    plan_controller.executed,
+                                refresh_effective_plan_budget(
+                                    &plan_controller,
+                                    executed_before,
                                     limit,
                                     &options.search_config,
+                                    &mut effective_plan_budget,
                                 );
                             }
                         }
@@ -428,22 +452,40 @@ pub fn search_code_with_options(
                         );
                         semantic_state.mark_skipped("semantic_backend_error");
                         semantic_state.semantic_fallback = true;
+                        let executed_before = plan_controller.executed;
                         plan_controller.downgrade(DowngradeReason::SemanticUnavailable);
-                        effective_plan_budget =
-                            plan_budget(plan_controller.executed, limit, &options.search_config);
+                        refresh_effective_plan_budget(
+                            &plan_controller,
+                            executed_before,
+                            limit,
+                            &options.search_config,
+                            &mut effective_plan_budget,
+                        );
                     }
                 }
             } else {
                 semantic_state.mark_skipped("project_scope_unresolved");
+                let executed_before = plan_controller.executed;
                 plan_controller.downgrade(DowngradeReason::SemanticUnavailable);
-                effective_plan_budget =
-                    plan_budget(plan_controller.executed, limit, &options.search_config);
+                refresh_effective_plan_budget(
+                    &plan_controller,
+                    executed_before,
+                    limit,
+                    &options.search_config,
+                    &mut effective_plan_budget,
+                );
             }
         } else {
             semantic_state.mark_skipped("semantic_requires_state_connection");
+            let executed_before = plan_controller.executed;
             plan_controller.downgrade(DowngradeReason::SemanticUnavailable);
-            effective_plan_budget =
-                plan_budget(plan_controller.executed, limit, &options.search_config);
+            refresh_effective_plan_budget(
+                &plan_controller,
+                executed_before,
+                limit,
+                &options.search_config,
+                &mut effective_plan_budget,
+            );
         }
     }
 
@@ -459,10 +501,13 @@ pub fn search_code_with_options(
     let executed_before_rerank_guard = plan_controller.executed;
     let elapsed_before_rerank_ms = query_start.elapsed().as_millis() as u64;
     plan_controller.ensure_latency_budget(elapsed_before_rerank_ms, effective_plan_budget);
-    if plan_controller.executed != executed_before_rerank_guard {
-        effective_plan_budget =
-            plan_budget(plan_controller.executed, limit, &options.search_config);
-    }
+    refresh_effective_plan_budget(
+        &plan_controller,
+        executed_before_rerank_guard,
+        limit,
+        &options.search_config,
+        &mut effective_plan_budget,
+    );
 
     let rerank_enabled = plan_controller.executed != QueryPlan::LexicalFast
         && options.search_config.semantic_mode_typed() != cruxe_core::types::SemanticMode::Off
@@ -511,11 +556,14 @@ pub fn search_code_with_options(
     let executed_before_final_guard = plan_controller.executed;
     let elapsed_ms = query_start.elapsed().as_millis() as u64;
     plan_controller.ensure_latency_budget(elapsed_ms, effective_plan_budget);
-    if plan_controller.executed != executed_before_final_guard {
-        effective_plan_budget =
-            plan_budget(plan_controller.executed, limit, &options.search_config);
-    }
-    if plan_controller.downgrade_reason == Some(DowngradeReason::TimeoutGuard) {
+    refresh_effective_plan_budget(
+        &plan_controller,
+        executed_before_final_guard,
+        limit,
+        &options.search_config,
+        &mut effective_plan_budget,
+    );
+    if plan_controller.has_downgrade_reason(DowngradeReason::TimeoutGuard) {
         response_warnings.push(format!(
             "query_plan_timeout_guard: elapsed_ms={} > budget_ms={} for selected={} executed={}",
             elapsed_ms,
