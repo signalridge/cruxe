@@ -1,4 +1,8 @@
 use crate::languages;
+use cruxe_core::edge_confidence::{
+    EDGE_PROVIDER_IMPORT_RESOLVER, RESOLUTION_EXTERNAL_REFERENCE, RESOLUTION_RESOLVED_INTERNAL,
+    RESOLUTION_UNRESOLVED, assign_edge_confidence, looks_external_reference,
+};
 use cruxe_core::error::StateError;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -15,7 +19,7 @@ pub struct RawImport {
 }
 
 /// Resolved import edge payload with nullable `to_symbol_id`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedImportEdge {
     pub repo: String,
     pub ref_name: String,
@@ -24,6 +28,9 @@ pub struct ResolvedImportEdge {
     pub to_name: Option<String>,
     pub edge_type: String,
     pub confidence: String,
+    pub edge_provider: String,
+    pub resolution_outcome: String,
+    pub confidence_weight: f64,
 }
 
 /// Deterministic pseudo symbol ID for file-scoped import edges.
@@ -58,8 +65,8 @@ pub fn resolve_imports(
     let mut seen = HashSet::new();
 
     for raw in raw_imports {
-        let to_symbol_id = resolve_target_symbol_stable_id(conn, repo, ref_name, &raw)?;
-        let unresolved_name = if to_symbol_id.is_none() {
+        let resolution = resolve_target_symbol_stable_id(conn, repo, ref_name, &raw)?;
+        let unresolved_name = if resolution.to_symbol_id.is_none() {
             Some(if raw.target_name.trim().is_empty() {
                 raw.target_qualified_name.clone()
             } else {
@@ -68,15 +75,26 @@ pub fn resolve_imports(
         } else {
             None
         };
+        let confidence = assign_edge_confidence(
+            Some(EDGE_PROVIDER_IMPORT_RESOLVER),
+            Some("imports"),
+            Some(resolution.outcome),
+            resolution.to_symbol_id.as_deref(),
+            unresolved_name.as_deref(),
+            None,
+        );
 
         let edge = ResolvedImportEdge {
             repo: repo.to_string(),
             ref_name: ref_name.to_string(),
             from_symbol_id: raw.source_qualified_name,
-            to_symbol_id,
+            to_symbol_id: resolution.to_symbol_id,
             to_name: unresolved_name,
             edge_type: "imports".to_string(),
-            confidence: "static".to_string(),
+            confidence: confidence.bucket,
+            edge_provider: confidence.provider,
+            resolution_outcome: confidence.outcome,
+            confidence_weight: confidence.weight,
         };
 
         let dedupe_key = (
@@ -86,6 +104,9 @@ pub fn resolve_imports(
             edge.to_symbol_id.clone(),
             edge.to_name.clone(),
             edge.edge_type.clone(),
+            edge.confidence.clone(),
+            edge.edge_provider.clone(),
+            edge.resolution_outcome.clone(),
         );
         if seen.insert(dedupe_key) {
             edges.push(edge);
@@ -95,12 +116,17 @@ pub fn resolve_imports(
     Ok(edges)
 }
 
+struct ImportResolution {
+    to_symbol_id: Option<String>,
+    outcome: &'static str,
+}
+
 fn resolve_target_symbol_stable_id(
     conn: &Connection,
     repo: &str,
     ref_name: &str,
     raw: &RawImport,
-) -> Result<Option<String>, StateError> {
+) -> Result<ImportResolution, StateError> {
     if !raw.target_qualified_name.is_empty() {
         let mut stmt = conn
             .prepare(
@@ -115,7 +141,10 @@ fn resolve_target_symbol_stable_id(
             })
             .ok();
         if exact.is_some() {
-            return Ok(exact);
+            return Ok(ImportResolution {
+                to_symbol_id: exact,
+                outcome: RESOLUTION_RESOLVED_INTERNAL,
+            });
         }
     }
 
@@ -134,7 +163,10 @@ fn resolve_target_symbol_stable_id(
             })
             .ok();
         if by_name.is_some() {
-            return Ok(by_name);
+            return Ok(ImportResolution {
+                to_symbol_id: by_name,
+                outcome: RESOLUTION_RESOLVED_INTERNAL,
+            });
         }
     }
 
@@ -146,7 +178,10 @@ fn resolve_target_symbol_stable_id(
             infer_language_from_path(importing_file),
         ) {
             if !file_exists_in_manifest(conn, repo, ref_name, &resolved_path)? {
-                return Ok(None);
+                return Ok(ImportResolution {
+                    to_symbol_id: None,
+                    outcome: RESOLUTION_EXTERNAL_REFERENCE,
+                });
             }
             let mut stmt = conn
                 .prepare(
@@ -171,12 +206,27 @@ fn resolve_target_symbol_stable_id(
                 )
                 .ok();
             if from_resolved_path.is_some() {
-                return Ok(from_resolved_path);
+                return Ok(ImportResolution {
+                    to_symbol_id: from_resolved_path,
+                    outcome: RESOLUTION_RESOLVED_INTERNAL,
+                });
             }
+            return Ok(ImportResolution {
+                to_symbol_id: None,
+                outcome: RESOLUTION_UNRESOLVED,
+            });
         }
     }
 
-    Ok(None)
+    let outcome = if looks_external_reference(raw.target_qualified_name.as_str()) {
+        RESOLUTION_EXTERNAL_REFERENCE
+    } else {
+        RESOLUTION_UNRESOLVED
+    };
+    Ok(ImportResolution {
+        to_symbol_id: None,
+        outcome,
+    })
 }
 
 fn file_exists_in_manifest(
@@ -382,6 +432,10 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].to_symbol_id.as_deref(), Some("stable_claims"));
         assert!(edges[0].to_name.is_none());
+        assert_eq!(edges[0].confidence, "high");
+        assert_eq!(edges[0].edge_provider, "import_resolver");
+        assert_eq!(edges[0].resolution_outcome, "resolved_internal");
+        assert!((edges[0].confidence_weight - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -403,6 +457,10 @@ mod tests {
             Some("stable_claims_by_name")
         );
         assert!(edges[0].to_name.is_none());
+        assert_eq!(edges[0].confidence, "high");
+        assert_eq!(edges[0].edge_provider, "import_resolver");
+        assert_eq!(edges[0].resolution_outcome, "resolved_internal");
+        assert!((edges[0].confidence_weight - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -419,6 +477,27 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert!(edges[0].to_symbol_id.is_none());
         assert_eq!(edges[0].to_name.as_deref(), Some("Symbol"));
+        assert_eq!(edges[0].confidence, "medium");
+        assert_eq!(edges[0].resolution_outcome, "external_reference");
+        assert!((edges[0].confidence_weight - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn resolve_imports_assigns_low_confidence_for_unresolved_internal_name() {
+        let conn = setup_test_db();
+        let imports = vec![RawImport {
+            source_qualified_name: "module::caller".to_string(),
+            target_qualified_name: "Symbol".to_string(),
+            target_name: "Symbol".to_string(),
+            import_line: 12,
+        }];
+
+        let edges = resolve_imports(&conn, imports, "my-repo", "main").unwrap();
+        assert_eq!(edges.len(), 1);
+        assert!(edges[0].to_symbol_id.is_none());
+        assert_eq!(edges[0].confidence, "low");
+        assert_eq!(edges[0].resolution_outcome, "unresolved");
+        assert!((edges[0].confidence_weight - 0.2).abs() < f64::EPSILON);
     }
 
     #[test]

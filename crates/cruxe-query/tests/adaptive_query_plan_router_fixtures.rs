@@ -116,6 +116,8 @@ fn run_eval(
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: plan_override.map(ToString::to_string),
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .expect("eval search invocation should succeed");
@@ -270,6 +272,8 @@ fn adaptive_plan_benchmark_asserts_plan_p95_budgets_and_downgrade_rates() {
                     confidence_threshold_override: None,
                     role: None,
                     plan_override: override_plan.map(ToString::to_string),
+                    policy_mode_override: None,
+                    policy_runtime: None,
                 },
             )
             .expect("search invocation should succeed");

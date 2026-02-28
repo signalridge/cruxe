@@ -69,6 +69,11 @@ pub fn definition() -> ToolDefinition {
                     "type": "string",
                     "description": "Optional adaptive query plan override. Requires search.adaptive_plan.allow_override=true.",
                     "enum": ["lexical_fast", "hybrid_standard", "semantic_deep"]
+                },
+                "policy_mode": {
+                    "type": "string",
+                    "description": "Optional retrieval policy override when allowed by runtime policy config.",
+                    "enum": ["strict", "balanced", "off", "audit_only"]
                 }
             },
             "required": ["query"]

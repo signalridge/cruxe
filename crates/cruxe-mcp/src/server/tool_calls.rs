@@ -499,14 +499,32 @@ mod tests {
     fn ranking_payload_basic_uses_compact_fields() {
         let reasons = vec![cruxe_core::types::RankingReasons {
             result_index: 0,
+            result_id: "res-1".to_string(),
             exact_match_boost: 5.0,
             qualified_name_boost: 2.0,
             path_affinity: 1.0,
             definition_boost: 1.0,
             kind_match: 2.0,
             test_file_penalty: 0.0,
+            confidence_structural_boost: 0.0,
+            structural_weighted_centrality: 0.0,
+            structural_raw_centrality: 0.0,
+            structural_guardrail_multiplier: 1.0,
+            confidence_coverage: 1.0,
             bm25_score: 10.0,
             final_score: 21.0,
+            signal_contributions: vec![cruxe_core::types::RankingSignalContribution {
+                signal: "exact_match_boost".to_string(),
+                raw_value: 5.0,
+                clamped_value: 5.0,
+                effective_value: 5.0,
+            }],
+            precedence_audit: Some(cruxe_core::types::RankingPrecedenceAudit {
+                lexical_dominance_applied: false,
+                exact_match_present: true,
+                secondary_effective_total: 3.0,
+                secondary_effective_cap: 3.0,
+            }),
         }];
 
         let payload =
