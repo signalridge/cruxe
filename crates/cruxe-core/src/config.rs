@@ -1,7 +1,8 @@
 use crate::constants;
 use crate::error::ConfigError;
 use crate::languages;
-use crate::types::{FreshnessPolicy, QueryIntent, RankingExplainLevel, SemanticMode};
+use crate::types::{FreshnessPolicy, PolicyMode, QueryIntent, RankingExplainLevel, SemanticMode};
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -50,9 +51,13 @@ pub struct SearchConfig {
     #[serde(default = "default_max_response_bytes")]
     pub max_response_bytes: usize,
     #[serde(default)]
+    pub ranking_signal_budgets: RankingSignalBudgetConfig,
+    #[serde(default)]
     pub intent: SearchIntentConfig,
     #[serde(default)]
     pub semantic: SemanticConfig,
+    #[serde(default)]
+    pub policy: RetrievalPolicyConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -79,6 +84,43 @@ pub struct SearchIntentConfig {
     pub symbol_kind_keywords: Vec<String>,
     #[serde(default = "default_intent_enable_wrapped_quoted_error_literal")]
     pub enable_wrapped_quoted_error_literal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankingSignalBudgetRange {
+    #[serde(
+        default = "default_budget_numeric_sentinel",
+        deserialize_with = "deserialize_budget_number"
+    )]
+    pub min: f64,
+    #[serde(
+        default = "default_budget_numeric_sentinel",
+        deserialize_with = "deserialize_budget_number"
+    )]
+    pub max: f64,
+    #[serde(
+        default = "default_budget_numeric_sentinel",
+        deserialize_with = "deserialize_budget_number"
+    )]
+    pub default: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankingSignalBudgetConfig {
+    #[serde(default = "default_budget_exact_match")]
+    pub exact_match: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_qualified_name")]
+    pub qualified_name: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_path_affinity")]
+    pub path_affinity: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_definition_boost")]
+    pub definition_boost: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_kind_match")]
+    pub kind_match: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_test_file_penalty")]
+    pub test_file_penalty: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_secondary_cap_when_exact")]
+    pub secondary_cap_when_exact: RankingSignalBudgetRange,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +161,91 @@ pub struct SemanticConfig {
     pub rerank: SemanticRerankConfig,
     #[serde(default)]
     pub overrides: SemanticOverridesConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalPolicyConfig {
+    #[serde(default = "default_policy_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub allow_request_override: bool,
+    #[serde(default = "default_policy_allowed_override_modes")]
+    pub allowed_override_modes: Vec<String>,
+    #[serde(default)]
+    pub path: PolicyPathConfig,
+    #[serde(default)]
+    pub kind: PolicyKindConfig,
+    #[serde(default)]
+    pub redaction: PolicyRedactionConfig,
+    #[serde(default)]
+    pub detect_secrets: DetectSecretsCompatConfig,
+    #[serde(default)]
+    pub opa: OpaPolicyConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PolicyPathConfig {
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PolicyKindConfig {
+    #[serde(default)]
+    pub deny_result_types: Vec<String>,
+    #[serde(default)]
+    pub allow_result_types: Vec<String>,
+    #[serde(default)]
+    pub deny_symbol_kinds: Vec<String>,
+    #[serde(default)]
+    pub allow_symbol_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRedactionConfig {
+    #[serde(default = "default_policy_redaction_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_policy_email_masking")]
+    pub email_masking: bool,
+    #[serde(default = "default_policy_high_entropy_min_length")]
+    pub high_entropy_min_length: usize,
+    #[serde(default = "default_policy_high_entropy_threshold")]
+    pub high_entropy_threshold: f64,
+    #[serde(default)]
+    pub custom_rules: Vec<PolicyRedactionRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRedactionRule {
+    pub name: String,
+    pub category: String,
+    pub pattern: String,
+    #[serde(default = "default_policy_redaction_placeholder")]
+    pub placeholder: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DetectSecretsCompatConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub plugins: Vec<String>,
+    #[serde(default)]
+    pub custom_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpaPolicyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_policy_opa_command")]
+    pub command: String,
+    #[serde(default = "default_policy_opa_query")]
+    pub query: String,
+    #[serde(default)]
+    pub policy_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -199,6 +326,70 @@ fn default_ranking_explain_level() -> String {
 }
 fn default_max_response_bytes() -> usize {
     64 * 1024
+}
+fn default_budget_numeric_sentinel() -> f64 {
+    f64::NAN
+}
+fn deserialize_budget_number<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let parsed = match value {
+        serde_json::Value::Number(number) => number.as_f64().unwrap_or(f64::NAN),
+        serde_json::Value::String(raw) => raw.parse::<f64>().unwrap_or(f64::NAN),
+        _ => f64::NAN,
+    };
+    Ok(parsed)
+}
+fn default_budget_exact_match() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 8.0,
+        default: 5.0,
+    }
+}
+fn default_budget_qualified_name() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 4.0,
+        default: 2.0,
+    }
+}
+fn default_budget_path_affinity() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+    }
+}
+fn default_budget_definition_boost() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+    }
+}
+fn default_budget_kind_match() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 3.0,
+        default: 2.0,
+    }
+}
+fn default_budget_test_file_penalty() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: -2.0,
+        max: 0.0,
+        default: -0.5,
+    }
+}
+fn default_budget_secondary_cap_when_exact() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.5,
+        max: 6.0,
+        default: 2.0,
+    }
 }
 fn default_intent_rule_order() -> Vec<String> {
     vec![
@@ -323,6 +514,37 @@ fn default_semantic_rerank_provider() -> String {
 fn default_semantic_rerank_timeout_ms() -> u64 {
     5000
 }
+fn default_policy_mode() -> String {
+    "balanced".into()
+}
+fn default_policy_allowed_override_modes() -> Vec<String> {
+    vec![
+        "balanced".to_string(),
+        "off".to_string(),
+        "audit_only".to_string(),
+    ]
+}
+fn default_policy_redaction_enabled() -> bool {
+    true
+}
+fn default_policy_email_masking() -> bool {
+    true
+}
+fn default_policy_high_entropy_min_length() -> usize {
+    20
+}
+fn default_policy_high_entropy_threshold() -> f64 {
+    3.5
+}
+fn default_policy_redaction_placeholder() -> String {
+    "[REDACTED]".to_string()
+}
+fn default_policy_opa_command() -> String {
+    "opa".to_string()
+}
+fn default_policy_opa_query() -> String {
+    "data.cruxe.allow".to_string()
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -354,8 +576,24 @@ impl Default for SearchConfig {
             freshness_policy: default_freshness_policy(),
             ranking_explain_level: default_ranking_explain_level(),
             max_response_bytes: default_max_response_bytes(),
+            ranking_signal_budgets: RankingSignalBudgetConfig::default(),
             intent: SearchIntentConfig::default(),
             semantic: SemanticConfig::default(),
+            policy: RetrievalPolicyConfig::default(),
+        }
+    }
+}
+
+impl Default for RankingSignalBudgetConfig {
+    fn default() -> Self {
+        Self {
+            exact_match: default_budget_exact_match(),
+            qualified_name: default_budget_qualified_name(),
+            path_affinity: default_budget_path_affinity(),
+            definition_boost: default_budget_definition_boost(),
+            kind_match: default_budget_kind_match(),
+            test_file_penalty: default_budget_test_file_penalty(),
+            secondary_cap_when_exact: default_budget_secondary_cap_when_exact(),
         }
     }
 }
@@ -444,6 +682,44 @@ impl Default for SemanticRerankConfig {
     }
 }
 
+impl Default for RetrievalPolicyConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_policy_mode(),
+            allow_request_override: false,
+            allowed_override_modes: default_policy_allowed_override_modes(),
+            path: PolicyPathConfig::default(),
+            kind: PolicyKindConfig::default(),
+            redaction: PolicyRedactionConfig::default(),
+            detect_secrets: DetectSecretsCompatConfig::default(),
+            opa: OpaPolicyConfig::default(),
+        }
+    }
+}
+
+impl Default for PolicyRedactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_policy_redaction_enabled(),
+            email_masking: default_policy_email_masking(),
+            high_entropy_min_length: default_policy_high_entropy_min_length(),
+            high_entropy_threshold: default_policy_high_entropy_threshold(),
+            custom_rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for OpaPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: default_policy_opa_command(),
+            query: default_policy_opa_query(),
+            policy_path: None,
+        }
+    }
+}
+
 impl SearchConfig {
     pub fn freshness_policy_typed(&self) -> FreshnessPolicy {
         parse_freshness_policy(&self.freshness_policy).unwrap_or(FreshnessPolicy::Balanced)
@@ -459,6 +735,10 @@ impl SearchConfig {
 
     pub fn semantic_enabled(&self) -> bool {
         self.semantic_mode_typed() != SemanticMode::Off
+    }
+
+    pub fn policy_mode_typed(&self) -> PolicyMode {
+        parse_policy_mode(&self.policy.mode).unwrap_or(PolicyMode::Balanced)
     }
 
     pub fn semantic_ratio_for_intent(
@@ -505,6 +785,37 @@ impl SearchConfig {
             default_confidence_threshold(),
             "search.request.confidence_threshold",
         )
+    }
+
+    pub fn resolve_policy_mode(
+        &self,
+        request_override: Option<PolicyMode>,
+    ) -> Result<(PolicyMode, Vec<String>), String> {
+        let mut warnings = Vec::new();
+        let config_mode = self.policy_mode_typed();
+        let Some(request_mode) = request_override else {
+            return Ok((config_mode, warnings));
+        };
+        if !self.policy.allow_request_override {
+            return Err("request policy override is disabled by configuration".to_string());
+        }
+
+        let allowed = normalized_policy_mode_list(
+            &self.policy.allowed_override_modes,
+            default_policy_allowed_override_modes(),
+        );
+        if allowed.iter().any(|mode| mode == request_mode.as_str()) {
+            warnings.push(format!(
+                "policy_mode_override_applied: {} -> {}",
+                config_mode, request_mode
+            ));
+            return Ok((request_mode, warnings));
+        }
+
+        Err(format!(
+            "requested policy mode `{}` is not allowed by configuration",
+            request_mode
+        ))
     }
 }
 
@@ -589,6 +900,7 @@ impl Config {
             normalize_freshness_policy(&config.search.freshness_policy);
         config.search.ranking_explain_level =
             normalize_ranking_explain_level(&config.search.ranking_explain_level);
+        config.search.ranking_signal_budgets = config.search.ranking_signal_budgets.normalized();
         config.search.intent = config.search.intent.normalized();
         config.search.semantic.mode = normalize_semantic_mode(&config.search.semantic.mode);
         config.search.semantic.ratio = clamp_unit_f64_with_warning(
@@ -730,6 +1042,79 @@ impl Config {
         if config.search.max_response_bytes == 0 {
             config.search.max_response_bytes = default_max_response_bytes();
         }
+        config.search.policy.mode = normalize_policy_mode(&config.search.policy.mode);
+        config.search.policy.allowed_override_modes = normalized_policy_mode_list(
+            &config.search.policy.allowed_override_modes,
+            default_policy_allowed_override_modes(),
+        );
+        config.search.policy.path.deny = normalize_non_empty_list(&config.search.policy.path.deny);
+        config.search.policy.path.allow =
+            normalize_non_empty_list(&config.search.policy.path.allow);
+        config.search.policy.kind.deny_result_types =
+            normalize_policy_result_type_list(&config.search.policy.kind.deny_result_types);
+        config.search.policy.kind.allow_result_types =
+            normalize_policy_result_type_list(&config.search.policy.kind.allow_result_types);
+        config.search.policy.kind.deny_symbol_kinds =
+            normalize_non_empty_list_lowercase(&config.search.policy.kind.deny_symbol_kinds);
+        config.search.policy.kind.allow_symbol_kinds =
+            normalize_non_empty_list_lowercase(&config.search.policy.kind.allow_symbol_kinds);
+        config.search.policy.redaction.high_entropy_min_length = clamp_min_usize_with_warning(
+            config.search.policy.redaction.high_entropy_min_length,
+            8,
+            default_policy_high_entropy_min_length(),
+            "search.policy.redaction.high_entropy_min_length",
+        );
+        config.search.policy.redaction.high_entropy_threshold = clamp_range_f64_with_warning(
+            config.search.policy.redaction.high_entropy_threshold,
+            1.0,
+            8.0,
+            default_policy_high_entropy_threshold(),
+            "search.policy.redaction.high_entropy_threshold",
+        );
+        config.search.policy.redaction.custom_rules = config
+            .search
+            .policy
+            .redaction
+            .custom_rules
+            .iter()
+            .filter_map(|rule| {
+                let name = rule.name.trim().to_string();
+                let category = rule.category.trim().to_string();
+                let pattern = rule.pattern.trim().to_string();
+                if name.is_empty() || category.is_empty() || pattern.is_empty() {
+                    return None;
+                }
+                let placeholder = if rule.placeholder.trim().is_empty() {
+                    default_policy_redaction_placeholder()
+                } else {
+                    rule.placeholder.trim().to_string()
+                };
+                Some(PolicyRedactionRule {
+                    name,
+                    category,
+                    pattern,
+                    placeholder,
+                })
+            })
+            .collect();
+        config.search.policy.detect_secrets.plugins =
+            normalize_detect_secrets_plugins(&config.search.policy.detect_secrets.plugins);
+        config.search.policy.detect_secrets.custom_patterns =
+            normalize_non_empty_list(&config.search.policy.detect_secrets.custom_patterns);
+        if config.search.policy.opa.command.trim().is_empty() {
+            config.search.policy.opa.command = default_policy_opa_command();
+        }
+        if config.search.policy.opa.query.trim().is_empty() {
+            config.search.policy.opa.query = default_policy_opa_query();
+        }
+        config.search.policy.opa.policy_path = config
+            .search
+            .policy
+            .opa
+            .policy_path
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         // Legacy compatibility fallback.
         if config.search.ranking_explain_level == "off" && config.debug.ranking_reasons {
@@ -776,6 +1161,49 @@ fn merge_toml_values(base: &mut toml::Value, overlay: &toml::Value) {
     }
 }
 
+fn parse_ranking_budget_env_default(raw: &str, field: &str, env_key: &str) -> Option<f64> {
+    match raw.parse::<f64>() {
+        Ok(parsed) if parsed.is_finite() => Some(parsed),
+        Ok(parsed) => {
+            tracing::warn!(
+                field,
+                env_key,
+                raw_value = raw,
+                parsed,
+                code = "invalid_env_override_non_finite",
+                "invalid ranking budget env override; expected finite f64, ignoring"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                field,
+                env_key,
+                raw_value = raw,
+                error = %error,
+                code = "invalid_env_override_parse",
+                "invalid ranking budget env override; expected finite f64, ignoring"
+            );
+            None
+        }
+    }
+}
+
+fn apply_env_ranking_budget_default(
+    config: &mut Config,
+    env_key: &str,
+    field: &str,
+    set_value: impl FnOnce(&mut RankingSignalBudgetConfig, f64),
+) {
+    let Ok(raw) = std::env::var(env_key) else {
+        return;
+    };
+    let Some(parsed) = parse_ranking_budget_env_default(&raw, field, env_key) else {
+        return;
+    };
+    set_value(&mut config.search.ranking_signal_budgets, parsed);
+}
+
 /// Apply environment variable overrides to config fields.
 /// Convention: `CRUXE_<SECTION>_<KEY>` in UPPER_SNAKE_CASE.
 fn apply_env_overrides(config: &mut Config) {
@@ -820,6 +1248,122 @@ fn apply_env_overrides(config: &mut Config) {
         && let Ok(n) = v.parse()
     {
         config.search.max_response_bytes = n;
+    }
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT",
+        "search.ranking_signal_budgets.exact_match.default",
+        |budgets, parsed| budgets.exact_match.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_QUALIFIED_NAME_DEFAULT",
+        "search.ranking_signal_budgets.qualified_name.default",
+        |budgets, parsed| budgets.qualified_name.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_PATH_AFFINITY_DEFAULT",
+        "search.ranking_signal_budgets.path_affinity.default",
+        |budgets, parsed| budgets.path_affinity.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_DEFINITION_BOOST_DEFAULT",
+        "search.ranking_signal_budgets.definition_boost.default",
+        |budgets, parsed| budgets.definition_boost.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_KIND_MATCH_DEFAULT",
+        "search.ranking_signal_budgets.kind_match.default",
+        |budgets, parsed| budgets.kind_match.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_TEST_FILE_PENALTY_DEFAULT",
+        "search.ranking_signal_budgets.test_file_penalty.default",
+        |budgets, parsed| budgets.test_file_penalty.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_SECONDARY_CAP_WHEN_EXACT_DEFAULT",
+        "search.ranking_signal_budgets.secondary_cap_when_exact.default",
+        |budgets, parsed| budgets.secondary_cap_when_exact.default = parsed,
+    );
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_MODE") {
+        config.search.policy.mode = v;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_ALLOW_REQUEST_OVERRIDE")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.allow_request_override = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_ALLOWED_OVERRIDE_MODES") {
+        config.search.policy.allowed_override_modes = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_PATH_DENY") {
+        config.search.policy.path.deny = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_PATH_ALLOW") {
+        config.search.policy.path.allow = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_DENY_RESULT_TYPES") {
+        config.search.policy.kind.deny_result_types = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_ALLOW_RESULT_TYPES") {
+        config.search.policy.kind.allow_result_types = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_DENY_SYMBOL_KINDS") {
+        config.search.policy.kind.deny_symbol_kinds = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_ALLOW_SYMBOL_KINDS") {
+        config.search.policy.kind.allow_symbol_kinds = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.redaction.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_EMAIL_MASKING")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.redaction.email_masking = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_HIGH_ENTROPY_MIN_LENGTH")
+        && let Ok(n) = v.parse()
+    {
+        config.search.policy.redaction.high_entropy_min_length = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_HIGH_ENTROPY_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.search.policy.redaction.high_entropy_threshold = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_DETECT_SECRETS_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.detect_secrets.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_DETECT_SECRETS_PLUGINS") {
+        config.search.policy.detect_secrets.plugins = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_DETECT_SECRETS_CUSTOM_PATTERNS") {
+        config.search.policy.detect_secrets.custom_patterns = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.opa.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_COMMAND") {
+        config.search.policy.opa.command = v;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_QUERY") {
+        config.search.policy.opa.query = v;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_POLICY_PATH") {
+        config.search.policy.opa.policy_path = Some(v);
     }
     if let Ok(v) = std::env::var("CRUXE_SEARCH_INTENT_RULE_ORDER") {
         config.search.intent.rule_order = parse_csv_env_list(&v);
@@ -1081,6 +1625,79 @@ fn normalize_semantic_mode(raw: &str) -> String {
     semantic_mode_to_str(mode).to_string()
 }
 
+fn parse_policy_mode(raw: &str) -> Option<PolicyMode> {
+    raw.parse::<PolicyMode>().ok()
+}
+
+fn policy_mode_to_str(mode: PolicyMode) -> &'static str {
+    mode.as_str()
+}
+
+fn normalize_policy_mode(raw: &str) -> String {
+    let mode = parse_policy_mode(raw).unwrap_or(PolicyMode::Balanced);
+    policy_mode_to_str(mode).to_string()
+}
+
+fn normalized_policy_mode_list(values: &[String], fallback: Vec<String>) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .filter_map(|value| parse_policy_mode(value).map(policy_mode_to_str))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    if out.is_empty() { fallback } else { out }
+}
+
+fn normalize_non_empty_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn normalize_non_empty_list_lowercase(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+fn normalize_policy_result_type_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter_map(|value| match value.as_str() {
+            "symbol" | "snippet" | "file" => Some(value),
+            _ => None,
+        })
+        .collect()
+}
+
+fn normalize_detect_secrets_plugins(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values
+        .iter()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+    {
+        let canonical = match value.as_str() {
+            "awskeydetector" | "aws" => "aws",
+            "githubtokendetector" | "github" => "github",
+            "slackdetector" | "slack" => "slack",
+            "privatekeydetector" | "privatekey" => "privatekey",
+            _ => continue,
+        };
+        if !normalized.iter().any(|existing| existing == canonical) {
+            normalized.push(canonical.to_string());
+        }
+    }
+    normalized
+}
+
 fn normalize_embedding_profile(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "fast_local" => "fast_local".to_string(),
@@ -1208,6 +1825,128 @@ fn normalize_intent_symbol_kind_keywords(raw: &[String]) -> Vec<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RankingBudgetNormalizationCode {
+    NonFiniteRange,
+    InvertedRange,
+    DefaultOutOfRange,
+}
+
+impl RankingBudgetNormalizationCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NonFiniteRange => "non_finite_range",
+            Self::InvertedRange => "inverted_range",
+            Self::DefaultOutOfRange => "default_out_of_range",
+        }
+    }
+}
+
+const FLOAT_TOLERANCE: f64 = 1e-9;
+
+impl RankingSignalBudgetConfig {
+    /// Return a normalized copy with canonical safe ranges and deterministic diagnostics.
+    pub fn normalized(&self) -> Self {
+        Self {
+            exact_match: normalize_budget_range(
+                self.exact_match.clone(),
+                default_budget_exact_match(),
+                "search.ranking_signal_budgets.exact_match",
+            ),
+            qualified_name: normalize_budget_range(
+                self.qualified_name.clone(),
+                default_budget_qualified_name(),
+                "search.ranking_signal_budgets.qualified_name",
+            ),
+            path_affinity: normalize_budget_range(
+                self.path_affinity.clone(),
+                default_budget_path_affinity(),
+                "search.ranking_signal_budgets.path_affinity",
+            ),
+            definition_boost: normalize_budget_range(
+                self.definition_boost.clone(),
+                default_budget_definition_boost(),
+                "search.ranking_signal_budgets.definition_boost",
+            ),
+            kind_match: normalize_budget_range(
+                self.kind_match.clone(),
+                default_budget_kind_match(),
+                "search.ranking_signal_budgets.kind_match",
+            ),
+            test_file_penalty: normalize_budget_range(
+                self.test_file_penalty.clone(),
+                default_budget_test_file_penalty(),
+                "search.ranking_signal_budgets.test_file_penalty",
+            ),
+            secondary_cap_when_exact: normalize_budget_range(
+                self.secondary_cap_when_exact.clone(),
+                default_budget_secondary_cap_when_exact(),
+                "search.ranking_signal_budgets.secondary_cap_when_exact",
+            ),
+        }
+    }
+}
+
+fn normalize_budget_range(
+    value: RankingSignalBudgetRange,
+    fallback: RankingSignalBudgetRange,
+    field: &str,
+) -> RankingSignalBudgetRange {
+    if !value.min.is_finite() || !value.max.is_finite() || !value.default.is_finite() {
+        let mut normalized = fallback.clone();
+        if value.default.is_finite() {
+            normalized.default = value.default.clamp(fallback.min, fallback.max);
+        }
+        tracing::warn!(
+            field,
+            code = RankingBudgetNormalizationCode::NonFiniteRange.as_str(),
+            min = value.min,
+            max = value.max,
+            default = value.default,
+            normalized_min = normalized.min,
+            normalized_max = normalized.max,
+            normalized_default = normalized.default,
+            "invalid ranking budget range; normalizing to canonical safe range"
+        );
+        return normalized;
+    }
+    if value.min > value.max {
+        let mut normalized = fallback.clone();
+        if value.default.is_finite() {
+            normalized.default = value.default.clamp(fallback.min, fallback.max);
+        }
+        tracing::warn!(
+            field,
+            code = RankingBudgetNormalizationCode::InvertedRange.as_str(),
+            min = value.min,
+            max = value.max,
+            default = value.default,
+            fallback_min = fallback.min,
+            fallback_max = fallback.max,
+            fallback_default = fallback.default,
+            normalized_default = normalized.default,
+            "inverted ranking budget range; falling back to canonical defaults"
+        );
+        return normalized;
+    }
+
+    let mut normalized = value;
+    let clamped_default = normalized.default.clamp(normalized.min, normalized.max);
+    if (clamped_default - normalized.default).abs() > FLOAT_TOLERANCE {
+        tracing::warn!(
+            field,
+            code = RankingBudgetNormalizationCode::DefaultOutOfRange.as_str(),
+            min = normalized.min,
+            max = normalized.max,
+            default = normalized.default,
+            clamped_default,
+            "ranking budget default is outside range; clamped to range"
+        );
+        normalized.default = clamped_default;
+    }
+    normalized
+}
+
 fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
     if !value.is_finite() {
         tracing::warn!(
@@ -1219,7 +1958,7 @@ fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
         return fallback;
     }
     let clamped = value.clamp(0.0, 1.0);
-    if (clamped - value).abs() > f64::EPSILON {
+    if (clamped - value).abs() > FLOAT_TOLERANCE {
         tracing::warn!(
             field,
             value,
@@ -1246,6 +1985,30 @@ fn clamp_non_negative_f64_with_warning(value: f64, fallback: f64, field: &str) -
             value,
             fallback,
             "config value below 0.0; falling back to default"
+        );
+        return fallback;
+    }
+    value
+}
+
+fn clamp_range_f64_with_warning(value: f64, min: f64, max: f64, fallback: f64, field: &str) -> f64 {
+    if !value.is_finite() {
+        tracing::warn!(
+            field,
+            value,
+            fallback,
+            "invalid non-finite config value; falling back to default"
+        );
+        return fallback;
+    }
+    if value < min || value > max {
+        tracing::warn!(
+            field,
+            value,
+            min,
+            max,
+            fallback,
+            "config value out of range; falling back to default"
         );
         return fallback;
     }
@@ -1306,6 +2069,33 @@ mod tests {
     }
 
     #[test]
+    fn normalize_policy_mode_values() {
+        assert_eq!(normalize_policy_mode("strict"), "strict");
+        assert_eq!(normalize_policy_mode("BALANCED"), "balanced");
+        assert_eq!(normalize_policy_mode("audit"), "audit_only");
+        assert_eq!(normalize_policy_mode("unknown"), "balanced");
+    }
+
+    #[test]
+    fn search_policy_override_resolution_respects_allowlist() {
+        let mut config = SearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        config.policy.allow_request_override = true;
+        config.policy.allowed_override_modes = vec!["off".to_string(), "audit_only".to_string()];
+
+        let (effective, warnings) = config
+            .resolve_policy_mode(Some(PolicyMode::AuditOnly))
+            .expect("audit_only should be allowed");
+        assert_eq!(effective, PolicyMode::AuditOnly);
+        assert!(!warnings.is_empty());
+
+        let err = config
+            .resolve_policy_mode(Some(PolicyMode::Strict))
+            .expect_err("strict should be denied by allowlist");
+        assert!(err.contains("not allowed"));
+    }
+
+    #[test]
     fn normalize_semantic_provider_values() {
         assert_eq!(normalize_embedding_profile("high_quality"), "high_quality");
         assert_eq!(normalize_embedding_profile("unknown"), "fast_local");
@@ -1354,6 +2144,42 @@ mod tests {
     }
 
     #[test]
+    fn ranking_signal_budget_normalization_preserves_safe_ranges() {
+        let raw = RankingSignalBudgetConfig {
+            exact_match: RankingSignalBudgetRange {
+                min: 5.0,
+                max: 1.0,
+                default: 9.0,
+            },
+            qualified_name: RankingSignalBudgetRange {
+                min: 0.0,
+                max: 1.0,
+                default: 2.5,
+            },
+            path_affinity: default_budget_path_affinity(),
+            definition_boost: default_budget_definition_boost(),
+            kind_match: default_budget_kind_match(),
+            test_file_penalty: default_budget_test_file_penalty(),
+            secondary_cap_when_exact: default_budget_secondary_cap_when_exact(),
+        };
+        let normalized = raw.normalized();
+        assert_eq!(normalized.exact_match.min, 0.0);
+        assert_eq!(normalized.exact_match.max, 8.0);
+        assert_eq!(normalized.exact_match.default, 8.0);
+        assert_eq!(normalized.qualified_name.min, 0.0);
+        assert_eq!(normalized.qualified_name.max, 1.0);
+        assert_eq!(normalized.qualified_name.default, 1.0);
+        assert_eq!(
+            RankingBudgetNormalizationCode::InvertedRange.as_str(),
+            "inverted_range"
+        );
+        assert_eq!(
+            RankingBudgetNormalizationCode::DefaultOutOfRange.as_str(),
+            "default_out_of_range"
+        );
+    }
+
+    #[test]
     fn parse_env_bool_supports_common_truthy_falsey_values() {
         assert_eq!(parse_env_bool("true"), Some(true));
         assert_eq!(parse_env_bool("TRUE"), Some(true));
@@ -1368,6 +2194,54 @@ mod tests {
         assert_eq!(parse_env_bool("0"), Some(false));
 
         assert_eq!(parse_env_bool("maybe"), None);
+    }
+
+    #[test]
+    fn parse_ranking_budget_env_default_accepts_finite_numbers_only() {
+        assert_eq!(
+            parse_ranking_budget_env_default(
+                "1.25",
+                "search.ranking_signal_budgets.exact_match.default",
+                "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT"
+            ),
+            Some(1.25)
+        );
+        assert_eq!(
+            parse_ranking_budget_env_default(
+                "NaN",
+                "search.ranking_signal_budgets.exact_match.default",
+                "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_ranking_budget_env_default(
+                "oops",
+                "search.ranking_signal_budgets.exact_match.default",
+                "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_detect_secrets_plugins_filters_unknown_and_canonicalizes_aliases() {
+        assert_eq!(
+            normalize_detect_secrets_plugins(&[
+                " AWSKeyDetector ".to_string(),
+                "github".to_string(),
+                "unknown".to_string(),
+                "privatekeydetector".to_string(),
+                "aws".to_string(),
+                "slackdetector".to_string(),
+            ]),
+            vec![
+                "aws".to_string(),
+                "github".to_string(),
+                "privatekey".to_string(),
+                "slack".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1487,6 +2361,16 @@ mod tests {
             ranking_explain_level = "verbose"
             max_response_bytes = 0
 
+            [search.ranking_signal_budgets.exact_match]
+            min = 5.0
+            max = 1.0
+            default = 9.0
+
+            [search.ranking_signal_budgets.qualified_name]
+            min = 0.0
+            max = 1.0
+            default = 10.0
+
             [search.semantic]
             mode = "future_mode"
             ratio = 9.0
@@ -1523,6 +2407,21 @@ mod tests {
         assert_eq!(loaded.search.freshness_policy, "balanced");
         assert_eq!(loaded.search.ranking_explain_level, "full");
         assert_eq!(loaded.search.max_response_bytes, 64 * 1024);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.exact_match.default,
+            8.0
+        );
+        assert_eq!(loaded.search.ranking_signal_budgets.qualified_name.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.qualified_name.max, 1.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.qualified_name.default,
+            1.0
+        );
+        assert_eq!(loaded.search.ranking_signal_budgets.kind_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.kind_match.max, 3.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.kind_match.default, 2.0);
         assert_eq!(loaded.search.semantic.mode, "off");
         assert_eq!(loaded.search.semantic.ratio, 1.0);
         assert_eq!(loaded.search.semantic.lexical_short_circuit_threshold, 0.0);
@@ -1561,6 +2460,52 @@ mod tests {
             RankingExplainLevel::Full
         );
         assert_eq!(loaded.search.semantic_mode_typed(), SemanticMode::Off);
+    }
+
+    #[test]
+    fn load_with_file_non_numeric_budget_values_fall_back_to_canonical_defaults() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search.ranking_signal_budgets.exact_match]
+            min = "oops"
+            max = 8.0
+            default = 5.0
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.exact_match.default,
+            5.0
+        );
+    }
+
+    #[test]
+    fn load_with_file_partial_budget_range_falls_back_to_canonical_defaults() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search.ranking_signal_budgets.exact_match]
+            default = 3.0
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.exact_match.default,
+            3.0
+        );
     }
 
     #[test]
@@ -1607,6 +2552,15 @@ mod tests {
         assert_eq!(semantic.semantic_limit_multiplier, 2);
         assert_eq!(semantic.lexical_fanout_multiplier, 4);
         assert_eq!(semantic.semantic_fanout_multiplier, 3);
+
+        let budgets = RankingSignalBudgetConfig::default();
+        assert_eq!(budgets.exact_match.default, 5.0);
+        assert_eq!(budgets.qualified_name.default, 2.0);
+        assert_eq!(budgets.path_affinity.default, 1.0);
+        assert_eq!(budgets.definition_boost.default, 1.0);
+        assert_eq!(budgets.kind_match.default, 2.0);
+        assert_eq!(budgets.test_file_penalty.default, -0.5);
+        assert_eq!(budgets.secondary_cap_when_exact.default, 2.0);
     }
 
     #[test]

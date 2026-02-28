@@ -1,9 +1,11 @@
 use crate::search;
 use cruxe_core::error::StateError;
-use cruxe_core::types::SourceLayer;
+use cruxe_core::types::{RankingPrecedenceAudit, RankingSignalContribution, SourceLayer};
 use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+
+const EXPLAIN_SIGNAL_TOLERANCE: f64 = 1e-9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExplainRankingError {
@@ -41,6 +43,10 @@ pub struct RankingScoringBreakdown {
     pub structural_guardrail_multiplier: f64,
     pub confidence_coverage: f64,
     pub total: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signal_accounting: Vec<RankingSignalContribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precedence_audit: Option<RankingPrecedenceAudit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,6 +130,8 @@ pub fn explain_ranking(
             structural_guardrail_multiplier: reason.structural_guardrail_multiplier,
             confidence_coverage: reason.confidence_coverage,
             total: reason.final_score,
+            signal_accounting: reason.signal_contributions.clone(),
+            precedence_audit: reason.precedence_audit.clone(),
         },
         scoring_details: RankingScoringDetails {
             bm25_source: format!("tantivy.bm25 (score={:.3})", reason.bm25_score),
@@ -163,7 +171,7 @@ pub fn explain_ranking(
 }
 
 fn component_reason(value: f64, positive: &str, none: &str) -> String {
-    if value.abs() > f64::EPSILON {
+    if value.abs() > EXPLAIN_SIGNAL_TOLERANCE {
         return format!("{positive} (contribution={value:.3})");
     }
     none.to_string()
@@ -280,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn explain_ranking_scoring_components_sum_to_total() {
+    fn explain_ranking_scoring_components_match_raw_signal_accounting() {
         let tmp = tempfile::tempdir().unwrap();
         let index_set = IndexSet::open(tmp.path()).unwrap();
         let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
@@ -300,19 +308,59 @@ mod tests {
         .unwrap();
 
         let scoring = &explanation.scoring;
-        let sum = scoring.bm25
+        let raw_sum = scoring.bm25
             + scoring.exact_match
             + scoring.qualified_name
             + scoring.path_affinity
             + scoring.definition_boost
             + scoring.kind_match
-            + scoring.test_file_penalty
-            + scoring.confidence_structural_boost;
+            + scoring.test_file_penalty;
+        let accounting_raw_sum: f64 = scoring
+            .signal_accounting
+            .iter()
+            .map(|entry| entry.raw_value)
+            .sum();
         assert!(
-            (sum - scoring.total).abs() < 1e-6,
-            "sum={} total={}",
-            sum,
-            scoring.total
+            (raw_sum - accounting_raw_sum).abs() < 1e-6,
+            "raw_sum={} accounting_raw_sum={}",
+            raw_sum,
+            accounting_raw_sum
+        );
+    }
+
+    #[test]
+    fn explain_ranking_signal_accounting_matches_total_effective_score() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index_set = IndexSet::open(tmp.path()).unwrap();
+        let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+        write_symbol_fixture(&index_set, &conn, "proj", "live").unwrap();
+
+        let explanation = explain_ranking(
+            &index_set,
+            Some(&conn),
+            "validate_token",
+            "src/lib.rs",
+            3,
+            Some("live"),
+            Some("rust"),
+            20,
+        )
+        .unwrap();
+
+        let accounting = &explanation.scoring.signal_accounting;
+        assert!(
+            !accounting.is_empty(),
+            "full explain should include signal accounting entries"
+        );
+        let total_effective: f64 = accounting.iter().map(|entry| entry.effective_value).sum();
+        assert!(
+            (total_effective - explanation.scoring.total).abs() < 1e-6,
+            "effective decomposition must match total score"
+        );
+        assert!(
+            explanation.scoring.precedence_audit.is_some(),
+            "full explain should include precedence audit metadata"
         );
     }
 }

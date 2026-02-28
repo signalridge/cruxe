@@ -3281,6 +3281,82 @@ fn t124_search_code_ranking_reasons_basic_mode() {
     );
 }
 
+/// T124b: full explain mode includes raw/clamped/effective signal accounting and precedence audit.
+#[test]
+fn t124b_search_code_ranking_reasons_full_mode_includes_budget_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "ranking_explain_level": "full"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").unwrap();
+    let reasons = meta
+        .get("ranking_reasons")
+        .expect("ranking_reasons should be present for full mode")
+        .as_array()
+        .unwrap();
+    assert!(!reasons.is_empty(), "expected non-empty ranking_reasons");
+    let first = reasons.first().unwrap();
+    // Backward-compatible legacy keys remain available.
+    assert!(first.get("exact_match_boost").is_some());
+    assert!(first.get("qualified_name_boost").is_some());
+    assert!(first.get("bm25_score").is_some());
+    assert!(first.get("final_score").is_some());
+    // Budgeted explainability additions.
+    let contributions = first
+        .get("signal_contributions")
+        .and_then(|v| v.as_array())
+        .expect("full mode should include signal_contributions");
+    assert!(
+        contributions.len() >= 3,
+        "expected multiple signal contribution entries"
+    );
+    let first_signal = contributions.first().unwrap();
+    assert!(first_signal.get("signal").is_some());
+    assert!(first_signal.get("raw_value").is_some());
+    assert!(first_signal.get("clamped_value").is_some());
+    assert!(first_signal.get("effective_value").is_some());
+    let precedence = first
+        .get("precedence_audit")
+        .expect("full mode should include precedence audit");
+    assert!(precedence.get("lexical_dominance_applied").is_some());
+    assert!(precedence.get("exact_match_present").is_some());
+    assert!(precedence.get("secondary_effective_total").is_some());
+    assert!(precedence.get("secondary_effective_cap").is_some());
+}
+
 #[test]
 fn t403_search_code_exposes_semantic_and_confidence_metadata() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3338,6 +3414,9 @@ fn t403_search_code_exposes_semantic_and_confidence_metadata() {
     );
     assert!(meta.get("query_intent_confidence").is_some());
     assert!(meta.get("low_confidence").is_some());
+    assert!(meta.get("policy_mode").is_some());
+    assert!(meta.get("policy_blocked_count").is_some());
+    assert!(meta.get("policy_redacted_count").is_some());
 
     let first = payload["results"]
         .as_array()
@@ -3479,6 +3558,115 @@ fn t404_search_code_invalid_confidence_threshold_returns_invalid_input_envelope(
             .and_then(|v| v.as_str()),
         Some(cruxe_core::constants::PROTOCOL_VERSION)
     );
+}
+
+#[test]
+fn t470_search_code_policy_mode_override_rejected_in_strict_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let mut config = Config::default();
+    config.search.policy.mode = "strict".to_string();
+    config.search.policy.allow_request_override = false;
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "policy_mode": "off"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "tool call should return canonical content envelope"
+    );
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_input")
+    );
+    assert!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("Policy")
+    );
+}
+
+#[test]
+fn t471_search_code_exposes_policy_metadata_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let mut config = Config::default();
+    config.search.policy.mode = "balanced".to_string();
+    config.search.policy.allow_request_override = true;
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "policy_mode": "audit_only"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let metadata = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        metadata.get("policy_mode").and_then(|v| v.as_str()),
+        Some("audit_only")
+    );
+    assert!(metadata.get("policy_blocked_count").is_some());
+    assert!(metadata.get("policy_redacted_count").is_some());
 }
 
 #[test]
@@ -4081,6 +4269,10 @@ fn t134_tools_list_schema_verification() {
     assert!(context_props.get("max_tokens").is_some());
     assert!(context_props.get("strategy").is_some());
     assert!(
+        context_props.get("policy_mode").is_some(),
+        "get_code_context should expose policy_mode override"
+    );
+    assert!(
         context_props.get("compact").is_none(),
         "003 tools must not expose compact parameter in this phase"
     );
@@ -4100,6 +4292,10 @@ fn t134_tools_list_schema_verification() {
     assert!(
         search_props.get("confidence_threshold").is_some(),
         "search_code should expose confidence_threshold override"
+    );
+    assert!(
+        search_props.get("policy_mode").is_some(),
+        "search_code should expose policy_mode override"
     );
 }
 

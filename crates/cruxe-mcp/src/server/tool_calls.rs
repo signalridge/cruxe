@@ -513,6 +513,18 @@ mod tests {
             confidence_coverage: 1.0,
             bm25_score: 10.0,
             final_score: 21.0,
+            signal_contributions: vec![cruxe_core::types::RankingSignalContribution {
+                signal: "exact_match_boost".to_string(),
+                raw_value: 5.0,
+                clamped_value: 5.0,
+                effective_value: 5.0,
+            }],
+            precedence_audit: Some(cruxe_core::types::RankingPrecedenceAudit {
+                lexical_dominance_applied: false,
+                exact_match_present: true,
+                secondary_effective_total: 3.0,
+                secondary_effective_cap: 3.0,
+            }),
         }];
 
         let payload =
