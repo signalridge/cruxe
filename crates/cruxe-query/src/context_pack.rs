@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use thiserror::Error;
 
+mod sectioning;
+use sectioning::assign_section;
+
 pub const DEFAULT_MAX_CANDIDATES: usize = 72;
 const MAX_SNIPPET_LINES: usize = 40;
 
@@ -488,11 +491,14 @@ fn assemble_pack(
         }
     }
 
+    let selected_candidates = sections.total_items();
     let (suggested_next_queries, missing_context_hints) = build_followup_guidance(
         query,
         &missing_sections,
         dropped_candidates,
         budget_tokens,
+        token_budget_used,
+        selected_candidates,
         mode,
     );
 
@@ -504,6 +510,7 @@ fn assemble_pack(
         overflow_candidates,
     };
 
+    let budget_utilization_ratio = token_budget_used as f64 / budget_tokens as f64;
     let metadata = json!({
         "total_raw_candidates": raw_candidate_count,
         "deduped_candidates": coverage_summary
@@ -511,7 +518,15 @@ fn assemble_pack(
             .values()
             .sum::<usize>()
             + dropped_candidates,
-        "selected_candidates": sections.total_items(),
+        "selected_candidates": selected_candidates,
+        "budget_utilization_ratio": budget_utilization_ratio,
+        "token_estimation": {
+            "method": "cruxe_core::tokens::estimate_tokens",
+            "minimum_per_item": 8
+        },
+        "mode_aliases": {
+            "aider_minimal": "edit_minimal"
+        },
         "section_caps": caps,
         "section_aliases": {
             "key_usages": "usages",
@@ -643,84 +658,6 @@ fn probe_queries(query: &str, mode: ContextPackMode) -> Vec<(String, String)> {
             ("deps_probe".to_string(), format!("{query} import")),
         ],
         ContextPackMode::EditMinimal => vec![("primary".to_string(), query.to_string())],
-    }
-}
-
-fn assign_section(result: &SearchResult) -> (ContextPackSection, &'static str) {
-    let path = result.path.to_ascii_lowercase();
-    let kind = result
-        .kind
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let chunk_type = result
-        .chunk_type
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let snippet = result
-        .snippet
-        .as_deref()
-        .unwrap_or_default()
-        .trim_start()
-        .to_ascii_lowercase();
-
-    let is_definition = result.result_type == "symbol";
-    let is_dependency = path.ends_with("cargo.toml")
-        || path.ends_with("go.mod")
-        || path.ends_with("go.sum")
-        || path.ends_with("package.json")
-        || path.ends_with("pnpm-lock.yaml")
-        || path.ends_with("requirements.txt")
-        || path.ends_with("pyproject.toml")
-        || path.ends_with("pom.xml")
-        || snippet.starts_with("use ")
-        || snippet.starts_with("import ")
-        || snippet.starts_with("from ")
-        || kind.contains("import")
-        || kind.contains("module");
-    let is_test = path.contains("/tests/")
-        || path.contains("/test/")
-        || path.contains("_test.")
-        || path.contains(".spec.")
-        || path.ends_with("tests.rs");
-    let is_config = path.ends_with(".toml")
-        || path.ends_with(".yaml")
-        || path.ends_with(".yml")
-        || path.ends_with(".ini")
-        || path.ends_with(".json")
-        || path.ends_with("dockerfile")
-        || path.contains(".github/workflows");
-    let is_docs = path.ends_with(".md")
-        || path.ends_with(".rst")
-        || path.ends_with(".txt")
-        || path.contains("/docs/")
-        || path.contains("readme");
-    let has_usage_signal = chunk_type.contains("usage")
-        || chunk_type.contains("call")
-        || chunk_type.contains("reference")
-        || snippet.contains(" call ");
-    let is_usage = has_usage_signal
-        || (result.result_type == "snippet"
-            && !is_dependency
-            && !is_test
-            && !is_config
-            && !is_docs);
-
-    if is_definition {
-        (ContextPackSection::Definitions, "definition")
-    } else if is_usage {
-        (ContextPackSection::Usages, "usage")
-    } else if is_dependency {
-        (ContextPackSection::Deps, "dependency")
-    } else if is_test {
-        (ContextPackSection::Tests, "test")
-    } else if is_config {
-        (ContextPackSection::Config, "config")
-    } else if is_docs {
-        (ContextPackSection::Docs, "docs")
-    } else {
-        (ContextPackSection::Usages, "default_usage")
     }
 }
 
@@ -857,6 +794,8 @@ fn build_followup_guidance(
     missing_sections: &[String],
     dropped_candidates: usize,
     budget_tokens: usize,
+    token_budget_used: usize,
+    selected_candidates: usize,
     mode: ContextPackMode,
 ) -> (Vec<String>, Vec<String>) {
     let mut next_queries = Vec::new();
@@ -906,6 +845,19 @@ fn build_followup_guidance(
         hints.push(format!(
             "{} candidate(s) were dropped by budget; increase budget_tokens or tighten query.",
             dropped_candidates
+        ));
+    }
+    if selected_candidates == 0 {
+        next_queries.push(format!("{query} symbol"));
+        hints.push(
+            "No candidates were selected; broaden the query or verify index freshness.".to_string(),
+        );
+    } else if dropped_candidates == 0
+        && token_budget_used.saturating_mul(100) < budget_tokens.saturating_mul(40)
+    {
+        next_queries.push(format!("{query} related symbols"));
+        hints.push(format!(
+            "Budget underfilled ({token_budget_used}/{budget_tokens} tokens); broaden query or raise max_candidates for richer coverage."
         ));
     }
 

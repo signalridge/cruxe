@@ -114,6 +114,9 @@ Most query/navigation tools also accept these optional fields:
 Notes:
 - Response section keys are canonicalized as `definitions`, `usages`, `deps`, `tests`, `config`, `docs`.
 - Metadata includes `section_aliases` for Continue-style naming (`key_usages` -> `usages`, `dependencies` -> `deps`).
+- Mode alias: `aider_minimal` is accepted as an alias for `edit_minimal`.
+- Token estimates use `cruxe_core::tokens::estimate_tokens` with a minimum of 8 tokens per selected item.
+- Metadata includes `budget_utilization_ratio`, and underfilled packs include guidance in `missing_context_hints`.
 
 ## Version Alignment Rule
 

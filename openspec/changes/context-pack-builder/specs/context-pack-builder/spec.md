@@ -27,6 +27,10 @@ Pack assembly MUST enforce explicit token budget limits and deterministic trunca
 - **THEN** runtime MUST keep higher-priority items according to deterministic ordering
 - **AND** MUST report dropped candidate counts
 
+#### Scenario: Underfilled budget emits expansion guidance
+- **WHEN** retrieved candidates do not materially use the requested budget
+- **THEN** runtime MUST include guidance hints and suggested follow-up queries for expanding retrieval coverage
+
 ### Requirement: Pack items MUST include provenance envelope
 Each emitted pack item MUST include provenance fields sufficient for audit and verification.
 

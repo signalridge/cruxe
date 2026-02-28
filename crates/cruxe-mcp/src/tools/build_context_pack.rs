@@ -40,7 +40,7 @@ pub fn definition() -> ToolDefinition {
                 },
                 "mode": {
                     "type": "string",
-                    "description": "Pack shaping mode: full context or aider-style minimal edit context.",
+                    "description": "Pack shaping mode: `full` or `edit_minimal` (`aider_minimal` is an alias of `edit_minimal`).",
                     "enum": ["full", "edit_minimal", "aider_minimal"],
                     "default": "full"
                 },

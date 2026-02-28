@@ -2424,6 +2424,111 @@ fn t365_build_context_pack_enforces_max_candidates_upper_bound() {
 }
 
 #[test]
+fn t366_build_context_pack_zero_results_emits_underfilled_guidance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let zero_query = "zzzz_context_pack_zero_result_probe_987654321";
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": zero_query,
+                "budget_tokens": 400,
+                "language": "fortran",
+                "mode": "full"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let sections = payload
+        .get("sections")
+        .and_then(|value| value.as_object())
+        .expect("sections should be object");
+    let selected_items = sections
+        .values()
+        .filter_map(|value| value.as_array())
+        .map(std::vec::Vec::len)
+        .sum::<usize>();
+    assert_eq!(
+        selected_items, 0,
+        "zero-result query should return no sections"
+    );
+    assert_eq!(
+        payload
+            .get("token_budget_used")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default(),
+        0
+    );
+
+    let suggestions = payload
+        .get("suggested_next_queries")
+        .and_then(|value| value.as_array())
+        .expect("suggested_next_queries should exist")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        suggestions.contains(&format!("{zero_query} symbol").as_str()),
+        "zero-result guidance should include a symbol-focused follow-up"
+    );
+
+    let hints = payload
+        .get("missing_context_hints")
+        .and_then(|value| value.as_array())
+        .expect("missing_context_hints should exist")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        hints
+            .iter()
+            .any(|hint| hint.contains("No candidates were selected")),
+        "zero-result guidance should surface explicit underfilled hint"
+    );
+
+    let metadata = payload.get("metadata").expect("metadata should exist");
+    assert_eq!(
+        metadata
+            .get("budget_utilization_ratio")
+            .and_then(|value| value.as_f64()),
+        Some(0.0),
+        "zero results should produce zero budget utilization"
+    );
+    assert_eq!(
+        metadata
+            .get("token_estimation")
+            .and_then(|value| value.get("method"))
+            .and_then(|value| value.as_str()),
+        Some("cruxe_core::tokens::estimate_tokens")
+    );
+}
+
+#[test]
 fn t191_new_tools_error_codes_follow_protocol_registry() {
     let tmp = tempfile::tempdir().unwrap();
     let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
