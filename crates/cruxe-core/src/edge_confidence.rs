@@ -113,11 +113,14 @@ pub fn normalize_outcome(
 ) -> Cow<'static, str> {
     if let Some(outcome) = explicit_outcome {
         let normalized = outcome.trim().to_ascii_lowercase();
-        if normalized == RESOLUTION_RESOLVED_INTERNAL
-            || normalized == RESOLUTION_EXTERNAL_REFERENCE
-            || normalized == RESOLUTION_UNRESOLVED
-        {
-            return Cow::Owned(normalized);
+        if normalized == RESOLUTION_RESOLVED_INTERNAL {
+            return Cow::Borrowed(RESOLUTION_RESOLVED_INTERNAL);
+        }
+        if normalized == RESOLUTION_EXTERNAL_REFERENCE {
+            return Cow::Borrowed(RESOLUTION_EXTERNAL_REFERENCE);
+        }
+        if normalized == RESOLUTION_UNRESOLVED {
+            return Cow::Borrowed(RESOLUTION_UNRESOLVED);
         }
     }
     Cow::Borrowed(infer_resolution_outcome(to_symbol_id, to_name))
@@ -149,6 +152,7 @@ pub fn assign_edge_confidence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const FLOAT_TOLERANCE: f64 = 1e-9;
 
     #[test]
     fn canonical_confidence_bucket_supports_legacy_labels() {
@@ -176,7 +180,7 @@ mod tests {
             None,
         );
         assert_eq!(resolved.bucket, CONFIDENCE_HIGH);
-        assert!((resolved.weight - CONFIDENCE_WEIGHT_HIGH).abs() < f64::EPSILON);
+        assert!((resolved.weight - CONFIDENCE_WEIGHT_HIGH).abs() < FLOAT_TOLERANCE);
 
         let external = assign_edge_confidence(
             Some(EDGE_PROVIDER_IMPORT_RESOLVER),
@@ -187,7 +191,7 @@ mod tests {
             None,
         );
         assert_eq!(external.bucket, CONFIDENCE_MEDIUM);
-        assert!((external.weight - CONFIDENCE_WEIGHT_MEDIUM).abs() < f64::EPSILON);
+        assert!((external.weight - CONFIDENCE_WEIGHT_MEDIUM).abs() < FLOAT_TOLERANCE);
 
         let unresolved = assign_edge_confidence(
             Some(EDGE_PROVIDER_CALL_RESOLVER),
@@ -198,7 +202,7 @@ mod tests {
             None,
         );
         assert_eq!(unresolved.bucket, CONFIDENCE_LOW);
-        assert!((unresolved.weight - CONFIDENCE_WEIGHT_LOW).abs() < f64::EPSILON);
+        assert!((unresolved.weight - CONFIDENCE_WEIGHT_LOW).abs() < FLOAT_TOLERANCE);
     }
 
     #[test]
