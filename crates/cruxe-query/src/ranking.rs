@@ -13,6 +13,7 @@ const SIGNAL_PATH_AFFINITY: &str = "path_affinity";
 const SIGNAL_DEFINITION_BOOST: &str = "definition_boost";
 const SIGNAL_KIND_MATCH: &str = "kind_match";
 const SIGNAL_TEST_FILE_PENALTY: &str = "test_file_penalty";
+const SCORE_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Clone, Copy)]
 struct SignalScore {
@@ -346,7 +347,7 @@ fn budgeted_breakdown(
     let mut kind_match = score_with_budget(raw.kind_match, &budgets.kind_match);
     let test_file_penalty = score_with_budget(raw.test_file_penalty, &budgets.test_file_penalty);
 
-    let exact_match_present = exact_match.effective > f64::EPSILON;
+    let exact_match_present = exact_match.effective > SCORE_EPSILON;
     let mut lexical_dominance_applied = false;
     let mut secondary_cap = positive_secondary_total(path_affinity, definition_boost, kind_match);
 
@@ -356,7 +357,7 @@ fn budgeted_breakdown(
             budgets.secondary_cap_when_exact.max,
         );
         let raw_secondary = positive_secondary_total(path_affinity, definition_boost, kind_match);
-        if raw_secondary > secondary_cap && raw_secondary > f64::EPSILON {
+        if raw_secondary > secondary_cap && raw_secondary > SCORE_EPSILON {
             let scale = secondary_cap / raw_secondary;
             path_affinity.effective = scale_positive(path_affinity.clamped, scale);
             definition_boost.effective = scale_positive(definition_boost.clamped, scale);
@@ -519,14 +520,14 @@ mod tests {
         )];
         let reasons = rerank_with_reasons_with_budget(&mut results, "validate_token", &budgets);
         let reason = reasons.first().unwrap();
-        assert!(reason.kind_match <= 0.75 + f64::EPSILON);
+        assert!(reason.kind_match <= 0.75 + SCORE_EPSILON);
         let qualified = reason
             .signal_contributions
             .iter()
             .find(|c| c.signal == SIGNAL_QUALIFIED_NAME)
             .unwrap();
         assert!(qualified.raw_value > qualified.clamped_value);
-        assert!((qualified.clamped_value - 1.25).abs() < f64::EPSILON);
+        assert!((qualified.clamped_value - 1.25).abs() < SCORE_EPSILON);
     }
 
     #[test]

@@ -20,6 +20,22 @@ The config loader normalizes invalid ranges and logs deterministic taxonomy code
 - `inverted_range`
 - `default_out_of_range`
 
+Normalization behavior detail:
+
+- if range bounds are invalid/missing, runtime falls back to canonical min/max
+- if `default` is finite, runtime preserves it by clamping into the normalized range
+- if `default` is also invalid, runtime falls back to canonical default
+
+## 1.5) Ranking behavior contract notes
+
+- Ranking score remains additive (`bm25 + effective contributions`) even though the
+  implementation now sets the final score directly from the normalized breakdown.
+- Exact lexical matches are intentionally ordered ahead of non-exact matches as a
+  deterministic precedence policy.
+- Legacy explain fields (`exact_match_boost`, `kind_match`, etc.) now report
+  **effective** values (post clamp/precedence). Raw values remain available in
+  `signal_accounting` / `signal_contributions`.
+
 ## 2) Run fixture-based retrieval evaluation (before/after)
 
 Generate two reports:

@@ -1430,6 +1430,8 @@ impl RankingBudgetNormalizationCode {
     }
 }
 
+const FLOAT_TOLERANCE: f64 = 1e-9;
+
 impl RankingSignalBudgetConfig {
     /// Return a normalized copy with canonical safe ranges and deterministic diagnostics.
     pub fn normalized(&self) -> Self {
@@ -1479,18 +1481,22 @@ fn normalize_budget_range(
     field: &str,
 ) -> RankingSignalBudgetRange {
     if !value.min.is_finite() || !value.max.is_finite() || !value.default.is_finite() {
+        let mut normalized = fallback.clone();
+        if value.default.is_finite() {
+            normalized.default = value.default.clamp(fallback.min, fallback.max);
+        }
         tracing::warn!(
             field,
             code = RankingBudgetNormalizationCode::NonFiniteRange.as_str(),
             min = value.min,
             max = value.max,
             default = value.default,
-            fallback_min = fallback.min,
-            fallback_max = fallback.max,
-            fallback_default = fallback.default,
-            "invalid ranking budget range; falling back to canonical defaults"
+            normalized_min = normalized.min,
+            normalized_max = normalized.max,
+            normalized_default = normalized.default,
+            "invalid ranking budget range; normalizing to canonical safe range"
         );
-        return fallback;
+        return normalized;
     }
     if value.min > value.max {
         tracing::warn!(
@@ -1509,7 +1515,7 @@ fn normalize_budget_range(
 
     let mut normalized = value;
     let clamped_default = normalized.default.clamp(normalized.min, normalized.max);
-    if (clamped_default - normalized.default).abs() > f64::EPSILON {
+    if (clamped_default - normalized.default).abs() > FLOAT_TOLERANCE {
         tracing::warn!(
             field,
             code = RankingBudgetNormalizationCode::DefaultOutOfRange.as_str(),
@@ -1535,7 +1541,7 @@ fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
         return fallback;
     }
     let clamped = value.clamp(0.0, 1.0);
-    if (clamped - value).abs() > f64::EPSILON {
+    if (clamped - value).abs() > FLOAT_TOLERANCE {
         tracing::warn!(
             field,
             value,
@@ -2010,7 +2016,7 @@ mod tests {
         assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
         assert_eq!(
             loaded.search.ranking_signal_budgets.exact_match.default,
-            5.0
+            3.0
         );
     }
 
