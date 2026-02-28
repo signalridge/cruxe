@@ -16,6 +16,8 @@ tracing = { workspace = true }
 blake3 = { workspace = true }
 rusqlite = { workspace = true }
 reqwest = { workspace = true }
+regex = { workspace = true }
+globset = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

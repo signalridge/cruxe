@@ -1,0 +1,23 @@
+[search.policy]
+mode = "audit_only"
+allow_request_override = true
+allowed_override_modes = ["audit_only", "off", "balanced"]
+
+[search.policy.path]
+deny = ["**/.env*", "**/secrets/**"]
+
+[search.policy.redaction]
+enabled = true
+email_masking = true
+high_entropy_min_length = 20
+high_entropy_threshold = 3.6
+
+[search.policy.detect_secrets]
+enabled = false
+plugins = []
+
+[search.policy.opa]
+enabled = false
+command = "opa"
+query = "data.cruxe.allow"
+policy_path = ""

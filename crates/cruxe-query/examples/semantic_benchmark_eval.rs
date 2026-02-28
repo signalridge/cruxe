@@ -131,6 +131,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )?;
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;

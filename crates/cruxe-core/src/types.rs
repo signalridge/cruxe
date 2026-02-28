@@ -263,6 +263,52 @@ pub enum SemanticMode {
     Hybrid,
 }
 
+/// Retrieval governance policy mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyMode {
+    /// Fail closed when policy cannot be loaded or validated.
+    Strict,
+    /// Enforce policy, but degrade with warnings on non-fatal issues.
+    #[default]
+    Balanced,
+    /// Bypass policy filtering and redaction.
+    Off,
+    /// Emit audit counters/warnings without changing payload content.
+    AuditOnly,
+}
+
+impl PolicyMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Balanced => "balanced",
+            Self::Off => "off",
+            Self::AuditOnly => "audit_only",
+        }
+    }
+}
+
+impl std::fmt::Display for PolicyMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PolicyMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "strict" => Ok(Self::Strict),
+            "balanced" => Ok(Self::Balanced),
+            "off" => Ok(Self::Off),
+            "audit_only" | "audit" | "report_only" => Ok(Self::AuditOnly),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Composite confidence guidance payload for search responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfidenceGuidance {
@@ -744,6 +790,45 @@ mod tests {
             let parsed: RankingExplainLevel = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, variant);
         }
+    }
+
+    #[test]
+    fn test_policy_mode_serde_roundtrip() {
+        for (variant, expected_str) in [
+            (PolicyMode::Strict, "\"strict\""),
+            (PolicyMode::Balanced, "\"balanced\""),
+            (PolicyMode::Off, "\"off\""),
+            (PolicyMode::AuditOnly, "\"audit_only\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let parsed: PolicyMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn test_policy_mode_default() {
+        assert_eq!(PolicyMode::default(), PolicyMode::Balanced);
+    }
+
+    #[test]
+    fn test_policy_mode_from_str_supports_aliases() {
+        assert_eq!("strict".parse::<PolicyMode>().unwrap(), PolicyMode::Strict);
+        assert_eq!(
+            "balanced".parse::<PolicyMode>().unwrap(),
+            PolicyMode::Balanced
+        );
+        assert_eq!("off".parse::<PolicyMode>().unwrap(), PolicyMode::Off);
+        assert_eq!(
+            "audit".parse::<PolicyMode>().unwrap(),
+            PolicyMode::AuditOnly
+        );
+        assert_eq!(
+            "report_only".parse::<PolicyMode>().unwrap(),
+            PolicyMode::AuditOnly
+        );
+        assert!("invalid".parse::<PolicyMode>().is_err());
     }
 
     #[test]

@@ -467,6 +467,8 @@ fn run_natural_language_eval(
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .map_err(|err| format!("search failed for {}: {err}", case.id))?;
@@ -536,6 +538,8 @@ fn run_symbol_precision_eval(
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .map_err(|err| format!("symbol search failed for {}: {err}", case.query))?;

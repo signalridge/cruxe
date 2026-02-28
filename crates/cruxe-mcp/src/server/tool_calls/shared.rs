@@ -425,6 +425,14 @@ pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, O
                 "remediation": "Run `cruxe init` to register this workspace.",
             })),
         ),
+        StateError::Policy(details) => (
+            ProtocolErrorCode::InvalidInput,
+            "Policy configuration or override is invalid.".to_string(),
+            Some(json!({
+                "details": details,
+                "remediation": "Fix `search.policy` configuration or request override, then retry.",
+            })),
+        ),
         other => (
             ProtocolErrorCode::InternalError,
             format!("Tool execution failed: {}", other),
