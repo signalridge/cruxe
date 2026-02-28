@@ -100,7 +100,7 @@ Project constraints:
 - Local-first indexing and querying.
 - No mandatory external indexer/service/runtime installation.
 - Compatibility with existing MCP/query surfaces and stable-ID workflows.
-- Contract design must not block future SCIP data source integration.
+- Contract design must not block future external graph data source integration.
 
 ## Goals / Non-Goals
 
@@ -120,7 +120,7 @@ Project constraints:
 1. Quality/provenance metadata for enrichment fields.
 2. Capability-tier language metadata registry.
 3. Visibility vocabulary normalization.
-4. SCIP/LSP integration (future work).
+4. External protocol/graph integration (future work).
 5. Full cross-file semantic resolution (type inference, macro expansion).
 6. Full scope graph construction (stack-graphs approach — proven uneconomical).
 
@@ -277,7 +277,7 @@ Note: `search_code` gains `role` filter only (not `kind`). For `search_code`, ro
 
 #### Rationale
 
-AI agent searching "find all type definitions" across a Rust+Python repo currently requires knowing to search for both `struct` and `class`. SymbolRole enables `role=Type` which matches both. This aligns with SCIP's Descriptor.Suffix concept (Namespace, Type, Term, Method) which groups fine-grained kinds into coarse categories.
+AI agent searching "find all type definitions" across a Rust+Python repo currently requires knowing to search for both `struct` and `class`. SymbolRole enables `role=Type` which matches both. This aligns with external code-intelligence role grouping concepts (Namespace, Type, Term, Method) that group fine-grained kinds into coarse categories.
 
 ---
 

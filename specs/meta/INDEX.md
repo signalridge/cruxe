@@ -19,6 +19,7 @@ specs/
     testing-strategy.md              # Test layers and traceability
     benchmark-targets.md             # Quantitative quality targets
     parallel-development-guardrails.md # Module ownership + parallel touchpoints
+    competitive-matrix-latest.md     # Active changes vs OSS implementation evidence matrix
 
   001-core-mvp/                      # v0.1.0
   002-agent-protocol/                # v0.2.0
@@ -66,9 +67,10 @@ specs/
 | testing | [Testing Strategy](testing-strategy.md) | Test plan and traceability | active |
 | benchmarks | [Benchmark Targets](benchmark-targets.md) | Acceptance thresholds | active |
 | parallel-guardrails | [Parallel Development Guardrails](parallel-development-guardrails.md) | Multi-stream change boundaries | active |
+| competitive-matrix | [Competitive Matrix Latest](competitive-matrix-latest.md) | OSS evidence-to-change mapping | active |
 
 > Competitive optimization guidance is consolidated into `design.md`,
-> `roadmap.md`, `testing-strategy.md`, and `benchmark-targets.md`.
+> `roadmap.md`, `testing-strategy.md`, `benchmark-targets.md`, and `competitive-matrix-latest.md`.
 
 ## Dependency Graph
 

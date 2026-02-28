@@ -12,7 +12,7 @@ Key findings from codebase audit and competitive analysis:
 - **Import path resolution** in `import_extract.rs:79-123` uses two-tier lookup (qualified_name → name fallback) but has no module path alias handling. Module-aliased imports produce `unresolved_symbol_stable_id` blake3 hashes (import_extract.rs:125-127) that never match real symbols and are invisible to `find_references`.
 - **Module-scoped calls** (`const x = foo()`) are dropped at `call_extract.rs:24-26` when `resolve_caller_symbol` returns `None`.
 - **Unresolved edges** (where `to_symbol_id IS NULL`) are never returned by `find_references.rs:241-274`.
-- No successful code search tool (Aider, Continue, Zoekt) writes per-language symbol *extraction* code. They use tree-sitter/ctags generically for extraction and delegate enrichment to LSP/SCIP. (Zoekt does maintain per-language *ranking weight* tables in `scoreSymbolKind`, but this is ~200 lines of pure data in one function, not extraction logic.)
+- No successful code search tool (Aider, Continue, Zoekt) writes per-language symbol *extraction* code. They use tree-sitter/ctags generically for extraction and delegate deeper semantic enrichment to external analyzers. (Zoekt does maintain per-language *ranking weight* tables in `scoreSymbolKind`, but this is ~200 lines of pure data in one function, not extraction logic.)
 
 ## What Changes
 

@@ -182,7 +182,7 @@ Elastic semantic code search, and Context-Engine-AI:
 2. **Chunk-level vs. symbol-level granularity gap**.
    VibeRAG, mcp-local-rag, and mcp-rag-server all return text chunks.
    Augment MCP returns "relevant context" without structured location data.
-   Serena provides symbol-level navigation but depends on LSP, not a search index.
+   Serena provides symbol-level navigation via language-server protocols, not an embedded search index.
    Cruxe's tree-sitter-based symbol index with `file:line` precision fills this gap.
 
 3. **Augment's "intelligent context trimming" is a token budget problem**.
@@ -243,6 +243,32 @@ Cruxe now (not as optional backlog notes):
    Cruxe should preserve zero-external-service default and gate semantic
    behind `off | rerank_only | hybrid`, with local model-first execution.
 
+### 2.8 Active-change evidence correction notes (2026-02-28)
+
+To avoid drift between change docs and upstream implementations, the latest
+competitive corrections are tracked in
+[`competitive-matrix-latest.md`](competitive-matrix-latest.md). Key examples:
+
+1. **fastembed rerank API shape**
+   - `TextRerank::rerank` is `&mut self` and takes
+     `(query, documents, return_documents, batch_size)`.
+   - There is no standalone `reranking` cargo feature; availability is gated by
+     `hf-hub`.
+
+2. **Continue chunking + rerank characterization**
+   - Continue chunking is not a single AST-only path; it uses structured chunking
+     with fallback to a basic chunker.
+   - Continue does include a rerank retrieval pipeline in open source.
+
+3. **Go import resolution semantics**
+   - `dirInModule` uses strict module-prefix mapping.
+   - No `/v2` suffix stripping should be introduced in Cruxe heuristics.
+
+4. **Call-graph centrality SQL grounding**
+   - In Cruxe schema, target file is derived via
+     `symbol_edges.to_symbol_id -> symbol_relations.path`, not a direct
+     `target_file` column.
+
 ## 3. Product Vision
 
 Build a distributable code search and location tool that:
@@ -297,7 +323,7 @@ Build a distributable code search and location tool that:
 
 ### Out of scope (early)
 
-- full LSP replacement,
+- full external IDE protocol replacement,
 - cloud multi-tenant SaaS control plane,
 - local GPU model hosting,
 - remote source connectors and hosted remote MCP.
@@ -706,7 +732,7 @@ Two storage layers:
 
 The symbol relation graph enables structural code navigation beyond flat search.
 Inspired by Sourcebot (goto definition/references), Serena (symbol-level semantic navigation),
-and Sourcegraph SCIP (cross-reference graph).
+and Sourcegraph cross-reference graph systems.
 
 **`symbol_relations` table**:
 
@@ -1464,7 +1490,7 @@ Why this matters:
 - **Token savings**: ~100-200 tokens for outline vs. ~2000+ tokens for full file read.
 - **Agent decision quality**: agent can pick exactly which function to read in detail,
   reducing wasted tool calls.
-- **No competitor does this as an MCP tool**: Serena has similar capability but via LSP,
+- **No competitor does this as an MCP tool**: Serena has similar capability via IDE protocol integration,
   not as a standalone MCP service.
 
 Implementation:
@@ -1728,7 +1754,7 @@ This section captures both market references and backend tradeoffs.
 
 ### 12.1 Comparable projects and what to borrow
 
-1. **Sourcegraph (Zoekt + SCIP)**
+1. **Sourcegraph (Zoekt + code-intelligence graph stack)**
    - strongest off-the-shelf code intelligence (definition/reference/cross-repo navigation).
    - borrow: symbol graph quality bar, indexed metadata discipline.
    - avoid for v1: platform complexity and heavier operational footprint.
@@ -1741,7 +1767,7 @@ This section captures both market references and backend tradeoffs.
 3. **Serena**
    - symbol-level semantic retrieval and editing via MCP.
    - borrow: symbol-level precision over chunk-level, structured code entity model.
-   - avoid for v1: LSP dependency; Cruxe uses tree-sitter directly.
+   - avoid for v1: external protocol/daemon dependency; Cruxe uses tree-sitter directly.
 
 4. **VibeRAG**
    - intent-routed codebase search (definitions/files/blocks/usages) + LanceDB + watcher.
@@ -1834,7 +1860,7 @@ This positioning fills a practical gap:
   - branch overlay requires separate index names and API routing (more complex),
   - not a full code-intelligence platform by itself.
 
-#### Option C: Sourcegraph stack (Zoekt + SCIP)
+#### Option C: Sourcegraph stack (Zoekt + code-intelligence graph)
 
 - Pros:
   - strongest symbol/definition/reference navigation out of the box,
@@ -1877,7 +1903,7 @@ This positioning fills a practical gap:
 - Maintain backend abstraction trait so alternatives can be swapped.
 - Re-evaluate after benchmark:
   - if hosted/multi-tenant is needed, Meilisearch is the first alternative to evaluate.
-  - if code-intelligence depth is lacking, add SCIP pipeline or evaluate Sourcegraph integration path.
+  - if code-intelligence depth is lacking, evaluate a dedicated graph integration path.
   - if NL semantic recall is insufficient with Tantivy alone, enable the embedded vector layer (LanceDB adapter optional).
   - Qdrant/external vector services: only if true multi-tenant scale demands it.
 
@@ -2056,8 +2082,32 @@ Behavior contract:
 5. **Which rerank provider is first: Cohere or Voyage?**
    -- Decision deferred to Phase 3 implementation.
 
-7. **Should we add an early SCIP export/import bridge for future Sourcegraph compatibility?**
+7. **Should we add an early export/import bridge for future external graph compatibility?**
    -- Low priority for v1-v2. Re-evaluate when symbol graph is mature.
 
 11. **Should `stable_id_version=2` add AST-shape fingerprint after v1 is stable?**
     -- Deferred to post-v1 evaluation. Depends on observed identity churn rates.
+
+---
+
+## Universal-First Retrieval and Indexing Strategy (2026-02-28 update)
+
+To keep Cruxe maintainable while improving semantic quality, the architecture prioritizes:
+
+1. **Universal core contracts over per-language branching**
+   - Role-normalized symbols, provider interfaces, origin-aware chunk metadata.
+
+2. **Generic baseline + optional high-quality adapters**
+   - Generic heuristics are always available.
+   - Optional adapters are additive and fail-soft.
+
+3. **Data-driven adaptation over hand-maintained language rule tables**
+   - Prefer repository-adaptive bounded signals instead of expanding per-language constants.
+
+4. **Semantic coverage even without strong language-specific parsing**
+   - Use fallback chunking when symbol extraction is absent to preserve recall.
+
+5. **Bounded structural signals**
+   - Use relation-graph centrality as a tie-break signal only; never overpower lexical precision.
+
+This strategy explicitly avoids building compiler-grade per-language resolvers inside Cruxe core unless metrics prove clear ROI.
