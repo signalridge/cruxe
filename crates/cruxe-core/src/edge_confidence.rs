@@ -54,10 +54,18 @@ pub fn looks_external_reference(name: &str) -> bool {
     if candidate.is_empty() {
         return false;
     }
+    let rust_external_root = candidate
+        .split_once("::")
+        .map(|(root, _)| root.trim())
+        .unwrap_or("");
+    let looks_likely_external_rust_root = matches!(
+        rust_external_root,
+        "std" | "core" | "alloc" | "proc_macro" | "test"
+    );
     candidate.starts_with("external::")
         || candidate.contains('/')
         || candidate.contains('.')
-        || candidate.contains("::")
+        || looks_likely_external_rust_root
 }
 
 pub fn infer_resolution_outcome(
@@ -193,7 +201,7 @@ mod tests {
     #[test]
     fn infer_resolution_outcome_supports_mixed_language_external_names() {
         assert_eq!(
-            infer_resolution_outcome(None, Some("auth::validate_token")),
+            infer_resolution_outcome(None, Some("std::fs::read_to_string")),
             RESOLUTION_EXTERNAL_REFERENCE
         );
         assert_eq!(
@@ -206,6 +214,10 @@ mod tests {
         );
         assert_eq!(
             infer_resolution_outcome(None, Some("validate_token")),
+            RESOLUTION_UNRESOLVED
+        );
+        assert_eq!(
+            infer_resolution_outcome(None, Some("auth::validate_token")),
             RESOLUTION_UNRESOLVED
         );
     }
