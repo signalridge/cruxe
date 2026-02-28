@@ -394,8 +394,8 @@ pub fn replace_import_edges_for_file(
         let mut stmt = conn
             .prepare(
                 "INSERT OR REPLACE INTO symbol_edges
-                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )
             .map_err(StateError::sqlite)?;
         for edge in resolved {
@@ -407,6 +407,9 @@ pub fn replace_import_edges_for_file(
                 edge.to_name,
                 edge.edge_type,
                 edge.confidence,
+                edge.edge_provider,
+                edge.resolution_outcome,
+                edge.confidence_weight,
             ])
             .map_err(StateError::sqlite)?;
         }

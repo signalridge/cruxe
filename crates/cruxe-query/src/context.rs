@@ -1,10 +1,14 @@
 use crate::search;
+use crate::{policy::PolicyRuntime, search::SearchExecutionOptions};
+use cruxe_core::config::SearchConfig as CoreSearchConfig;
 use cruxe_core::error::StateError;
 use cruxe_core::tokens::estimate_tokens;
+use cruxe_core::types::PolicyMode;
 use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::path::Path;
 use thiserror::Error;
 
@@ -53,12 +57,14 @@ pub fn parse_strategy(value: Option<&str>) -> Result<ContextStrategy, ContextErr
 pub struct GetCodeContextParams<'a> {
     pub index_set: &'a IndexSet,
     pub conn: Option<&'a Connection>,
+    pub search_config: &'a CoreSearchConfig,
     pub workspace: &'a Path,
     pub query: &'a str,
     pub ref_name: Option<&'a str>,
     pub language: Option<&'a str>,
     pub max_tokens: usize,
     pub strategy: ContextStrategy,
+    pub policy_mode_override: Option<PolicyMode>,
 }
 
 pub fn get_code_context(
@@ -67,24 +73,45 @@ pub fn get_code_context(
     let GetCodeContextParams {
         index_set,
         conn,
+        search_config,
         workspace,
         query,
         ref_name,
         language,
         max_tokens,
         strategy,
+        policy_mode_override,
     } = params;
 
     if max_tokens == 0 {
         return Err(ContextError::InvalidMaxTokens);
     }
 
-    let search_response =
-        search::search_code(index_set, conn, query, ref_name, language, 50, false)?;
+    let policy_runtime = PolicyRuntime::from_search_config(search_config, policy_mode_override)?;
+    let mut search_response = search::search_code_with_options(
+        index_set,
+        conn,
+        query,
+        ref_name,
+        language,
+        50,
+        false,
+        SearchExecutionOptions {
+            search_config: search_config.clone(),
+            semantic_ratio_override: None,
+            confidence_threshold_override: None,
+            role: None,
+            plan_override: None,
+            policy_mode_override,
+            policy_runtime: Some(policy_runtime.clone()),
+        },
+    )?;
     let total_candidates = search_response.results.len();
     let mut items = Vec::new();
     let mut estimated = 0usize;
     let mut truncated = false;
+    let mut body_redacted_count = 0usize;
+    let mut body_redaction_categories = BTreeMap::new();
 
     for result in search_response.results {
         let item = match strategy {
@@ -102,13 +129,25 @@ pub fn get_code_context(
                 "score": result.score,
             }),
             ContextStrategy::Depth => {
-                let body = load_symbol_body(
+                let original_body = load_symbol_body(
                     workspace,
                     &result.path,
                     result.line_start,
                     result.line_end,
                     result.snippet.as_deref(),
                 );
+                let body_redaction = policy_runtime.redact_text(&original_body);
+                if body_redaction.redacted_count > 0 {
+                    body_redacted_count += body_redaction.redacted_count;
+                    for (category, count) in body_redaction.category_counts {
+                        *body_redaction_categories.entry(category).or_insert(0) += count;
+                    }
+                }
+                let body = if policy_runtime.mode() == PolicyMode::AuditOnly {
+                    original_body
+                } else {
+                    body_redaction.text
+                };
                 json!({
                     "symbol_id": result.symbol_id,
                     "symbol_stable_id": result.symbol_stable_id,
@@ -138,12 +177,27 @@ pub fn get_code_context(
     }
 
     let remaining = total_candidates.saturating_sub(items.len());
+    search_response.metadata.policy_redacted_count += body_redacted_count;
+    for (category, count) in body_redaction_categories {
+        *search_response
+            .metadata
+            .policy_audit_counts
+            .entry(format!("redacted:{category}"))
+            .or_insert(0) += count;
+    }
+
     let metadata = if truncated {
         json!({
             "total_candidates": total_candidates,
             "returned": items.len(),
             "remaining_candidates": remaining,
             "strategy": strategy.as_str(),
+            "policy_mode": search_response.metadata.policy_mode,
+            "policy_blocked_count": search_response.metadata.policy_blocked_count,
+            "policy_redacted_count": search_response.metadata.policy_redacted_count,
+            "policy_warnings": search_response.metadata.policy_warnings,
+            "policy_audit_counts": search_response.metadata.policy_audit_counts,
+            "policy_redaction_categories": search_response.metadata.policy_redaction_categories,
             "suggestion": "Use locate_symbol for specific symbols, or increase max_tokens",
         })
     } else {
@@ -151,6 +205,12 @@ pub fn get_code_context(
             "total_candidates": total_candidates,
             "returned": items.len(),
             "strategy": strategy.as_str(),
+            "policy_mode": search_response.metadata.policy_mode,
+            "policy_blocked_count": search_response.metadata.policy_blocked_count,
+            "policy_redacted_count": search_response.metadata.policy_redacted_count,
+            "policy_warnings": search_response.metadata.policy_warnings,
+            "policy_audit_counts": search_response.metadata.policy_audit_counts,
+            "policy_redaction_categories": search_response.metadata.policy_redaction_categories,
         })
     };
 

@@ -1,12 +1,16 @@
 use cruxe_core::config::SearchConfig as CoreSearchConfig;
+use cruxe_core::edge_confidence::{
+    CONFIDENCE_HIGH, CONFIDENCE_LOW, CONFIDENCE_MEDIUM, confidence_weight,
+};
 use cruxe_core::error::StateError;
 use cruxe_core::types::{
-    QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolKind, SymbolRecord, SymbolRole,
+    PolicyMode, QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolKind, SymbolRecord,
+    SymbolRole,
 };
 use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 use tantivy::Term;
@@ -20,8 +24,10 @@ use crate::hybrid::{blend_hybrid_results, semantic_query};
 use crate::intent::{IntentPolicy, classify_intent_with_policy};
 use crate::overlay_merge;
 use crate::planner::build_plan_with_ref;
+use crate::policy::PolicyRuntime;
 use crate::ranking::{
-    kind_weight, query_intent_boost, rerank, rerank_with_reasons, test_file_penalty,
+    kind_weight, query_intent_boost, rerank_with_budget, rerank_with_reasons_with_budget,
+    test_file_penalty,
 };
 use crate::rerank::{RerankDocument, rerank_documents};
 use crate::scoring::normalize_relevance_score;
@@ -103,6 +109,15 @@ pub struct SearchResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMetadata {
+    pub policy_mode: String,
+    pub policy_blocked_count: usize,
+    pub policy_redacted_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policy_audit_counts: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policy_redaction_categories: BTreeMap<String, usize>,
     pub semantic_mode: String,
     pub semantic_enabled: bool,
     pub semantic_ratio_used: f64,
@@ -138,6 +153,8 @@ pub struct SearchMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query_plan_downgrade_reason: Option<String>,
     pub query_plan_budget_used: QueryPlanBudgetUsed,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence_structural: Option<ConfidenceStructuralDiagnostics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -150,6 +167,20 @@ pub struct QueryPlanBudgetUsed {
     pub latency_budget_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfidenceStructuralDiagnostics {
+    pub total_edges: u64,
+    pub high_edges: u64,
+    pub medium_edges: u64,
+    pub low_edges: u64,
+    pub confidence_coverage: f64,
+    pub guardrail_applied: bool,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub by_provider: HashMap<String, u64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub by_outcome: HashMap<String, u64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SearchExecutionOptions {
     pub search_config: CoreSearchConfig,
@@ -157,6 +188,8 @@ pub struct SearchExecutionOptions {
     pub confidence_threshold_override: Option<f64>,
     pub role: Option<String>,
     pub plan_override: Option<String>,
+    pub policy_mode_override: Option<PolicyMode>,
+    pub policy_runtime: Option<PolicyRuntime>,
 }
 
 /// Optional debug payload for search_code.
@@ -309,11 +342,19 @@ pub fn search_code_with_options(
     }
 
     // Apply local lexical reranking boosts on top of RRF scores.
-    let ranking_reasons = if debug_ranking {
-        let reasons = rerank_with_reasons(&mut all_results, query);
+    let mut ranking_reasons = if debug_ranking {
+        let reasons = rerank_with_reasons_with_budget(
+            &mut all_results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        );
         Some(reasons)
     } else {
-        rerank(&mut all_results, query);
+        rerank_with_budget(
+            &mut all_results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        );
         None
     };
     // Short-circuit semantic only after lexical rerank has shaped score spread.
@@ -495,6 +536,23 @@ pub fn search_code_with_options(
         retain_role_filtered_results(&mut all_results, role);
     }
 
+    let policy_runtime =
+        options
+            .policy_runtime
+            .clone()
+            .unwrap_or(PolicyRuntime::from_search_config(
+                &options.search_config,
+                options.policy_mode_override,
+            )?);
+    let policy_application = policy_runtime.apply(all_results)?;
+    let policy_mode = policy_application.mode;
+    let policy_blocked_count = policy_application.blocked_count;
+    let policy_redacted_count = policy_application.redacted_count;
+    let policy_warnings = policy_application.warnings;
+    let policy_audit_counts = policy_application.audit_counts;
+    let policy_redaction_categories = policy_application.active_redaction_categories;
+    all_results = policy_application.results;
+
     let total = all_results.len();
 
     let executed_before_rerank_guard = plan_controller.executed;
@@ -552,6 +610,13 @@ pub fn search_code_with_options(
         semantic_state.rerank_provider = "local".to_string();
     }
 
+    let confidence_structural = apply_confidence_weighted_structural_boost(
+        conn,
+        effective_ref.as_str(),
+        &mut all_results,
+        ranking_reasons.as_mut(),
+        &mut response_warnings,
+    )?;
     let executed_before_final_guard = plan_controller.executed;
     let elapsed_ms = query_start.elapsed().as_millis() as u64;
     plan_controller.ensure_latency_budget(elapsed_ms, effective_plan_budget);
@@ -587,6 +652,12 @@ pub fn search_code_with_options(
     );
 
     let metadata = SearchMetadata {
+        policy_mode: policy_mode.to_string(),
+        policy_blocked_count,
+        policy_redacted_count,
+        policy_warnings,
+        policy_audit_counts,
+        policy_redaction_categories,
         semantic_mode: options.search_config.semantic.mode.clone(),
         semantic_enabled: options.search_config.semantic_enabled(),
         semantic_ratio_used: semantic_state.semantic_ratio_used,
@@ -629,6 +700,7 @@ pub fn search_code_with_options(
             semantic_fanout: effective_plan_budget.semantic_fanout,
             latency_budget_ms: effective_plan_budget.latency_budget_ms,
         },
+        confidence_structural,
         warnings: response_warnings,
     };
 
@@ -792,16 +864,49 @@ pub fn search_code_vcs_merged_with_options(
     };
 
     let mut results = overlay_merge::merged_search(base.results, overlay.results, ctx.tombstones);
-    let ranking_reasons = if debug_ranking {
-        Some(rerank_with_reasons(&mut results, query))
+    let mut ranking_reasons = if debug_ranking {
+        Some(rerank_with_reasons_with_budget(
+            &mut results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        ))
     } else {
-        rerank(&mut results, query);
+        rerank_with_budget(
+            &mut results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        );
         None
     };
+    let mut merged_warnings = overlay.metadata.warnings.clone();
+    let confidence_structural = apply_confidence_weighted_structural_boost(
+        conn,
+        ctx.target_ref,
+        &mut results,
+        ranking_reasons.as_mut(),
+        &mut merged_warnings,
+    )?;
     results.truncate(limit);
+    let ranking_reasons = ranking_reasons.map(|reasons| reasons.into_iter().take(limit).collect());
 
     // Recalculate confidence on the merged result set (not the stale overlay snapshot).
     let mut metadata = overlay.metadata;
+    metadata.policy_blocked_count += base.metadata.policy_blocked_count;
+    metadata.policy_redacted_count += base.metadata.policy_redacted_count;
+    if !base.metadata.policy_warnings.is_empty() {
+        metadata
+            .policy_warnings
+            .extend(base.metadata.policy_warnings.iter().cloned());
+    }
+    for (key, value) in &base.metadata.policy_audit_counts {
+        *metadata.policy_audit_counts.entry(key.clone()).or_insert(0) += *value;
+    }
+    for (key, value) in &base.metadata.policy_redaction_categories {
+        *metadata
+            .policy_redaction_categories
+            .entry(key.clone())
+            .or_insert(0) += *value;
+    }
     let confidence_threshold = options
         .search_config
         .confidence_threshold(options.confidence_threshold_override);
@@ -818,6 +923,8 @@ pub fn search_code_vcs_merged_with_options(
     metadata.top_score = confidence.top_score;
     metadata.score_margin = confidence.score_margin;
     metadata.channel_agreement = confidence.channel_agreement;
+    metadata.confidence_structural = confidence_structural.or(metadata.confidence_structural);
+    metadata.warnings = merged_warnings;
 
     Ok(SearchResponse {
         results,
@@ -842,11 +949,336 @@ fn clone_connection_for_parallel(conn: &Connection) -> Option<Connection> {
     cruxe_state::db::open_connection(Path::new(path)).ok()
 }
 
-#[cfg(test)]
-fn semantic_fanout_limits(
-    limit: usize,
-    search_config: &cruxe_core::config::SearchConfig,
-) -> (usize, usize, usize) {
+const STRUCTURAL_CENTRALITY_WEIGHT: f64 = 1.0;
+const CONFIDENCE_COVERAGE_THRESHOLD: f64 = 0.45;
+const GUARDRAIL_MIN_MULTIPLIER: f64 = 0.0;
+
+#[derive(Debug, Clone, Default)]
+struct SymbolStructuralStats {
+    raw_source_count: f64,
+    weighted_source_sum: f64,
+    total_edges: u64,
+    high_edges: u64,
+    medium_edges: u64,
+    low_edges: u64,
+    by_provider: HashMap<String, u64>,
+    by_outcome: HashMap<String, u64>,
+}
+
+impl SymbolStructuralStats {
+    fn confidence_coverage(&self) -> f64 {
+        if self.total_edges == 0 {
+            return 1.0;
+        }
+        ((self.high_edges + self.medium_edges) as f64 / self.total_edges as f64).clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct StructuralContribution {
+    structural_weighted_centrality: f64,
+    structural_raw_centrality: f64,
+    structural_guardrail_multiplier: f64,
+    confidence_coverage: f64,
+    confidence_structural_boost: f64,
+}
+
+fn apply_confidence_weighted_structural_boost(
+    conn: Option<&Connection>,
+    ref_name: &str,
+    results: &mut [SearchResult],
+    ranking_reasons: Option<&mut Vec<RankingReasons>>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<ConfidenceStructuralDiagnostics>, StateError> {
+    let Some(conn) = conn else {
+        return Ok(None);
+    };
+
+    let mut stats_by_symbol: HashMap<(String, String), SymbolStructuralStats> = HashMap::new();
+    for result in results.iter() {
+        if result.result_type != "symbol" {
+            continue;
+        }
+        let Some(symbol_stable_id) = result
+            .symbol_stable_id
+            .as_deref()
+            .or(result.symbol_id.as_deref())
+        else {
+            continue;
+        };
+        if result.repo.trim().is_empty() {
+            continue;
+        }
+        let key = (result.repo.clone(), symbol_stable_id.to_string());
+        if stats_by_symbol.contains_key(&key) {
+            continue;
+        }
+        let stats = load_symbol_structural_stats(conn, &result.repo, ref_name, symbol_stable_id)?;
+        stats_by_symbol.insert(key, stats);
+    }
+
+    if stats_by_symbol.is_empty() {
+        return Ok(None);
+    }
+
+    let max_raw = stats_by_symbol
+        .values()
+        .map(|stats| stats.raw_source_count)
+        .fold(0.0_f64, f64::max);
+    let max_weighted = stats_by_symbol
+        .values()
+        .map(|stats| stats.weighted_source_sum)
+        .fold(0.0_f64, f64::max);
+
+    let mut contributions: HashMap<String, StructuralContribution> = HashMap::new();
+    let mut guardrail_applied = false;
+
+    for result in results.iter_mut() {
+        if result.result_type != "symbol" {
+            continue;
+        }
+        let Some(symbol_stable_id) = result
+            .symbol_stable_id
+            .as_deref()
+            .or(result.symbol_id.as_deref())
+        else {
+            continue;
+        };
+        if result.repo.trim().is_empty() {
+            continue;
+        }
+        let Some(stats) = stats_by_symbol.get(&(result.repo.clone(), symbol_stable_id.to_string()))
+        else {
+            continue;
+        };
+        if max_weighted <= f64::EPSILON {
+            continue;
+        }
+
+        let raw_centrality = if max_raw <= f64::EPSILON {
+            0.0
+        } else {
+            (stats.raw_source_count / max_raw).clamp(0.0, 1.0)
+        };
+        let weighted_centrality = (stats.weighted_source_sum / max_weighted).clamp(0.0, 1.0);
+        let coverage = stats.confidence_coverage();
+        let guardrail_multiplier = if coverage < CONFIDENCE_COVERAGE_THRESHOLD {
+            guardrail_applied = true;
+            (coverage / CONFIDENCE_COVERAGE_THRESHOLD).clamp(GUARDRAIL_MIN_MULTIPLIER, 1.0)
+        } else {
+            1.0
+        };
+        let boost = weighted_centrality * STRUCTURAL_CENTRALITY_WEIGHT * guardrail_multiplier;
+        result.score += boost as f32;
+        contributions.insert(
+            result.result_id.clone(),
+            StructuralContribution {
+                structural_weighted_centrality: weighted_centrality,
+                structural_raw_centrality: raw_centrality,
+                structural_guardrail_multiplier: guardrail_multiplier,
+                confidence_coverage: coverage,
+                confidence_structural_boost: boost,
+            },
+        );
+    }
+
+    if guardrail_applied {
+        warnings.push(format!(
+            "confidence_structural_guardrail_applied: coverage below {:.2} reduced structural boost for low-confidence candidates",
+            CONFIDENCE_COVERAGE_THRESHOLD
+        ));
+    }
+
+    let lexical_precedence_by_result_id = ranking_reasons
+        .as_deref()
+        .map(|reasons| {
+            reasons
+                .iter()
+                .map(|reason| {
+                    (
+                        reason.result_id.clone(),
+                        lexical_precedence_tier(
+                            reason.exact_match_boost,
+                            reason.qualified_name_boost,
+                        ),
+                    )
+                })
+                .collect::<HashMap<String, u8>>()
+        })
+        .unwrap_or_default();
+
+    results.sort_by(|a, b| {
+        lexical_precedence_by_result_id
+            .get(&b.result_id)
+            .unwrap_or(&0)
+            .cmp(
+                lexical_precedence_by_result_id
+                    .get(&a.result_id)
+                    .unwrap_or(&0),
+            )
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.result_id.cmp(&b.result_id))
+    });
+    if let Some(reasons) = ranking_reasons {
+        rebuild_ranking_reasons(results, reasons, &contributions);
+    }
+
+    let mut diagnostics = ConfidenceStructuralDiagnostics {
+        guardrail_applied,
+        ..ConfidenceStructuralDiagnostics::default()
+    };
+    for stats in stats_by_symbol.values() {
+        diagnostics.total_edges += stats.total_edges;
+        diagnostics.high_edges += stats.high_edges;
+        diagnostics.medium_edges += stats.medium_edges;
+        diagnostics.low_edges += stats.low_edges;
+        for (provider, count) in &stats.by_provider {
+            *diagnostics.by_provider.entry(provider.clone()).or_insert(0) += count;
+        }
+        for (outcome, count) in &stats.by_outcome {
+            *diagnostics.by_outcome.entry(outcome.clone()).or_insert(0) += count;
+        }
+    }
+    diagnostics.confidence_coverage = if diagnostics.total_edges == 0 {
+        1.0
+    } else {
+        ((diagnostics.high_edges + diagnostics.medium_edges) as f64
+            / diagnostics.total_edges as f64)
+            .clamp(0.0, 1.0)
+    };
+
+    Ok(Some(diagnostics))
+}
+
+fn lexical_precedence_tier(exact_match_boost: f64, qualified_name_boost: f64) -> u8 {
+    if exact_match_boost > f64::EPSILON {
+        return 2;
+    }
+    if qualified_name_boost > f64::EPSILON {
+        return 1;
+    }
+    0
+}
+
+fn rebuild_ranking_reasons(
+    results: &[SearchResult],
+    reasons: &mut Vec<RankingReasons>,
+    contributions: &HashMap<String, StructuralContribution>,
+) {
+    let mut by_result_id = HashMap::new();
+    for reason in reasons.drain(..) {
+        by_result_id.insert(reason.result_id.clone(), reason);
+    }
+
+    let mut rebuilt = Vec::with_capacity(results.len());
+    for (index, result) in results.iter().enumerate() {
+        let mut reason = by_result_id
+            .remove(&result.result_id)
+            .unwrap_or_else(|| RankingReasons {
+                result_index: index,
+                result_id: result.result_id.clone(),
+                exact_match_boost: 0.0,
+                qualified_name_boost: 0.0,
+                path_affinity: 0.0,
+                definition_boost: 0.0,
+                kind_match: 0.0,
+                test_file_penalty: 0.0,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
+                bm25_score: result.score as f64,
+                final_score: result.score as f64,
+                signal_contributions: Vec::new(),
+                precedence_audit: None,
+            });
+
+        if let Some(contribution) = contributions.get(&result.result_id) {
+            reason.confidence_structural_boost = contribution.confidence_structural_boost;
+            reason.structural_weighted_centrality = contribution.structural_weighted_centrality;
+            reason.structural_raw_centrality = contribution.structural_raw_centrality;
+            reason.structural_guardrail_multiplier = contribution.structural_guardrail_multiplier;
+            reason.confidence_coverage = contribution.confidence_coverage;
+        }
+        reason.result_index = index;
+        reason.final_score = result.score as f64;
+        rebuilt.push(reason);
+    }
+    *reasons = rebuilt;
+}
+
+fn load_symbol_structural_stats(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    symbol_stable_id: &str,
+) -> Result<SymbolStructuralStats, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                COALESCE(NULLIF(source_file, ''), from_symbol_id) AS source_key,
+                COALESCE(confidence, 'low') AS confidence,
+                COALESCE(confidence_weight, 0.0) AS confidence_weight,
+                COALESCE(edge_provider, 'legacy') AS edge_provider,
+                COALESCE(resolution_outcome, 'unresolved') AS resolution_outcome
+             FROM symbol_edges
+             WHERE repo = ?1 AND \"ref\" = ?2 AND to_symbol_id = ?3",
+        )
+        .map_err(StateError::sqlite)?;
+
+    let rows = stmt
+        .query_map([repo, ref_name, symbol_stable_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(StateError::sqlite)?;
+
+    let mut stats = SymbolStructuralStats::default();
+    let mut source_max_weight: HashMap<String, f64> = HashMap::new();
+    for row in rows {
+        let (source_key, confidence_bucket, explicit_weight, provider, outcome) =
+            row.map_err(StateError::sqlite)?;
+        stats.total_edges += 1;
+        let confidence_bucket = confidence_bucket.trim().to_ascii_lowercase();
+        match confidence_bucket.as_str() {
+            CONFIDENCE_HIGH => stats.high_edges += 1,
+            CONFIDENCE_MEDIUM => stats.medium_edges += 1,
+            CONFIDENCE_LOW => stats.low_edges += 1,
+            _ => stats.low_edges += 1,
+        }
+        let weight = if explicit_weight > 0.0 {
+            explicit_weight
+        } else {
+            confidence_weight(confidence_bucket.as_str())
+        };
+        source_max_weight
+            .entry(source_key)
+            .and_modify(|current| {
+                if weight > *current {
+                    *current = weight;
+                }
+            })
+            .or_insert(weight);
+        *stats.by_provider.entry(provider).or_insert(0) += 1;
+        *stats.by_outcome.entry(outcome).or_insert(0) += 1;
+    }
+
+    stats.raw_source_count = source_max_weight.len() as f64;
+    stats.weighted_source_sum = source_max_weight.values().sum();
+    Ok(stats)
+}
+
+fn semantic_fanout_limits(limit: usize, search_config: &CoreSearchConfig) -> (usize, usize, usize) {
     let semantic_limit = limit
         .saturating_mul(search_config.semantic.semantic_limit_multiplier)
         .clamp(20, 1000);
@@ -1521,6 +1953,7 @@ mod tests {
     use cruxe_core::config::SearchConfig as CoreSearchConfig;
     use cruxe_core::types::{SymbolKind, SymbolRecord};
     use cruxe_state::{db, schema, vector_index, vector_index::VectorRecord};
+    use rusqlite::Connection;
     use std::collections::HashSet;
     use tempfile::tempdir;
 
@@ -1548,6 +1981,54 @@ mod tests {
         }
     }
 
+    fn make_symbol_result(result_id: &str, symbol_stable_id: &str, score: f32) -> SearchResult {
+        SearchResult {
+            repo: "repo".to_string(),
+            result_id: result_id.to_string(),
+            symbol_id: Some(symbol_stable_id.to_string()),
+            symbol_stable_id: Some(symbol_stable_id.to_string()),
+            result_type: "symbol".to_string(),
+            path: format!("src/{symbol_stable_id}.rs"),
+            line_start: 1,
+            line_end: 1,
+            kind: Some("function".to_string()),
+            name: Some(symbol_stable_id.to_string()),
+            qualified_name: Some(symbol_stable_id.to_string()),
+            language: "rust".to_string(),
+            signature: None,
+            visibility: Some("pub".to_string()),
+            score,
+            snippet: None,
+            chunk_type: None,
+            source_layer: None,
+            provenance: "lexical".to_string(),
+        }
+    }
+
+    fn insert_symbol_edge_fixture(
+        conn: &Connection,
+        to_symbol_id: &str,
+        source_file: &str,
+        confidence: &str,
+        confidence_weight: f64,
+    ) {
+        conn.execute(
+            "INSERT INTO symbol_edges
+             (repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight, source_file, source_line)
+             VALUES (?1, ?2, ?3, ?4, 'calls', ?5, 'call_resolver', 'resolved_internal', ?6, ?7, 1)",
+            rusqlite::params![
+                "repo",
+                "main",
+                format!("from::{source_file}"),
+                to_symbol_id,
+                confidence,
+                confidence_weight,
+                source_file
+            ],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn lexical_short_circuit_uses_reranked_score_band() {
         let mut state = SemanticExecutionState {
@@ -1569,6 +2050,172 @@ mod tests {
         assert_eq!(
             state.semantic_skipped_reason.as_deref(),
             Some("lexical_high_confidence")
+        );
+    }
+
+    #[test]
+    fn confidence_weighted_structural_boost_suppresses_low_confidence_noise() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        // low-confidence hub with many inbound edges
+        for idx in 0..20 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-low",
+                format!("src/low_{idx}.rs").as_str(),
+                "low",
+                0.2,
+            );
+        }
+        // high-confidence signal with fewer but trustworthy edges
+        for idx in 0..3 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-high",
+                format!("src/high_{idx}.rs").as_str(),
+                "high",
+                1.0,
+            );
+        }
+
+        let mut results = vec![
+            make_symbol_result("res-low", "stable-low", 1.0),
+            make_symbol_result("res-high", "stable-high", 1.0),
+        ];
+        let mut warnings = Vec::new();
+        let diagnostics = apply_confidence_weighted_structural_boost(
+            Some(&conn),
+            "main",
+            &mut results,
+            None,
+            &mut warnings,
+        )
+        .unwrap()
+        .expect("expected diagnostics");
+
+        assert_eq!(results[0].result_id, "res-high");
+        assert!(diagnostics.guardrail_applied);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("confidence_structural_guardrail_applied"))
+        );
+    }
+
+    #[test]
+    fn low_confidence_edges_cannot_dominate_structural_boost() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        for idx in 0..40 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-noisy",
+                format!("src/noisy_{idx}.rs").as_str(),
+                "low",
+                0.2,
+            );
+        }
+        insert_symbol_edge_fixture(&conn, "stable-trusted", "src/trusted.rs", "high", 1.0);
+
+        let mut results = vec![
+            make_symbol_result("res-noisy", "stable-noisy", 1.0),
+            make_symbol_result("res-trusted", "stable-trusted", 1.0),
+        ];
+        let mut warnings = Vec::new();
+        apply_confidence_weighted_structural_boost(
+            Some(&conn),
+            "main",
+            &mut results,
+            None,
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(
+            results[0].result_id, "res-trusted",
+            "trusted high-confidence edge should outrank noisy low-confidence hub"
+        );
+    }
+
+    #[test]
+    fn structural_boost_keeps_exact_match_precedence_when_reasons_present() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        // Non-exact candidate receives strong structural support.
+        for idx in 0..12 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-nonexact",
+                format!("src/nonexact_{idx}.rs").as_str(),
+                "high",
+                1.0,
+            );
+        }
+
+        let mut results = vec![
+            make_symbol_result("res-exact", "stable-exact", 1.0),
+            make_symbol_result("res-nonexact", "stable-nonexact", 1.0),
+        ];
+        let mut reasons = vec![
+            RankingReasons {
+                result_index: 0,
+                result_id: "res-exact".to_string(),
+                exact_match_boost: 1.0,
+                qualified_name_boost: 0.0,
+                path_affinity: 0.0,
+                definition_boost: 0.0,
+                kind_match: 0.0,
+                test_file_penalty: 0.0,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
+                bm25_score: 1.0,
+                final_score: 1.0,
+                signal_contributions: Vec::new(),
+                precedence_audit: None,
+            },
+            RankingReasons {
+                result_index: 1,
+                result_id: "res-nonexact".to_string(),
+                exact_match_boost: 0.0,
+                qualified_name_boost: 0.0,
+                path_affinity: 0.0,
+                definition_boost: 0.0,
+                kind_match: 0.0,
+                test_file_penalty: 0.0,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
+                bm25_score: 1.0,
+                final_score: 1.0,
+                signal_contributions: Vec::new(),
+                precedence_audit: None,
+            },
+        ];
+        let mut warnings = Vec::new();
+
+        apply_confidence_weighted_structural_boost(
+            Some(&conn),
+            "main",
+            &mut results,
+            Some(&mut reasons),
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(
+            results[0].result_id, "res-exact",
+            "structural boost must not reorder exact-match candidates below non-exact matches"
         );
     }
 
@@ -1662,6 +2309,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1767,6 +2416,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: Some("type".to_string()),
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1869,6 +2520,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2003,6 +2656,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2041,6 +2696,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2103,6 +2760,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2145,6 +2804,8 @@ mod tests {
                 confidence_threshold_override: Some(0.91),
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2197,6 +2858,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2228,6 +2891,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: Some("lexical_fast".to_string()),
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2263,6 +2928,8 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 plan_override: Some("semantic_deep".to_string()),
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();

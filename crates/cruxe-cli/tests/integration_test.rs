@@ -2065,8 +2065,15 @@ fn t157_index_populates_import_edges_for_rust_fixture() {
     assert!(
         edges_from_handler
             .iter()
-            .all(|edge| edge.edge_type == "imports" && edge.confidence == "static"),
-        "all extracted edges should be imports/static"
+            .all(|edge| edge.edge_type == "imports"
+                && matches!(edge.confidence.as_str(), "high" | "medium" | "low")),
+        "all extracted edges should use canonical confidence buckets"
+    );
+    assert!(
+        edges_from_handler
+            .iter()
+            .any(|edge| edge.to_symbol_id == claims_stable_id && edge.confidence == "high"),
+        "resolved internal import to Claims should be high confidence"
     );
 }
 
@@ -2267,15 +2274,15 @@ fn t337_index_call_graph_fixture_populates_expected_call_edges() {
     assert!(
         rust_callees.iter().any(|edge| edge.to_symbol_id.as_deref()
             == Some(rust_validate.as_str())
-            && edge.confidence == "static"),
+            && edge.confidence == "high"),
         "rust_process should statically call rust_validate"
     );
     assert!(
         rust_callees.iter().any(
             |edge| edge.to_symbol_id.as_deref() == Some(rust_method.as_str())
-                && edge.confidence == "heuristic"
+                && edge.confidence == "low"
         ),
-        "rust_process should heuristically call rust_method via method call"
+        "rust_process should lower-confidence call rust_method via method call"
     );
 
     let ts_callees =
@@ -2283,7 +2290,7 @@ fn t337_index_call_graph_fixture_populates_expected_call_edges() {
     assert!(
         ts_callees.iter().any(
             |edge| edge.to_symbol_id.as_deref() == Some(ts_helper.as_str())
-                && edge.confidence == "static"
+                && edge.confidence == "high"
         ),
         "tsProcess should resolve cross-file call to tsHelper"
     );
@@ -2291,9 +2298,9 @@ fn t337_index_call_graph_fixture_populates_expected_call_edges() {
         ts_callees.iter().any(|edge| {
             edge.to_symbol_id.is_none()
                 && edge.to_name.as_deref() == Some("Math.max")
-                && edge.confidence == "heuristic"
+                && edge.confidence == "low"
         }),
-        "tsProcess should keep unresolved external call Math.max as heuristic"
+        "tsProcess should keep unresolved external call Math.max as low-confidence"
     );
 
     let py_callees =

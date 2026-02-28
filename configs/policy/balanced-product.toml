@@ -1,0 +1,28 @@
+[search.policy]
+mode = "balanced"
+allow_request_override = true
+allowed_override_modes = ["balanced", "off", "audit_only"]
+
+[search.policy.path]
+deny = ["**/secrets/**", "**/.env*", "**/*.key"]
+allow = []
+
+[search.policy.kind]
+deny_result_types = []
+allow_result_types = []
+
+[search.policy.redaction]
+enabled = true
+email_masking = true
+high_entropy_min_length = 18
+high_entropy_threshold = 3.4
+
+[search.policy.detect_secrets]
+enabled = true
+plugins = ["aws", "github", "slack"]
+
+[search.policy.opa]
+enabled = false
+command = "opa"
+query = "data.cruxe.allow"
+policy_path = ""
