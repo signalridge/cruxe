@@ -1499,6 +1499,10 @@ fn normalize_budget_range(
         return normalized;
     }
     if value.min > value.max {
+        let mut normalized = fallback.clone();
+        if value.default.is_finite() {
+            normalized.default = value.default.clamp(fallback.min, fallback.max);
+        }
         tracing::warn!(
             field,
             code = RankingBudgetNormalizationCode::InvertedRange.as_str(),
@@ -1508,9 +1512,10 @@ fn normalize_budget_range(
             fallback_min = fallback.min,
             fallback_max = fallback.max,
             fallback_default = fallback.default,
+            normalized_default = normalized.default,
             "inverted ranking budget range; falling back to canonical defaults"
         );
-        return fallback;
+        return normalized;
     }
 
     let mut normalized = value;
@@ -1697,7 +1702,7 @@ mod tests {
         let normalized = raw.normalized();
         assert_eq!(normalized.exact_match.min, 0.0);
         assert_eq!(normalized.exact_match.max, 8.0);
-        assert_eq!(normalized.exact_match.default, 5.0);
+        assert_eq!(normalized.exact_match.default, 8.0);
         assert_eq!(normalized.qualified_name.min, 0.0);
         assert_eq!(normalized.qualified_name.max, 1.0);
         assert_eq!(normalized.qualified_name.default, 1.0);

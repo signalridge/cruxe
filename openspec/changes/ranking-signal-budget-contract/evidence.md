@@ -55,3 +55,5 @@ Case `exact_vs_structural_a`:
 - Legacy explain fields (`exact_match_boost`, `qualified_name_boost`, `path_affinity`,
   `definition_boost`, `kind_match`, `test_file_penalty`, `bm25_score`) remain raw-signal
   compatible; budget-adjusted values are exposed via `signal_contributions`.
+- Inverted budget ranges now preserve a finite user `default` by clamping it into the canonical
+  fallback window instead of silently dropping to the fallback default.
