@@ -101,6 +101,7 @@ pub fn get_code_context(
             semantic_ratio_override: None,
             confidence_threshold_override: None,
             role: None,
+            plan_override: None,
             policy_mode_override,
             policy_runtime: Some(policy_runtime.clone()),
         },

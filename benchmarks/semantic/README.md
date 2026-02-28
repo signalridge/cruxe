@@ -6,6 +6,8 @@ This directory provides a reproducible benchmark-kit harness for semantic/hybrid
 
 - `fixtures.lock.json`: pinned fixture sources used by the benchmark run.
 - `query-pack.v1.json`: versioned natural-language benchmark query pack.
+- `adaptive-router-fixtures.v1.json`: deterministic router fixtures (Haystack-style intent routing).
+- `adaptive-ambiguous-fixtures.v1.json`: deterministic ambiguous-query downgrade fixtures (LlamaIndex-style fallback checks).
 - `run_semantic_benchmarks.sh`: deterministic harness entrypoint.
 - `reports/`: optional output directory for committed examples; default runs write to `target/semantic-benchmark-reports`.
 
