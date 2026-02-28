@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod config;
 pub mod constants;
+pub mod edge_confidence;
 pub mod error;
 pub mod ids;
 pub mod languages;

@@ -60,9 +60,10 @@ impl BudgetedScoreBreakdown {
         self.precedence_audit.exact_match_present
     }
 
-    fn to_reason(&self, result_index: usize) -> RankingReasons {
+    fn to_reason(&self, result_index: usize, result_id: String) -> RankingReasons {
         RankingReasons {
             result_index,
+            result_id,
             // Keep legacy fields aligned with pre-budget semantics (raw signal values)
             // for backward compatibility with existing consumers.
             exact_match_boost: self.exact_match.raw,
@@ -71,6 +72,11 @@ impl BudgetedScoreBreakdown {
             definition_boost: self.definition_boost.raw,
             kind_match: self.kind_match.raw,
             test_file_penalty: self.test_file_penalty.raw,
+            confidence_structural_boost: 0.0,
+            structural_weighted_centrality: 0.0,
+            structural_raw_centrality: 0.0,
+            structural_guardrail_multiplier: 1.0,
+            confidence_coverage: 1.0,
             bm25_score: self.bm25.raw,
             final_score: self.final_score(),
             signal_contributions: vec![
@@ -227,7 +233,7 @@ fn rerank_inner(
         result.score = breakdown.final_score() as f32;
         exact_match_flags.push(breakdown.exact_match_present());
         if collect_reasons {
-            reasons.push(breakdown.to_reason(idx));
+            reasons.push(breakdown.to_reason(idx, result.result_id.clone()));
         }
     }
 
@@ -313,7 +319,7 @@ pub fn locate_ranking_reasons_with_budget(
                 },
                 budgets,
             )
-            .to_reason(idx)
+            .to_reason(idx, format!("{}:{}:{}", r.path, r.line_start, r.name))
         })
         .collect()
 }
