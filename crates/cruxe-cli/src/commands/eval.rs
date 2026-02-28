@@ -89,6 +89,9 @@ pub fn run_retrieval(
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                plan_override: None,
+                policy_mode_override: None,
+                policy_runtime: None,
             },
         );
 

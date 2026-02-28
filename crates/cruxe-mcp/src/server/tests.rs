@@ -303,7 +303,7 @@ fn t065_tools_list_returns_all_registered_tools() {
         .as_array()
         .expect("'tools' should be an array");
 
-    assert_eq!(tools.len(), 18, "expected 18 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 19, "expected 19 tools, got {}", tools.len());
 
     let tool_names: Vec<&str> = tools
         .iter()
@@ -327,6 +327,7 @@ fn t065_tools_list_returns_all_registered_tools() {
         "get_symbol_hierarchy",
         "find_related_symbols",
         "get_code_context",
+        "build_context_pack",
         "health_check",
         "index_status",
     ];
@@ -1926,6 +1927,658 @@ fn t186_and_t187_get_code_context_depth_and_truncation() {
             .unwrap()
             <= 50,
         "estimated tokens should never exceed tiny budget"
+    );
+}
+
+#[test]
+fn t360_build_context_pack_returns_sectioned_provenance_payload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "budget_tokens": 280,
+                "max_candidates": 80,
+                "language": "rust"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload.get("mode").and_then(|value| value.as_str()),
+        Some("full")
+    );
+    assert!(
+        payload
+            .get("token_budget_used")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default()
+            <= 280,
+        "token_budget_used must respect budget_tokens"
+    );
+
+    let sections = payload
+        .get("sections")
+        .and_then(|value| value.as_object())
+        .expect("sections should be an object");
+    for section in ["definitions", "usages", "deps", "tests", "config", "docs"] {
+        assert!(
+            sections.contains_key(section),
+            "missing section key: {section}"
+        );
+    }
+
+    let all_items = sections
+        .values()
+        .filter_map(|value| value.as_array())
+        .flat_map(|items| items.iter())
+        .collect::<Vec<_>>();
+    assert!(!all_items.is_empty(), "expected at least one pack item");
+
+    for item in &all_items {
+        assert!(item.get("snippet_id").is_some(), "missing snippet_id");
+        assert!(item.get("ref").is_some(), "missing ref");
+        assert!(item.get("path").is_some(), "missing path");
+        assert!(item.get("line_start").is_some(), "missing line_start");
+        assert!(item.get("line_end").is_some(), "missing line_end");
+        assert!(item.get("content_hash").is_some(), "missing content_hash");
+        assert!(
+            item.get("selection_reason").is_some(),
+            "missing selection_reason"
+        );
+    }
+
+    assert!(
+        payload
+            .get("coverage_summary")
+            .and_then(|value| value.get("section_counts"))
+            .is_some(),
+        "coverage_summary should include section_counts"
+    );
+    assert!(
+        payload.get("dropped_candidates").is_some(),
+        "payload should include dropped_candidates diagnostics"
+    );
+    assert!(
+        payload.get("suggested_next_queries").is_some(),
+        "payload should include suggested_next_queries diagnostics"
+    );
+    let metadata = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        metadata
+            .get("section_aliases")
+            .and_then(|value| value.get("key_usages"))
+            .and_then(|value| value.as_str()),
+        Some("usages"),
+        "Continue-compatible alias key_usages should map to usages"
+    );
+    assert_eq!(
+        metadata
+            .get("section_aliases")
+            .and_then(|value| value.get("dependencies"))
+            .and_then(|value| value.as_str()),
+        Some("deps"),
+        "Continue-compatible alias dependencies should map to deps"
+    );
+}
+
+#[test]
+fn t361_build_context_pack_ref_scope_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, conn, branch_name) = build_fixture_index_in_git_repo(tmp.path());
+    let config = Config::default();
+    let workspace_buf = tmp.path().join("workspace");
+    let workspace = workspace_buf.as_path();
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "ref": branch_name,
+                "budget_tokens": 320
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload.get("ref").and_then(|value| value.as_str()),
+        Some(branch_name.as_str())
+    );
+    assert_eq!(
+        payload
+            .get("metadata")
+            .and_then(|value| value.get("ref"))
+            .and_then(|value| value.as_str()),
+        Some(branch_name.as_str())
+    );
+}
+
+#[test]
+fn t362_build_context_pack_is_deterministic_across_repeated_calls() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "budget_tokens": 260,
+                "max_candidates": 75,
+                "language": "rust"
+            }
+        }),
+    );
+
+    let response_a = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response_a.error.is_none(), "first call should succeed");
+
+    let response_b = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response_b.error.is_none(), "second call should succeed");
+
+    let payload_a = extract_payload_from_response(&response_a);
+    let payload_b = extract_payload_from_response(&response_b);
+    assert_eq!(
+        payload_a, payload_b,
+        "repeated runs should be deterministic"
+    );
+}
+
+#[test]
+fn t363_context_pack_iterative_fixture_drives_followup_query_loop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/fixtures/context-pack/iterative-workflow.json");
+    let fixture_raw = std::fs::read_to_string(&fixture_path)
+        .unwrap_or_else(|err| panic!("failed to read fixture {}: {err}", fixture_path.display()));
+    let fixture: serde_json::Value = serde_json::from_str(&fixture_raw).unwrap();
+
+    let initial_query = fixture
+        .get("initial")
+        .and_then(|value| value.get("query"))
+        .and_then(|value| value.as_str())
+        .expect("fixture initial.query should exist");
+    let initial_budget = fixture
+        .get("initial")
+        .and_then(|value| value.get("budget_tokens"))
+        .and_then(|value| value.as_u64())
+        .expect("fixture initial.budget_tokens should exist");
+    let followup_budget = fixture
+        .get("follow_up")
+        .and_then(|value| value.get("budget_tokens"))
+        .and_then(|value| value.as_u64())
+        .expect("fixture follow_up.budget_tokens should exist");
+
+    let initial_request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": initial_query,
+                "budget_tokens": initial_budget,
+                "mode": "edit_minimal"
+            }
+        }),
+    );
+    let initial_response = handle_request_with_ctx(
+        &initial_request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(
+        initial_response.error.is_none(),
+        "initial call should succeed"
+    );
+    let initial_payload = extract_payload_from_response(&initial_response);
+    let followup_query = initial_payload
+        .get("suggested_next_queries")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .and_then(|value| value.as_str())
+        .expect("initial response should suggest a follow-up query");
+
+    let followup_request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": followup_query,
+                "budget_tokens": followup_budget
+            }
+        }),
+    );
+    let followup_response = handle_request_with_ctx(
+        &followup_request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(
+        followup_response.error.is_none(),
+        "follow-up call should succeed"
+    );
+    let followup_payload = extract_payload_from_response(&followup_response);
+
+    assert!(
+        followup_payload
+            .get("token_budget_used")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default()
+            >= initial_payload
+                .get("token_budget_used")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default(),
+        "follow-up run should expand or maintain context footprint with higher budget"
+    );
+}
+
+#[test]
+fn t364_build_context_pack_accepts_partial_section_caps_patch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "budget_tokens": 500,
+                "mode": "full",
+                "section_caps": {
+                    "definitions": 1
+                }
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let sections = payload
+        .get("sections")
+        .and_then(|value| value.as_object())
+        .expect("sections should be an object");
+    assert!(
+        sections.contains_key("definitions"),
+        "sections should include definitions bucket"
+    );
+
+    let section_caps = payload
+        .get("metadata")
+        .and_then(|value| value.get("section_caps"))
+        .expect("metadata.section_caps should be present");
+    assert_eq!(
+        section_caps
+            .get("definitions")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        section_caps.get("usages").and_then(|value| value.as_u64()),
+        Some(8)
+    );
+    assert_eq!(
+        section_caps.get("deps").and_then(|value| value.as_u64()),
+        Some(5)
+    );
+}
+
+#[test]
+fn t365_build_context_pack_enforces_max_candidates_upper_bound() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "budget_tokens": 5_000,
+                "max_candidates": 1,
+                "mode": "full"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let selected_items = payload
+        .get("sections")
+        .and_then(|value| value.as_object())
+        .expect("sections should be object")
+        .values()
+        .filter_map(|value| value.as_array())
+        .map(std::vec::Vec::len)
+        .sum::<usize>();
+    assert!(
+        selected_items <= 1,
+        "selected items should honor max_candidates upper bound"
+    );
+
+    let metadata = payload.get("metadata").expect("metadata should exist");
+    assert!(
+        metadata
+            .get("total_raw_candidates")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default()
+            <= 1,
+        "raw candidates should be capped before dedup"
+    );
+    assert!(
+        metadata
+            .get("deduped_candidates")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default()
+            <= 1,
+        "deduped candidates should not exceed max_candidates"
+    );
+}
+
+#[test]
+fn t366_build_context_pack_zero_results_emits_underfilled_guidance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let zero_query = "zzzz_context_pack_zero_result_probe_987654321";
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": zero_query,
+                "budget_tokens": 400,
+                "language": "fortran",
+                "mode": "full"
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let sections = payload
+        .get("sections")
+        .and_then(|value| value.as_object())
+        .expect("sections should be object");
+    let selected_items = sections
+        .values()
+        .filter_map(|value| value.as_array())
+        .map(std::vec::Vec::len)
+        .sum::<usize>();
+    assert_eq!(
+        selected_items, 0,
+        "zero-result query should return no sections"
+    );
+    assert_eq!(
+        payload
+            .get("token_budget_used")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default(),
+        0
+    );
+
+    let suggestions = payload
+        .get("suggested_next_queries")
+        .and_then(|value| value.as_array())
+        .expect("suggested_next_queries should exist")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        suggestions.contains(&format!("{zero_query} symbol").as_str()),
+        "zero-result guidance should include a symbol-focused follow-up"
+    );
+
+    let hints = payload
+        .get("missing_context_hints")
+        .and_then(|value| value.as_array())
+        .expect("missing_context_hints should exist")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        hints
+            .iter()
+            .any(|hint| hint.contains("No candidates were selected")),
+        "zero-result guidance should surface explicit underfilled hint"
+    );
+
+    let metadata = payload.get("metadata").expect("metadata should exist");
+    assert_eq!(
+        metadata
+            .get("budget_utilization_ratio")
+            .and_then(|value| value.as_f64()),
+        Some(0.0),
+        "zero results should produce zero budget utilization"
+    );
+    assert_eq!(
+        metadata
+            .get("token_estimation")
+            .and_then(|value| value.get("method"))
+            .and_then(|value| value.as_str()),
+        Some("cruxe_core::tokens::estimate_tokens")
+    );
+}
+
+#[test]
+fn t367_build_context_pack_rejects_excessive_budget_tokens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "budget_tokens": 300001
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "MCP tool errors are in content");
+    let payload = extract_payload_from_response(&response);
+    let error = payload
+        .get("error")
+        .expect("excessive budget_tokens response should contain error");
+    assert_eq!(
+        error.get("code").and_then(|v| v.as_str()),
+        Some("invalid_max_tokens")
+    );
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("200000")),
+        "error message should report the max budget bound"
     );
 }
 
@@ -4405,6 +5058,23 @@ fn t134_tools_list_schema_verification() {
     );
     let context_required = context_schema.get("required").unwrap().as_array().unwrap();
     assert!(context_required.contains(&json!("query")));
+
+    let context_pack = tools
+        .iter()
+        .find(|t| t.get("name").unwrap().as_str().unwrap() == "build_context_pack")
+        .expect("build_context_pack should be listed");
+    let context_pack_schema = context_pack.get("inputSchema").unwrap();
+    let context_pack_props = context_pack_schema.get("properties").unwrap();
+    assert!(context_pack_props.get("query").is_some());
+    assert!(context_pack_props.get("budget_tokens").is_some());
+    assert!(context_pack_props.get("mode").is_some());
+    assert!(context_pack_props.get("section_caps").is_some());
+    let context_pack_required = context_pack_schema
+        .get("required")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert!(context_pack_required.contains(&json!("query")));
 
     let search = tools
         .iter()

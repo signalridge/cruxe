@@ -5,7 +5,7 @@ The JSON file is the canonical machine-readable source.
 
 - Generated from: MCP `tools/list` response
 - Generator script: `scripts/generate_mcp_tool_schemas.sh`
-- Current tool count: 18
+- Current tool count: 19
 
 ## Regenerate
 
@@ -34,6 +34,7 @@ jq -r '.tools[].name' configs/mcp/tool-schemas.json
 | `get_symbol_hierarchy` | `symbol_name` | Return ancestor/descendant symbol hierarchy. |
 | `find_related_symbols` | `symbol_name` | Find nearby symbols in file/module/package scope. |
 | `get_code_context` | `query` | Return token-budgeted context blocks. |
+| `build_context_pack` | `query` | Build deterministic sectioned context packs with provenance and diagnostics. |
 | `suggest_followup_queries` | `previous_query`, `previous_results` | Suggest next tool calls for weak/empty results. |
 | `health_check` | none | Check operational status and warm/index state. |
 | `index_status` | none | Return indexing status and recent jobs. |
@@ -91,6 +92,32 @@ Most query/navigation tools also accept these optional fields:
   }
 }
 ```
+
+### `build_context_pack`
+
+```json
+{
+  "name": "build_context_pack",
+  "arguments": {
+    "query": "validate_token",
+    "budget_tokens": 400,
+    "mode": "edit_minimal",
+    "section_caps": {
+      "definitions": 6,
+      "usages": 4,
+      "deps": 2
+    }
+  }
+}
+```
+
+Notes:
+- `budget_tokens` accepts `1..=200000`.
+- Response section keys are canonicalized as `definitions`, `usages`, `deps`, `tests`, `config`, `docs`.
+- Metadata includes `section_aliases` for Continue-style naming (`key_usages` -> `usages`, `dependencies` -> `deps`).
+- Mode alias: `aider_minimal` is accepted as an alias for `edit_minimal`.
+- Token estimates use `cruxe_core::tokens::estimate_tokens` with a minimum of 8 tokens per selected item.
+- Metadata includes `budget_utilization_ratio`, and underfilled packs include guidance in `missing_context_hints`.
 
 ## Version Alignment Rule
 

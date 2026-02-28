@@ -5,11 +5,15 @@ The system MUST provide a context-pack assembly capability that builds a structu
 
 Pack sections MUST support:
 - `definitions`
-- `key_usages`
-- `dependencies`
+- `usages`
+- `deps`
 - `tests`
 - `config`
 - `docs`
+
+For Continue-style compatibility, metadata MAY expose aliases:
+- `key_usages` -> `usages`
+- `dependencies` -> `deps`
 
 #### Scenario: Query returns sectioned context pack
 - **WHEN** context pack generation is requested with a valid query and budget
@@ -22,6 +26,10 @@ Pack assembly MUST enforce explicit token budget limits and deterministic trunca
 - **WHEN** candidate set exceeds requested token budget
 - **THEN** runtime MUST keep higher-priority items according to deterministic ordering
 - **AND** MUST report dropped candidate counts
+
+#### Scenario: Underfilled budget emits expansion guidance
+- **WHEN** retrieved candidates do not materially use the requested budget
+- **THEN** runtime MUST include guidance hints and suggested follow-up queries for expanding retrieval coverage
 
 ### Requirement: Pack items MUST include provenance envelope
 Each emitted pack item MUST include provenance fields sufficient for audit and verification.
@@ -43,8 +51,8 @@ Each emitted snippet MUST be assigned to exactly one section using deterministic
 
 Assignment priority:
 1. `definitions` (symbol definition spans)
-2. `key_usages` (reference/call spans)
-3. `dependencies` (imports/includes)
+2. `usages` (reference/call spans)
+3. `deps` (imports/includes)
 4. `tests` (test path/content heuristics)
 5. `config` (manifest/config files)
 6. `docs` (documentation sources)

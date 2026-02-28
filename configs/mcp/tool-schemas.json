@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-02-28T16:42:41Z",
+  "generated_at": "2026-02-28T18:56:05Z",
   "generator": "scripts/generate_mcp_tool_schemas.sh",
   "source": "tools/list",
   "binary": "cruxe",
   "binary_version": "0.1.0",
-  "tool_count": 18,
+  "tool_count": 19,
   "tools": [
     {
       "description": "Trigger full or incremental indexing of a registered project.",
@@ -87,6 +87,15 @@
           "limit": {
             "description": "Max results (default: 10)",
             "type": "integer"
+          },
+          "plan": {
+            "description": "Optional adaptive query plan override. Requires search.adaptive_plan.allow_override=true.",
+            "enum": [
+              "lexical_fast",
+              "hybrid_standard",
+              "semantic_deep"
+            ],
+            "type": "string"
           },
           "policy_mode": {
             "description": "Optional retrieval policy override when allowed by runtime policy config.",
@@ -468,6 +477,87 @@
         "type": "object"
       },
       "name": "get_code_context"
+    },
+    {
+      "description": "Build a deterministic, token-budgeted context pack with provenance and diagnostics.",
+      "inputSchema": {
+        "properties": {
+          "budget_tokens": {
+            "default": 4000,
+            "description": "Token budget for the pack payload (default: 4000, max: 200000).",
+            "maximum": 200000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "language": {
+            "description": "Optional language filter.",
+            "type": "string"
+          },
+          "max_candidates": {
+            "default": 72,
+            "description": "Upper bound for retrieval candidates before budgeting (default: 72).",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "full",
+            "description": "Pack shaping mode: `full` or `edit_minimal` (`aider_minimal` is an alias of `edit_minimal`).",
+            "enum": [
+              "full",
+              "edit_minimal",
+              "aider_minimal"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Retrieval query used to assemble the context pack.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
+          },
+          "section_caps": {
+            "description": "Optional per-section target caps before overflow fallback.",
+            "properties": {
+              "config": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "definitions": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deps": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "docs": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "tests": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "usages": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "build_context_pack"
     },
     {
       "description": "Suggest next tool calls when prior results are low-confidence or empty.",

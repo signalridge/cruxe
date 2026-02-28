@@ -1,3 +1,4 @@
+pub mod build_context_pack;
 pub mod compare_symbol_between_commits;
 pub mod diff_context;
 pub mod explain_ranking;
@@ -41,6 +42,7 @@ pub fn list_tools() -> Vec<ToolDefinition> {
         get_symbol_hierarchy::definition(),
         find_related_symbols::definition(),
         get_code_context::definition(),
+        build_context_pack::definition(),
         suggest_followup_queries::definition(),
         health_check::definition(),
         index_status::definition(),

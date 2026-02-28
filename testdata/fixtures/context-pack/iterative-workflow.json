@@ -1,0 +1,9 @@
+{
+  "initial": {
+    "query": "validate_token",
+    "budget_tokens": 80
+  },
+  "follow_up": {
+    "budget_tokens": 260
+  }
+}

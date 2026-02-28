@@ -139,6 +139,17 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             workspace,
             project_id,
         }),
+        "build_context_pack" => context::handle_build_context_pack(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
         "diff_context" => query::handle_diff_context(QueryToolParams {
             id,
             arguments,
