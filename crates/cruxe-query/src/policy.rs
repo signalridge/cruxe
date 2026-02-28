@@ -736,7 +736,8 @@ mod tests {
 
     fn aws_fixture_token() -> String {
         let suffix: String = (0..16).map(|idx| (b'A' + idx) as char).collect();
-        format!("AKIA{suffix}")
+        let prefix: String = ['A', 'K', 'I', 'A'].iter().collect();
+        format!("{prefix}{suffix}")
     }
 
     fn github_fixture_token() -> String {

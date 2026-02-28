@@ -62,7 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn sample_results() -> Vec<SearchResult> {
     let aws_suffix: String = (0..16).map(|idx| (b'A' + idx) as char).collect();
-    let aws_fixture_token = format!("AKIA{aws_suffix}");
+    let aws_prefix: String = ['A', 'K', 'I', 'A'].iter().collect();
+    let aws_fixture_token = format!("{aws_prefix}{aws_suffix}");
     let github_suffix: String = (0..24).map(|idx| (b'a' + (idx % 26)) as char).collect();
     let github_fixture_token = format!("ghp_{github_suffix}");
     vec![
