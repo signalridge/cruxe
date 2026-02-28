@@ -348,7 +348,11 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
             }
 
             if ranking_explain_level != cruxe_core::types::RankingExplainLevel::Off {
-                let reasons = ranking::locate_ranking_reasons(&results, name);
+                let reasons = ranking::locate_ranking_reasons_with_budget(
+                    &results,
+                    name,
+                    &config.search.ranking_signal_budgets,
+                );
                 metadata.ranking_reasons = ranking_reasons_payload(
                     reasons.into_iter().take(filtered.len()).collect(),
                     ranking_explain_level,
