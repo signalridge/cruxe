@@ -451,7 +451,7 @@ pub fn search_code_with_options(
         semantic_triggered: semantic_state.semantic_triggered,
         semantic_skipped_reason: semantic_state.semantic_skipped_reason,
         semantic_fallback: semantic_state.semantic_fallback,
-        semantic_degraded: semantic_state.semantic_fallback,
+        semantic_degraded: semantic_state.semantic_fallback || semantic_budget_exhausted,
         semantic_limit_used,
         lexical_fanout_used,
         semantic_fanout_used,

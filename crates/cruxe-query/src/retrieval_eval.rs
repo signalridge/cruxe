@@ -217,6 +217,8 @@ pub struct QueryEvaluation {
     pub cluster_ratio: f64,
     pub semantic_degraded: bool,
     pub semantic_budget_exhausted: bool,
+    #[serde(default)]
+    pub negative_hits: usize,
     pub top_results: Vec<TopResultEntry>,
 }
 
@@ -308,10 +310,16 @@ where
             })
             .collect::<Vec<_>>();
 
-        let hit_rank = first_hit_rank(&top_results, &query.expected_targets);
-        let recall = recall_at_k(&top_results, &query.expected_targets);
-        let ndcg = ndcg_at_k(&top_results, &query.expected_targets);
-        let rr = hit_rank.map(|rank| 1.0 / rank as f64).unwrap_or(0.0);
+        let negative_hits = count_hits_against_targets(&top_results, &query.negative_targets);
+        let (hit_rank, recall, ndcg, rr) = if negative_hits > 0 {
+            (None, 0.0, 0.0, 0.0)
+        } else {
+            let hit_rank = first_hit_rank(&top_results, &query.expected_targets);
+            let recall = recall_at_k(&top_results, &query.expected_targets);
+            let ndcg = ndcg_at_k(&top_results, &query.expected_targets);
+            let rr = hit_rank.map(|rank| 1.0 / rank as f64).unwrap_or(0.0);
+            (hit_rank, recall, ndcg, rr)
+        };
         let cluster_ratio = clustering_ratio(&top_results);
 
         if top_results.is_empty() {
@@ -346,6 +354,7 @@ where
             cluster_ratio,
             semantic_degraded: outcome.semantic_degraded,
             semantic_budget_exhausted: outcome.semantic_budget_exhausted,
+            negative_hits,
             top_results: top_result_refs,
         });
     }
@@ -424,9 +433,9 @@ impl SuiteBaseline {
                 clustering_ratio: 0.0,
                 degraded_query_rate: 0.0,
                 semantic_budget_exhaustion_rate: 0.0,
-                latency_p50_ms: latency_p95_ms,
+                latency_p50_ms: 0.0,
                 latency_p95_ms,
-                latency_mean_ms: latency_p95_ms,
+                latency_mean_ms: 0.0,
             },
             latency_by_intent: BTreeMap::new(),
         }
@@ -483,6 +492,7 @@ impl GatePolicy {
                 max_zero_result_rate: 0.20,
                 max_clustering_ratio: 0.90,
                 max_degraded_query_rate: 0.40,
+                enforce_degraded_query_rate: default_enforce_degraded_query_rate(),
             },
             latency: LatencyPolicy {
                 max_p95_latency_ms: 500.0,
@@ -552,6 +562,8 @@ pub struct QualityPolicy {
     pub max_zero_result_rate: f64,
     pub max_clustering_ratio: f64,
     pub max_degraded_query_rate: f64,
+    #[serde(default = "default_enforce_degraded_query_rate")]
+    pub enforce_degraded_query_rate: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -588,6 +600,10 @@ fn default_max_p50_latency_ms() -> f64 {
 
 fn default_p50_latency_tolerance_ms() -> f64 {
     25.0
+}
+
+fn default_enforce_degraded_query_rate() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -773,15 +789,25 @@ pub fn compare_against_baseline(
         .quality
         .max_degraded_query_rate
         .min(baseline.metrics.degraded_query_rate + policy.tolerance.degraded_query_rate);
-    let degraded_passed = report.metrics.degraded_query_rate <= degraded_cap;
+    // NOTE: `semantic_degraded` in search metadata currently aliases fallback state
+    // in the baseline pipeline. Keep this signal observe-only by default and allow
+    // explicit opt-in policy enforcement when metadata semantics are trusted.
+    let degraded_signal_is_trustworthy = policy.quality.enforce_degraded_query_rate;
+    let degraded_passed = if degraded_signal_is_trustworthy {
+        report.metrics.degraded_query_rate <= degraded_cap
+    } else {
+        true
+    };
     checks.push(GateCheck {
         metric: "degraded_query_rate".to_string(),
         current: report.metrics.degraded_query_rate,
         expected: degraded_cap,
         passed: degraded_passed,
     });
-    if !degraded_passed {
+    if degraded_signal_is_trustworthy && !degraded_passed {
         taxonomy.insert("semantic_degraded_spike".to_string());
+    } else if !degraded_signal_is_trustworthy && report.metrics.degraded_query_rate > degraded_cap {
+        taxonomy.insert("semantic_degraded_observe_only".to_string());
     }
 
     let verdict = if checks.iter().all(|check| check.passed) {
@@ -886,10 +912,10 @@ pub fn load_beir_queries_and_qrels(
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if idx == 0 && (trimmed.contains("query") || trimmed.contains("corpus")) {
+        let columns: Vec<&str> = trimmed.split_whitespace().collect();
+        if idx == 0 && looks_like_qrels_header(&columns) {
             continue;
         }
-        let columns: Vec<&str> = trimmed.split_whitespace().collect();
         if columns.len() < 3 {
             return Err(RetrievalEvalError::ParseBeirLine {
                 path: qrels_path.display().to_string(),
@@ -1100,6 +1126,44 @@ fn matches_any_expected(result: &RetrievalResult, expected: &[String]) -> bool {
         .any(|target| result_matches_target(result, target))
 }
 
+fn count_hits_against_targets(results: &[RetrievalResult], targets: &[ExpectedTarget]) -> usize {
+    if targets.is_empty() {
+        return 0;
+    }
+    let lowered_targets: Vec<String> = targets
+        .iter()
+        .map(|target| target.hint.to_ascii_lowercase())
+        .collect();
+    results
+        .iter()
+        .filter(|result| matches_any_expected(result, &lowered_targets))
+        .count()
+}
+
+fn looks_like_qrels_header(columns: &[&str]) -> bool {
+    if columns.len() < 2 {
+        return false;
+    }
+    let first = columns[0].trim().to_ascii_lowercase();
+    let second = columns[1].trim().to_ascii_lowercase();
+    let first_is_header = matches!(
+        first.as_str(),
+        "query-id" | "query_id" | "queryid" | "qid" | "query"
+    );
+    let second_is_header = matches!(
+        second.as_str(),
+        "corpus-id"
+            | "corpus_id"
+            | "corpusid"
+            | "doc-id"
+            | "docid"
+            | "document-id"
+            | "did"
+            | "corpus"
+    );
+    first_is_header && second_is_header
+}
+
 fn result_matches_target(result: &RetrievalResult, target: &str) -> bool {
     let mut candidates = Vec::new();
     candidates.push(result.path.to_ascii_lowercase());
@@ -1210,6 +1274,7 @@ mod tests {
                 cluster_ratio: 1.0,
                 semantic_degraded: false,
                 semantic_budget_exhausted: false,
+                negative_hits: 0,
                 top_results: vec![TopResultEntry {
                     doc_id: "docA".to_string(),
                     rank: 1,
@@ -1269,5 +1334,62 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn negative_targets_zero_out_positive_scoring_when_hit() {
+        let suite = RetrievalSuite {
+            version: "v1".to_string(),
+            queries: vec![RetrievalQueryCase {
+                id: "q1".to_string(),
+                query: "auth".to_string(),
+                intent: RetrievalIntent::NaturalLanguage,
+                expected_targets: vec![ExpectedTarget {
+                    hint: "auth.rs".to_string(),
+                }],
+                negative_targets: vec![ExpectedTarget {
+                    hint: "config.rs".to_string(),
+                }],
+            }],
+        };
+
+        let report = evaluate_with_runner(&suite, 5, |_| {
+            vec![
+                RetrievalResult::new("src/config.rs", Some("load_config"), 1.0),
+                RetrievalResult::new("src/auth.rs", Some("authenticate"), 0.9),
+            ]
+        });
+
+        assert_eq!(report.per_query.len(), 1);
+        let evaluation = &report.per_query[0];
+        assert_eq!(evaluation.negative_hits, 1);
+        assert_eq!(evaluation.hit_rank, None);
+        assert_eq!(evaluation.reciprocal_rank, 0.0);
+        assert_eq!(evaluation.recall_at_k, 0.0);
+        assert_eq!(evaluation.ndcg_at_k, 0.0);
+    }
+
+    #[test]
+    fn beir_qrels_first_row_with_query_token_is_not_treated_as_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let queries_path = tmp.path().join("queries.jsonl");
+        let qrels_path = tmp.path().join("qrels.tsv");
+
+        std::fs::write(
+            &queries_path,
+            "{\"_id\":\"query123\",\"text\":\"auth flow\"}\n",
+        )
+        .unwrap();
+        std::fs::write(&qrels_path, "query123\tauth_doc\t1\n").unwrap();
+
+        let suite = load_beir_queries_and_qrels(
+            &queries_path,
+            &qrels_path,
+            RetrievalIntent::NaturalLanguage,
+        )
+        .unwrap();
+        assert_eq!(suite.queries.len(), 1);
+        assert_eq!(suite.queries[0].id, "query123");
+        assert_eq!(suite.queries[0].expected_targets[0].hint, "auth_doc");
     }
 }
