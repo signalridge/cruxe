@@ -52,6 +52,10 @@ cruxe serve-mcp --workspace <absolute-project-path>
    }
    ```
 
+   Notes:
+   - `mode: "aider_minimal"` is accepted as an alias of `edit_minimal`.
+   - If `missing_context_hints` reports an underfilled budget, broaden the query or raise `max_candidates`.
+
 4. Use `find_references`/`get_call_graph` before editing related code.
 5. Re-run `sync_repo` after local commits.
 

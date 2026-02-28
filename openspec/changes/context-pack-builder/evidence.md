@@ -22,13 +22,15 @@ Result:
 cargo test -p cruxe-query context_pack::tests -- --nocapture
 cargo test -p cruxe-mcp build_context_pack -- --nocapture
 cargo test -p cruxe-mcp t363_context_pack_iterative_fixture_drives_followup_query_loop -- --nocapture
+cargo test -p cruxe-mcp t366_build_context_pack_zero_results_emits_underfilled_guidance -- --nocapture
 ```
 
 Result:
 - `cruxe-query` context-pack unit tests: PASS (8/8)
-- MCP integration tests for `build_context_pack`: PASS (5/5), including:
+- MCP integration tests for `build_context_pack`: PASS (6/6), including:
   - `t364_build_context_pack_accepts_partial_section_caps_patch`
   - `t365_build_context_pack_enforces_max_candidates_upper_bound`
+  - `t366_build_context_pack_zero_results_emits_underfilled_guidance`
 - Iterative fixture workflow test (`pack -> follow-up pack`): PASS
 
 ## Sample Pack Contract (excerpt)
@@ -87,6 +89,8 @@ Representative response shape from the implemented MCP contract:
   - Asserts `token_budget_used <= budget_tokens`.
 - Candidate bound guard: `t365_build_context_pack_enforces_max_candidates_upper_bound`
   - Asserts selected and raw candidate counts do not exceed `max_candidates`.
+- Underfilled guidance guard: `t366_build_context_pack_zero_results_emits_underfilled_guidance`
+  - Asserts zero-result runs include explicit expansion hints and follow-up queries.
 - Iterative retrieval guard: `t363_context_pack_iterative_fixture_drives_followup_query_loop`
   - Uses fixture `testdata/fixtures/context-pack/iterative-workflow.json` and validates low-budget pack produces actionable follow-up query.
 
@@ -96,6 +100,8 @@ Representative response shape from the implemented MCP contract:
 - MCP handler now accepts partial `section_caps` objects and merges with mode defaults.
 - Dedup key includes symbol + span to avoid collapsing distinct spans of the same symbol.
 - Candidate pre-dedup truncation now enforces `max_candidates` as a hard upper bound.
+- Section classification moved into `context_pack/sectioning.rs` to keep assembly logic focused.
+- Metadata now exposes `budget_utilization_ratio`, token estimation method, and `aider_minimal` alias mapping.
 
 ## Compatibility Evidence
 
