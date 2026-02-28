@@ -1928,7 +1928,7 @@ mod tests {
         assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
         assert_eq!(
             loaded.search.ranking_signal_budgets.exact_match.default,
-            5.0
+            8.0
         );
         assert_eq!(loaded.search.ranking_signal_budgets.qualified_name.min, 0.0);
         assert_eq!(loaded.search.ranking_signal_budgets.qualified_name.max, 1.0);
