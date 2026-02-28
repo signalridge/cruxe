@@ -22,7 +22,8 @@ use crate::overlay_merge;
 use crate::planner::build_plan_with_ref;
 use crate::policy::PolicyRuntime;
 use crate::ranking::{
-    kind_weight, query_intent_boost, rerank, rerank_with_reasons, test_file_penalty,
+    kind_weight, query_intent_boost, rerank_with_budget, rerank_with_reasons_with_budget,
+    test_file_penalty,
 };
 use crate::rerank::{RerankDocument, rerank_documents};
 use crate::scoring::normalize_relevance_score;
@@ -287,10 +288,18 @@ pub fn search_code_with_options(
 
     // Apply local lexical reranking boosts on top of RRF scores.
     let ranking_reasons = if debug_ranking {
-        let reasons = rerank_with_reasons(&mut all_results, query);
+        let reasons = rerank_with_reasons_with_budget(
+            &mut all_results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        );
         Some(reasons)
     } else {
-        rerank(&mut all_results, query);
+        rerank_with_budget(
+            &mut all_results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        );
         None
     };
     // Short-circuit semantic only after lexical rerank has shaped score spread.
@@ -674,9 +683,17 @@ pub fn search_code_vcs_merged_with_options(
 
     let mut results = overlay_merge::merged_search(base.results, overlay.results, ctx.tombstones);
     let ranking_reasons = if debug_ranking {
-        Some(rerank_with_reasons(&mut results, query))
+        Some(rerank_with_reasons_with_budget(
+            &mut results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        ))
     } else {
-        rerank(&mut results, query);
+        rerank_with_budget(
+            &mut results,
+            query,
+            &options.search_config.ranking_signal_budgets,
+        );
         None
     };
     results.truncate(limit);

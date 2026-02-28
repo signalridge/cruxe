@@ -2,6 +2,7 @@ use crate::constants;
 use crate::error::ConfigError;
 use crate::languages;
 use crate::types::{FreshnessPolicy, PolicyMode, QueryIntent, RankingExplainLevel, SemanticMode};
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -50,6 +51,8 @@ pub struct SearchConfig {
     #[serde(default = "default_max_response_bytes")]
     pub max_response_bytes: usize,
     #[serde(default)]
+    pub ranking_signal_budgets: RankingSignalBudgetConfig,
+    #[serde(default)]
     pub intent: SearchIntentConfig,
     #[serde(default)]
     pub semantic: SemanticConfig,
@@ -81,6 +84,43 @@ pub struct SearchIntentConfig {
     pub symbol_kind_keywords: Vec<String>,
     #[serde(default = "default_intent_enable_wrapped_quoted_error_literal")]
     pub enable_wrapped_quoted_error_literal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankingSignalBudgetRange {
+    #[serde(
+        default = "default_budget_numeric_sentinel",
+        deserialize_with = "deserialize_budget_number"
+    )]
+    pub min: f64,
+    #[serde(
+        default = "default_budget_numeric_sentinel",
+        deserialize_with = "deserialize_budget_number"
+    )]
+    pub max: f64,
+    #[serde(
+        default = "default_budget_numeric_sentinel",
+        deserialize_with = "deserialize_budget_number"
+    )]
+    pub default: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankingSignalBudgetConfig {
+    #[serde(default = "default_budget_exact_match")]
+    pub exact_match: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_qualified_name")]
+    pub qualified_name: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_path_affinity")]
+    pub path_affinity: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_definition_boost")]
+    pub definition_boost: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_kind_match")]
+    pub kind_match: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_test_file_penalty")]
+    pub test_file_penalty: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_secondary_cap_when_exact")]
+    pub secondary_cap_when_exact: RankingSignalBudgetRange,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +327,70 @@ fn default_ranking_explain_level() -> String {
 fn default_max_response_bytes() -> usize {
     64 * 1024
 }
+fn default_budget_numeric_sentinel() -> f64 {
+    f64::NAN
+}
+fn deserialize_budget_number<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let parsed = match value {
+        serde_json::Value::Number(number) => number.as_f64().unwrap_or(f64::NAN),
+        serde_json::Value::String(raw) => raw.parse::<f64>().unwrap_or(f64::NAN),
+        _ => f64::NAN,
+    };
+    Ok(parsed)
+}
+fn default_budget_exact_match() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 8.0,
+        default: 5.0,
+    }
+}
+fn default_budget_qualified_name() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 4.0,
+        default: 2.0,
+    }
+}
+fn default_budget_path_affinity() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+    }
+}
+fn default_budget_definition_boost() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+    }
+}
+fn default_budget_kind_match() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 3.0,
+        default: 2.0,
+    }
+}
+fn default_budget_test_file_penalty() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: -2.0,
+        max: 0.0,
+        default: -0.5,
+    }
+}
+fn default_budget_secondary_cap_when_exact() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.5,
+        max: 6.0,
+        default: 2.0,
+    }
+}
 fn default_intent_rule_order() -> Vec<String> {
     vec![
         "error_pattern".into(),
@@ -472,9 +576,24 @@ impl Default for SearchConfig {
             freshness_policy: default_freshness_policy(),
             ranking_explain_level: default_ranking_explain_level(),
             max_response_bytes: default_max_response_bytes(),
+            ranking_signal_budgets: RankingSignalBudgetConfig::default(),
             intent: SearchIntentConfig::default(),
             semantic: SemanticConfig::default(),
             policy: RetrievalPolicyConfig::default(),
+        }
+    }
+}
+
+impl Default for RankingSignalBudgetConfig {
+    fn default() -> Self {
+        Self {
+            exact_match: default_budget_exact_match(),
+            qualified_name: default_budget_qualified_name(),
+            path_affinity: default_budget_path_affinity(),
+            definition_boost: default_budget_definition_boost(),
+            kind_match: default_budget_kind_match(),
+            test_file_penalty: default_budget_test_file_penalty(),
+            secondary_cap_when_exact: default_budget_secondary_cap_when_exact(),
         }
     }
 }
@@ -781,6 +900,7 @@ impl Config {
             normalize_freshness_policy(&config.search.freshness_policy);
         config.search.ranking_explain_level =
             normalize_ranking_explain_level(&config.search.ranking_explain_level);
+        config.search.ranking_signal_budgets = config.search.ranking_signal_budgets.normalized();
         config.search.intent = config.search.intent.normalized();
         config.search.semantic.mode = normalize_semantic_mode(&config.search.semantic.mode);
         config.search.semantic.ratio = clamp_unit_f64_with_warning(
@@ -1041,6 +1161,49 @@ fn merge_toml_values(base: &mut toml::Value, overlay: &toml::Value) {
     }
 }
 
+fn parse_ranking_budget_env_default(raw: &str, field: &str, env_key: &str) -> Option<f64> {
+    match raw.parse::<f64>() {
+        Ok(parsed) if parsed.is_finite() => Some(parsed),
+        Ok(parsed) => {
+            tracing::warn!(
+                field,
+                env_key,
+                raw_value = raw,
+                parsed,
+                code = "invalid_env_override_non_finite",
+                "invalid ranking budget env override; expected finite f64, ignoring"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                field,
+                env_key,
+                raw_value = raw,
+                error = %error,
+                code = "invalid_env_override_parse",
+                "invalid ranking budget env override; expected finite f64, ignoring"
+            );
+            None
+        }
+    }
+}
+
+fn apply_env_ranking_budget_default(
+    config: &mut Config,
+    env_key: &str,
+    field: &str,
+    set_value: impl FnOnce(&mut RankingSignalBudgetConfig, f64),
+) {
+    let Ok(raw) = std::env::var(env_key) else {
+        return;
+    };
+    let Some(parsed) = parse_ranking_budget_env_default(&raw, field, env_key) else {
+        return;
+    };
+    set_value(&mut config.search.ranking_signal_budgets, parsed);
+}
+
 /// Apply environment variable overrides to config fields.
 /// Convention: `CRUXE_<SECTION>_<KEY>` in UPPER_SNAKE_CASE.
 fn apply_env_overrides(config: &mut Config) {
@@ -1086,6 +1249,48 @@ fn apply_env_overrides(config: &mut Config) {
     {
         config.search.max_response_bytes = n;
     }
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT",
+        "search.ranking_signal_budgets.exact_match.default",
+        |budgets, parsed| budgets.exact_match.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_QUALIFIED_NAME_DEFAULT",
+        "search.ranking_signal_budgets.qualified_name.default",
+        |budgets, parsed| budgets.qualified_name.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_PATH_AFFINITY_DEFAULT",
+        "search.ranking_signal_budgets.path_affinity.default",
+        |budgets, parsed| budgets.path_affinity.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_DEFINITION_BOOST_DEFAULT",
+        "search.ranking_signal_budgets.definition_boost.default",
+        |budgets, parsed| budgets.definition_boost.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_KIND_MATCH_DEFAULT",
+        "search.ranking_signal_budgets.kind_match.default",
+        |budgets, parsed| budgets.kind_match.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_TEST_FILE_PENALTY_DEFAULT",
+        "search.ranking_signal_budgets.test_file_penalty.default",
+        |budgets, parsed| budgets.test_file_penalty.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_SECONDARY_CAP_WHEN_EXACT_DEFAULT",
+        "search.ranking_signal_budgets.secondary_cap_when_exact.default",
+        |budgets, parsed| budgets.secondary_cap_when_exact.default = parsed,
+    );
     if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_MODE") {
         config.search.policy.mode = v;
     }
@@ -1620,6 +1825,128 @@ fn normalize_intent_symbol_kind_keywords(raw: &[String]) -> Vec<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RankingBudgetNormalizationCode {
+    NonFiniteRange,
+    InvertedRange,
+    DefaultOutOfRange,
+}
+
+impl RankingBudgetNormalizationCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NonFiniteRange => "non_finite_range",
+            Self::InvertedRange => "inverted_range",
+            Self::DefaultOutOfRange => "default_out_of_range",
+        }
+    }
+}
+
+const FLOAT_TOLERANCE: f64 = 1e-9;
+
+impl RankingSignalBudgetConfig {
+    /// Return a normalized copy with canonical safe ranges and deterministic diagnostics.
+    pub fn normalized(&self) -> Self {
+        Self {
+            exact_match: normalize_budget_range(
+                self.exact_match.clone(),
+                default_budget_exact_match(),
+                "search.ranking_signal_budgets.exact_match",
+            ),
+            qualified_name: normalize_budget_range(
+                self.qualified_name.clone(),
+                default_budget_qualified_name(),
+                "search.ranking_signal_budgets.qualified_name",
+            ),
+            path_affinity: normalize_budget_range(
+                self.path_affinity.clone(),
+                default_budget_path_affinity(),
+                "search.ranking_signal_budgets.path_affinity",
+            ),
+            definition_boost: normalize_budget_range(
+                self.definition_boost.clone(),
+                default_budget_definition_boost(),
+                "search.ranking_signal_budgets.definition_boost",
+            ),
+            kind_match: normalize_budget_range(
+                self.kind_match.clone(),
+                default_budget_kind_match(),
+                "search.ranking_signal_budgets.kind_match",
+            ),
+            test_file_penalty: normalize_budget_range(
+                self.test_file_penalty.clone(),
+                default_budget_test_file_penalty(),
+                "search.ranking_signal_budgets.test_file_penalty",
+            ),
+            secondary_cap_when_exact: normalize_budget_range(
+                self.secondary_cap_when_exact.clone(),
+                default_budget_secondary_cap_when_exact(),
+                "search.ranking_signal_budgets.secondary_cap_when_exact",
+            ),
+        }
+    }
+}
+
+fn normalize_budget_range(
+    value: RankingSignalBudgetRange,
+    fallback: RankingSignalBudgetRange,
+    field: &str,
+) -> RankingSignalBudgetRange {
+    if !value.min.is_finite() || !value.max.is_finite() || !value.default.is_finite() {
+        let mut normalized = fallback.clone();
+        if value.default.is_finite() {
+            normalized.default = value.default.clamp(fallback.min, fallback.max);
+        }
+        tracing::warn!(
+            field,
+            code = RankingBudgetNormalizationCode::NonFiniteRange.as_str(),
+            min = value.min,
+            max = value.max,
+            default = value.default,
+            normalized_min = normalized.min,
+            normalized_max = normalized.max,
+            normalized_default = normalized.default,
+            "invalid ranking budget range; normalizing to canonical safe range"
+        );
+        return normalized;
+    }
+    if value.min > value.max {
+        let mut normalized = fallback.clone();
+        if value.default.is_finite() {
+            normalized.default = value.default.clamp(fallback.min, fallback.max);
+        }
+        tracing::warn!(
+            field,
+            code = RankingBudgetNormalizationCode::InvertedRange.as_str(),
+            min = value.min,
+            max = value.max,
+            default = value.default,
+            fallback_min = fallback.min,
+            fallback_max = fallback.max,
+            fallback_default = fallback.default,
+            normalized_default = normalized.default,
+            "inverted ranking budget range; falling back to canonical defaults"
+        );
+        return normalized;
+    }
+
+    let mut normalized = value;
+    let clamped_default = normalized.default.clamp(normalized.min, normalized.max);
+    if (clamped_default - normalized.default).abs() > FLOAT_TOLERANCE {
+        tracing::warn!(
+            field,
+            code = RankingBudgetNormalizationCode::DefaultOutOfRange.as_str(),
+            min = normalized.min,
+            max = normalized.max,
+            default = normalized.default,
+            clamped_default,
+            "ranking budget default is outside range; clamped to range"
+        );
+        normalized.default = clamped_default;
+    }
+    normalized
+}
+
 fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
     if !value.is_finite() {
         tracing::warn!(
@@ -1631,7 +1958,7 @@ fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
         return fallback;
     }
     let clamped = value.clamp(0.0, 1.0);
-    if (clamped - value).abs() > f64::EPSILON {
+    if (clamped - value).abs() > FLOAT_TOLERANCE {
         tracing::warn!(
             field,
             value,
@@ -1817,6 +2144,42 @@ mod tests {
     }
 
     #[test]
+    fn ranking_signal_budget_normalization_preserves_safe_ranges() {
+        let raw = RankingSignalBudgetConfig {
+            exact_match: RankingSignalBudgetRange {
+                min: 5.0,
+                max: 1.0,
+                default: 9.0,
+            },
+            qualified_name: RankingSignalBudgetRange {
+                min: 0.0,
+                max: 1.0,
+                default: 2.5,
+            },
+            path_affinity: default_budget_path_affinity(),
+            definition_boost: default_budget_definition_boost(),
+            kind_match: default_budget_kind_match(),
+            test_file_penalty: default_budget_test_file_penalty(),
+            secondary_cap_when_exact: default_budget_secondary_cap_when_exact(),
+        };
+        let normalized = raw.normalized();
+        assert_eq!(normalized.exact_match.min, 0.0);
+        assert_eq!(normalized.exact_match.max, 8.0);
+        assert_eq!(normalized.exact_match.default, 8.0);
+        assert_eq!(normalized.qualified_name.min, 0.0);
+        assert_eq!(normalized.qualified_name.max, 1.0);
+        assert_eq!(normalized.qualified_name.default, 1.0);
+        assert_eq!(
+            RankingBudgetNormalizationCode::InvertedRange.as_str(),
+            "inverted_range"
+        );
+        assert_eq!(
+            RankingBudgetNormalizationCode::DefaultOutOfRange.as_str(),
+            "default_out_of_range"
+        );
+    }
+
+    #[test]
     fn parse_env_bool_supports_common_truthy_falsey_values() {
         assert_eq!(parse_env_bool("true"), Some(true));
         assert_eq!(parse_env_bool("TRUE"), Some(true));
@@ -1831,6 +2194,34 @@ mod tests {
         assert_eq!(parse_env_bool("0"), Some(false));
 
         assert_eq!(parse_env_bool("maybe"), None);
+    }
+
+    #[test]
+    fn parse_ranking_budget_env_default_accepts_finite_numbers_only() {
+        assert_eq!(
+            parse_ranking_budget_env_default(
+                "1.25",
+                "search.ranking_signal_budgets.exact_match.default",
+                "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT"
+            ),
+            Some(1.25)
+        );
+        assert_eq!(
+            parse_ranking_budget_env_default(
+                "NaN",
+                "search.ranking_signal_budgets.exact_match.default",
+                "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_ranking_budget_env_default(
+                "oops",
+                "search.ranking_signal_budgets.exact_match.default",
+                "CRUXE_SEARCH_RANKING_BUDGET_EXACT_MATCH_DEFAULT"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1970,6 +2361,16 @@ mod tests {
             ranking_explain_level = "verbose"
             max_response_bytes = 0
 
+            [search.ranking_signal_budgets.exact_match]
+            min = 5.0
+            max = 1.0
+            default = 9.0
+
+            [search.ranking_signal_budgets.qualified_name]
+            min = 0.0
+            max = 1.0
+            default = 10.0
+
             [search.semantic]
             mode = "future_mode"
             ratio = 9.0
@@ -2006,6 +2407,21 @@ mod tests {
         assert_eq!(loaded.search.freshness_policy, "balanced");
         assert_eq!(loaded.search.ranking_explain_level, "full");
         assert_eq!(loaded.search.max_response_bytes, 64 * 1024);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.exact_match.default,
+            8.0
+        );
+        assert_eq!(loaded.search.ranking_signal_budgets.qualified_name.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.qualified_name.max, 1.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.qualified_name.default,
+            1.0
+        );
+        assert_eq!(loaded.search.ranking_signal_budgets.kind_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.kind_match.max, 3.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.kind_match.default, 2.0);
         assert_eq!(loaded.search.semantic.mode, "off");
         assert_eq!(loaded.search.semantic.ratio, 1.0);
         assert_eq!(loaded.search.semantic.lexical_short_circuit_threshold, 0.0);
@@ -2044,6 +2460,52 @@ mod tests {
             RankingExplainLevel::Full
         );
         assert_eq!(loaded.search.semantic_mode_typed(), SemanticMode::Off);
+    }
+
+    #[test]
+    fn load_with_file_non_numeric_budget_values_fall_back_to_canonical_defaults() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search.ranking_signal_budgets.exact_match]
+            min = "oops"
+            max = 8.0
+            default = 5.0
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.exact_match.default,
+            5.0
+        );
+    }
+
+    #[test]
+    fn load_with_file_partial_budget_range_falls_back_to_canonical_defaults() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search.ranking_signal_budgets.exact_match]
+            default = 3.0
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.min, 0.0);
+        assert_eq!(loaded.search.ranking_signal_budgets.exact_match.max, 8.0);
+        assert_eq!(
+            loaded.search.ranking_signal_budgets.exact_match.default,
+            3.0
+        );
     }
 
     #[test]
@@ -2090,6 +2552,15 @@ mod tests {
         assert_eq!(semantic.semantic_limit_multiplier, 2);
         assert_eq!(semantic.lexical_fanout_multiplier, 4);
         assert_eq!(semantic.semantic_fanout_multiplier, 3);
+
+        let budgets = RankingSignalBudgetConfig::default();
+        assert_eq!(budgets.exact_match.default, 5.0);
+        assert_eq!(budgets.qualified_name.default, 2.0);
+        assert_eq!(budgets.path_affinity.default, 1.0);
+        assert_eq!(budgets.definition_boost.default, 1.0);
+        assert_eq!(budgets.kind_match.default, 2.0);
+        assert_eq!(budgets.test_file_penalty.default, -0.5);
+        assert_eq!(budgets.secondary_cap_when_exact.default, 2.0);
     }
 
     #[test]
