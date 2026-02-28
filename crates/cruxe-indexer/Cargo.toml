@@ -12,7 +12,9 @@ tree-sitter-rust = "0.23"
 tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
+tree-sitter-tags = "0.24"
 ignore = { workspace = true }
+globset = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

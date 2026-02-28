@@ -1,4 +1,6 @@
+use crate::language_grammars;
 use cruxe_core::error::ParseError;
+use cruxe_core::languages;
 
 /// Parse a source file with tree-sitter and return the syntax tree.
 pub fn parse_file(source: &str, language: &str) -> Result<tree_sitter::Tree, ParseError> {
@@ -20,23 +22,17 @@ pub fn parse_file(source: &str, language: &str) -> Result<tree_sitter::Tree, Par
 
 /// Get the tree-sitter language grammar for a given language.
 pub fn get_language(language: &str) -> Result<tree_sitter::Language, ParseError> {
-    match language {
-        "rust" => Ok(tree_sitter_rust::LANGUAGE.into()),
-        "typescript" => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        "python" => Ok(tree_sitter_python::LANGUAGE.into()),
-        "go" => Ok(tree_sitter_go::LANGUAGE.into()),
-        _ => Err(ParseError::GrammarNotAvailable {
-            language: language.into(),
-        }),
-    }
+    language_grammars::parser_language(language).ok_or_else(|| ParseError::GrammarNotAvailable {
+        language: language.into(),
+    })
 }
 
 /// Check if a language grammar is available.
 pub fn is_language_supported(language: &str) -> bool {
-    matches!(language, "rust" | "typescript" | "python" | "go")
+    languages::is_indexable_source_language(language)
 }
 
 /// Get list of supported languages.
 pub fn supported_languages() -> Vec<&'static str> {
-    vec!["rust", "typescript", "python", "go"]
+    languages::supported_indexable_languages().to_vec()
 }

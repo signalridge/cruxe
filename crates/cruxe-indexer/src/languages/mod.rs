@@ -1,7 +1,18 @@
+// Per-language modules (call sites + imports remain here).
 pub mod go;
 pub mod python;
 pub mod rust;
 pub mod typescript;
+
+// tree-sitter-tags pipeline (replaces per-language symbol extraction).
+pub mod enricher;
+pub mod enricher_go;
+pub mod enricher_python;
+pub mod enricher_rust;
+pub mod enricher_typescript;
+pub mod tag_extract;
+pub mod tag_registry;
+pub(crate) mod text;
 
 use cruxe_core::types::SymbolKind;
 
@@ -28,19 +39,46 @@ pub struct ExtractedCallSite {
     pub confidence: String,
 }
 
-/// Extract symbols from a parsed tree for a given language.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SymbolExtractionDiagnostics {
+    pub had_tag_parse_error: bool,
+}
+
+/// Extract symbols using tree-sitter-tags + language enricher.
+///
+/// The pre-parsed `tree` is used for enrichment (parent walking, visibility
+/// extraction, kind disambiguation) while `tree-sitter-tags` supplies canonical
+/// definition tags.
 pub fn extract_symbols(
     tree: &tree_sitter::Tree,
     source: &str,
     language: &str,
 ) -> Vec<ExtractedSymbol> {
-    match language {
-        "rust" => rust::extract(tree, source),
-        "typescript" => typescript::extract(tree, source),
-        "python" => python::extract(tree, source),
-        "go" => go::extract(tree, source),
-        _ => Vec::new(),
-    }
+    extract_symbols_with_diagnostics(tree, source, language).0
+}
+
+pub fn extract_symbols_with_diagnostics(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    language: &str,
+) -> (Vec<ExtractedSymbol>, SymbolExtractionDiagnostics) {
+    use enricher::LanguageEnricher;
+
+    let enricher: &dyn LanguageEnricher = match language {
+        "rust" => &enricher_rust::RustEnricher,
+        "typescript" => &enricher_typescript::TypeScriptEnricher,
+        "python" => &enricher_python::PythonEnricher,
+        "go" => &enricher_go::GoEnricher,
+        _ => return (Vec::new(), SymbolExtractionDiagnostics::default()),
+    };
+    let (symbols, diagnostics) =
+        tag_extract::extract_symbols_via_tags_with_diagnostics(tree, source, language, enricher);
+    (
+        symbols,
+        SymbolExtractionDiagnostics {
+            had_tag_parse_error: diagnostics.had_parse_error,
+        },
+    )
 }
 
 /// Extract call-sites from a parsed tree for a given language.
@@ -55,5 +93,52 @@ pub fn extract_call_sites(
         "python" => python::extract_call_sites(tree, source),
         "go" => go::extract_call_sites(tree, source),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_file;
+
+    #[test]
+    fn go_extract_symbols_includes_const_and_var_definitions() {
+        let source = r#"
+package demo
+
+const MaxRetries = 3
+var retryCount = 0
+"#;
+        let tree = parse_file(source, "go").expect("parse go");
+        let symbols = extract_symbols(&tree, source, "go");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MaxRetries" && s.kind == SymbolKind::Constant),
+            "expected MaxRetries constant symbol"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "retryCount" && s.kind == SymbolKind::Variable),
+            "expected retryCount variable symbol"
+        );
+    }
+
+    #[test]
+    fn typescript_extract_symbols_includes_var_declarations() {
+        let source = r#"
+var legacyCount = 1;
+"#;
+        let tree = parse_file(source, "typescript").expect("parse typescript");
+        let symbols = extract_symbols(&tree, source, "typescript");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "legacyCount" && s.kind == SymbolKind::Variable),
+            "expected legacyCount variable symbol"
+        );
     }
 }

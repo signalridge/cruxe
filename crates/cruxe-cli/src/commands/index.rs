@@ -6,8 +6,7 @@ use cruxe_core::time::now_iso8601;
 use cruxe_core::types::{FileRecord, JobStatus, generate_project_id};
 use cruxe_core::vcs;
 use cruxe_indexer::{
-    call_extract, embed_writer, import_extract, languages, parser, scanner, snippet_extract,
-    symbol_extract,
+    call_extract, embed_writer, import_extract, prepare, scanner,
     sync_incremental::{self, IncrementalSyncRequest},
     writer,
 };
@@ -56,13 +55,7 @@ pub fn run(
     }
 
     // Determine ref: explicit > current HEAD branch > project default
-    let effective_ref = r#ref.map(String::from).unwrap_or_else(|| {
-        if vcs::is_git_repo(&repo_root) {
-            vcs::detect_head_branch(&repo_root).unwrap_or_else(|_| proj.default_ref.clone())
-        } else {
-            proj.default_ref.clone()
-        }
-    });
+    let effective_ref = vcs::resolve_effective_ref(&repo_root, r#ref, &proj.default_ref);
 
     // VCS mode non-default refs use spec-005 overlay incremental sync path.
     if proj.vcs_mode && effective_ref != proj.default_ref {
@@ -543,76 +536,39 @@ fn prepare_file_for_indexing(
         return PreparedIndexOutcome::Unchanged;
     }
 
-    let (parsed_tree, extracted, raw_imports, parse_error) =
-        if parser::is_language_supported(&file.language) {
-            match parser::parse_file(&content, &file.language) {
-                Ok(tree) => {
-                    let extracted = languages::extract_symbols(&tree, &content, &file.language);
-                    let raw_imports = import_extract::extract_imports(
-                        &tree,
-                        &content,
-                        &file.language,
-                        &file.relative_path,
-                    );
-                    (Some(tree), extracted, raw_imports, None)
-                }
-                Err(err) => (None, Vec::new(), Vec::new(), Some(err.to_string())),
-            }
-        } else {
-            (None, Vec::new(), Vec::new(), None)
-        };
-
-    let symbols_for_file = symbol_extract::build_symbol_records(
-        &extracted,
+    let artifacts = prepare::build_source_artifacts(
+        &content,
+        &file.language,
+        &file.relative_path,
+        project_id,
+        effective_ref,
+        None,
+        true,
+    );
+    let filename = file
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut file_record = prepare::build_file_record(
         project_id,
         effective_ref,
         &file.relative_path,
-        None,
+        &filename,
+        &file.language,
+        &content,
     );
-    let snippets = snippet_extract::build_snippet_records(
-        &extracted,
-        project_id,
-        effective_ref,
-        &file.relative_path,
-        None,
-    );
-    let call_edges = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
-        call_extract::extract_call_edges_for_file(
-            tree,
-            &content,
-            &file.language,
-            &file.relative_path,
-            &symbols_for_file,
-            project_id,
-            effective_ref,
-        )
-    });
-
-    let file_record = FileRecord {
-        repo: project_id.to_string(),
-        r#ref: effective_ref.to_string(),
-        commit: None,
-        path: file.relative_path.clone(),
-        filename: file
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        language: file.language.clone(),
-        content_hash,
-        size_bytes: content.len() as u64,
-        updated_at: now_iso8601(),
-        content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
-    };
+    // Reuse the precomputed hash used for unchanged short-circuit checks.
+    file_record.content_hash = content_hash;
 
     PreparedIndexOutcome::Ready(Box::new(PreparedIndexFile {
-        symbols_for_file,
-        snippets,
-        raw_imports,
-        call_edges,
+        symbols_for_file: artifacts.symbols,
+        snippets: artifacts.snippets,
+        raw_imports: artifacts.raw_imports,
+        call_edges: artifacts.call_edges,
         file_record,
         mtime_ns: file_mtime_ns(&file.path),
-        parse_error,
+        parse_error: artifacts.parse_error,
         had_previous_index,
     }))
 }

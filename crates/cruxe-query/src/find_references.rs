@@ -404,7 +404,7 @@ fn read_source_line_from_git_ref(
     relative_path: &str,
     line_start: u32,
 ) -> Option<String> {
-    if !workspace.join(".git").exists() {
+    if !cruxe_core::vcs::is_git_repo(workspace) {
         return None;
     }
     let object = format!("{ref_name}:{relative_path}");

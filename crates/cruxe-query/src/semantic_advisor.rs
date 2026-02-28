@@ -27,12 +27,7 @@ pub fn recommend_semantic_profile(input: &SemanticAdvisorInput) -> SemanticAdvis
     let code_language_weight: usize = input
         .language_counts
         .iter()
-        .filter(|(language, _)| {
-            matches!(
-                language.as_str(),
-                "rust" | "typescript" | "python" | "go" | "javascript"
-            )
-        })
+        .filter(|(language, _)| cruxe_core::languages::is_semantic_code_language(language))
         .map(|(_, count)| *count)
         .sum();
     let code_mix_ratio = if total_language_files == 0 {
