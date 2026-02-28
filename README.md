@@ -85,6 +85,12 @@ Cruxe is a Rust workspace with 6 crates:
 
 Storage is fully embedded -- Tantivy for full-text search, SQLite (WAL mode) for structured data. No external services required.
 
+## Specification Source of Truth
+
+- Canonical product/design specs live under `specs/`.
+- `openspec/` contains workflow artifacts and experimental change drafts.
+- When behavior changes, update `specs/` first and only mirror into `openspec/` when required by workflow.
+
 ## CLI Commands
 
 ```

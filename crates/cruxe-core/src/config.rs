@@ -1,5 +1,6 @@
 use crate::constants;
 use crate::error::ConfigError;
+use crate::languages;
 use crate::types::{FreshnessPolicy, QueryIntent, RankingExplainLevel, SemanticMode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -173,12 +174,10 @@ fn default_limit() -> usize {
     constants::DEFAULT_LIMIT
 }
 fn default_languages() -> Vec<String> {
-    vec![
-        "rust".into(),
-        "typescript".into(),
-        "python".into(),
-        "go".into(),
-    ]
+    languages::supported_indexable_languages()
+        .iter()
+        .map(|language| (*language).to_string())
+        .collect()
 }
 fn default_data_dir() -> String {
     "~/.cruxe".into()

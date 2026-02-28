@@ -1,9 +1,11 @@
 pub mod call_extract;
 pub mod embed_writer;
 pub mod import_extract;
+pub mod language_grammars;
 pub mod languages;
 pub mod overlay;
 pub mod parser;
+pub mod prepare;
 pub mod scanner;
 pub mod snippet_extract;
 pub mod staging;

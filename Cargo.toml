@@ -29,6 +29,7 @@ anyhow = "1.0"
 tantivy = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ignore = "0.4"
+globset = "0.4"
 tempfile = "3"
 git2 = { version = "0.19", default-features = false }
 rayon = "1.11"

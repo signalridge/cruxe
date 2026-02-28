@@ -467,9 +467,9 @@ pub fn bootstrap_and_index(
     // Register project if not already present
     let repo_root_str = workspace.to_string_lossy().to_string();
     if cruxe_state::project::get_by_root(&conn, &repo_root_str)?.is_none() {
-        let vcs_mode = workspace.join(".git").exists();
+        let vcs_mode = cruxe_core::vcs::is_git_repo(workspace);
         let default_ref = if vcs_mode {
-            cruxe_core::vcs::detect_head_branch(workspace).unwrap_or_else(|_| "main".to_string())
+            cruxe_core::vcs::detect_default_ref(workspace, "main")
         } else {
             constants::REF_LIVE.to_string()
         };
@@ -625,9 +625,10 @@ fn resolve_tool_call_workspace(
                 }
 
                 if !is_status_tool(tool_name) {
-                    let effective_ref =
-                        cruxe_core::vcs::detect_head_branch(&resolved.workspace_path)
-                            .unwrap_or_else(|_| constants::REF_LIVE.to_string());
+                    let effective_ref = cruxe_core::vcs::detect_default_ref(
+                        &resolved.workspace_path,
+                        constants::REF_LIVE,
+                    );
                     let metadata = ProtocolMetadata::syncing(&effective_ref);
                     return DispatchOutcome::Response(tool_calls::tool_text_response(
                         request.id.clone(),

@@ -41,7 +41,7 @@ pub fn run(workspace: &Path, bundle_path: &Path, config_file: Option<&Path>) -> 
 
     let is_vcs_repo = vcs::is_git_repo(&workspace);
     let default_ref = if is_vcs_repo {
-        vcs::detect_head_branch(&workspace).unwrap_or_else(|_| "main".to_string())
+        vcs::detect_default_ref(&workspace, "main")
     } else {
         constants::REF_LIVE.to_string()
     };

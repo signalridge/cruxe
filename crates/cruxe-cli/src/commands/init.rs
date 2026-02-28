@@ -3,6 +3,7 @@ use cruxe_core::config::Config;
 use cruxe_core::constants;
 use cruxe_core::time::now_iso8601;
 use cruxe_core::types::{Project, generate_project_id};
+use cruxe_core::vcs;
 use cruxe_state::{db, project, schema, tantivy_index};
 use std::path::Path;
 use tracing::info;
@@ -37,9 +38,9 @@ pub fn run(repo_root: &Path, config_file: Option<&Path>) -> Result<()> {
     }
 
     // Detect VCS mode
-    let vcs_mode = repo_root.join(".git").exists();
+    let vcs_mode = vcs::is_git_repo(&repo_root);
     let default_ref = if vcs_mode {
-        detect_default_branch(&repo_root).unwrap_or_else(|| "main".to_string())
+        vcs::detect_default_ref(&repo_root, "main")
     } else {
         constants::REF_LIVE.to_string()
     };
@@ -74,13 +75,4 @@ pub fn run(repo_root: &Path, config_file: Option<&Path>) -> Result<()> {
 
     info!(project_id, repo_root = %repo_root_str, vcs_mode, "Project initialized");
     Ok(())
-}
-
-fn detect_default_branch(repo_root: &Path) -> Option<String> {
-    let head_path = repo_root.join(".git").join("HEAD");
-    let content = std::fs::read_to_string(head_path).ok()?;
-    let trimmed = content.trim();
-    trimmed
-        .strip_prefix("ref: refs/heads/")
-        .map(|branch| branch.to_string())
 }

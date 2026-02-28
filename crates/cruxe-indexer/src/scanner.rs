@@ -1,6 +1,8 @@
 use cruxe_core::constants;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tracing::{debug, warn};
 
 /// A discovered source file with its detected language.
@@ -118,59 +120,42 @@ pub fn scan_directory_filtered(
 }
 
 fn should_ignore_builtin(path: &str) -> bool {
+    let normalized_path = path.replace('\\', "/");
+
     // Check directory components
     for dir in BUILTIN_IGNORE_DIRS {
-        if path.contains(&format!("/{}/", dir)) || path.contains(&format!("\\{}\\", dir)) {
+        if normalized_path.contains(&format!("/{dir}/")) {
             return true;
         }
     }
 
     // Check extensions
     for ext in BUILTIN_IGNORE_EXTENSIONS {
-        if path.ends_with(ext) {
+        if normalized_path.ends_with(ext) {
             return true;
         }
     }
 
-    // Check patterns
-    for pattern in BUILTIN_IGNORE_PATTERNS {
-        if matches_simple_glob(path, pattern) {
-            return true;
-        }
-    }
-
-    false
+    builtin_ignore_globset().is_match(&normalized_path)
 }
 
-fn matches_simple_glob(path: &str, pattern: &str) -> bool {
-    // Simple glob matching for patterns like "*.generated.*"
-    if let Some(stripped) = pattern.strip_prefix('*') {
-        if let Some(stripped) = stripped.strip_suffix('*') {
-            return path.contains(stripped);
+fn builtin_ignore_globset() -> &'static GlobSet {
+    static SET: OnceLock<GlobSet> = OnceLock::new();
+    SET.get_or_init(|| {
+        let mut builder = GlobSetBuilder::new();
+        for pattern in BUILTIN_IGNORE_PATTERNS {
+            builder.add(Glob::new(pattern).expect("builtin ignore glob pattern must be valid"));
         }
-        return path.ends_with(stripped);
-    }
-    path == pattern
+        builder
+            .build()
+            .expect("builtin ignore glob set must build successfully")
+    })
 }
 
 /// Detect programming language from file extension.
 pub fn detect_language(path: &Path) -> Option<String> {
     let ext = path.extension()?.to_str()?;
-    match ext {
-        "rs" => Some("rust".into()),
-        "ts" | "tsx" => Some("typescript".into()),
-        "js" | "jsx" => Some("javascript".into()),
-        "py" | "pyi" => Some("python".into()),
-        "go" => Some("go".into()),
-        "java" => Some("java".into()),
-        "c" | "h" => Some("c".into()),
-        "cpp" | "cc" | "cxx" | "hpp" => Some("cpp".into()),
-        "rb" => Some("ruby".into()),
-        "swift" => Some("swift".into()),
-        "kt" | "kts" => Some("kotlin".into()),
-        "toml" | "yaml" | "yml" | "json" | "md" | "txt" => None, // Config/doc files, skip
-        _ => None,
-    }
+    cruxe_core::languages::detect_language_from_extension(ext).map(str::to_string)
 }
 
 #[cfg(test)]

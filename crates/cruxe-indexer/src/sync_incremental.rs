@@ -2,7 +2,7 @@ use cruxe_core::config::{Config, SemanticConfig};
 use cruxe_core::error::{StateError, VcsError};
 use cruxe_core::ids::new_job_id;
 use cruxe_core::time::now_iso8601;
-use cruxe_core::types::{FileRecord, JobStatus};
+use cruxe_core::types::JobStatus;
 use cruxe_state::branch_state::{self, BranchState};
 use cruxe_state::jobs;
 use cruxe_state::tombstones::BranchTombstone;
@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::warn;
 
-use crate::{
-    call_extract, embed_writer, languages, parser, snippet_extract, staging, symbol_extract, writer,
-};
+use crate::{call_extract, embed_writer, parser, prepare, staging, writer};
 
 /// Per-file action derived from `git diff --name-status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,70 +452,49 @@ where
                         continue;
                     }
                 };
-                let parsed_tree = match parse_changed_file(&content, &language) {
-                    Ok(tree) => Some(tree),
-                    Err(err) => {
-                        warn!(
-                            path,
-                            error = %err,
-                            "Parse failed for changed file; continuing with metadata-only update"
-                        );
-                        None
-                    }
-                };
-                let extracted = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
-                    languages::extract_symbols(tree, &content, &language)
-                });
-                let symbols = symbol_extract::build_symbol_records(
-                    &extracted,
-                    project_id,
-                    ref_name,
-                    path,
-                    Some("overlay"),
+                let artifacts = prepare::build_source_artifacts_with_parser(
+                    prepare::ArtifactBuildInput {
+                        content: &content,
+                        language: &language,
+                        source_path: path,
+                        project_id,
+                        ref_name,
+                        source_layer: Some("overlay"),
+                        include_imports: false,
+                    },
+                    &mut parse_changed_file,
                 );
-                let snippets = snippet_extract::build_snippet_records(
-                    &extracted,
-                    project_id,
-                    ref_name,
-                    path,
-                    Some("overlay"),
+                if let Some(err) = artifacts.parse_error.as_deref() {
+                    warn!(
+                        path,
+                        error = %err,
+                        "Parse failed for changed file; continuing with metadata-only update"
+                    );
+                }
+
+                let filename = full_path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let file = prepare::build_file_record(
+                    project_id, ref_name, path, &filename, &language, &content,
                 );
-                let call_edges = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
-                    call_extract::extract_call_edges_for_file(
-                        tree, &content, &language, path, &symbols, project_id, ref_name,
-                    )
-                });
-                let file = FileRecord {
-                    repo: project_id.to_string(),
-                    r#ref: ref_name.to_string(),
-                    commit: None,
-                    path: path.to_string(),
-                    filename: full_path
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    language,
-                    content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
-                    size_bytes: content.len() as u64,
-                    updated_at: now_iso8601(),
-                    content_head: Some(content.lines().take(20).collect::<Vec<_>>().join("\n")),
-                };
 
                 if is_modified && embedding_enabled {
                     embedding_writer.delete_for_file_vectors(conn, path)?;
                 }
 
                 cruxe_state::symbols::delete_symbols_for_file(conn, project_id, ref_name, path)?;
-                batch.add_symbols(&index_set.symbols, &symbols)?;
-                batch.add_snippets(&index_set.snippets, &snippets)?;
+                batch.add_symbols(&index_set.symbols, &artifacts.symbols)?;
+                batch.add_snippets(&index_set.snippets, &artifacts.snippets)?;
                 batch.add_file(&index_set.files, &file)?;
-                batch.write_sqlite(conn, &symbols, &file, file_mtime_ns(&full_path))?;
-                if is_modified || !call_edges.is_empty() {
-                    pending_call_edges.push((path.to_string(), call_edges));
+                batch.write_sqlite(conn, &artifacts.symbols, &file, file_mtime_ns(&full_path))?;
+                if is_modified || !artifacts.call_edges.is_empty() {
+                    pending_call_edges.push((path.to_string(), artifacts.call_edges));
                 }
-                let symbol_len = symbols.len();
-                if embedding_enabled && !snippets.is_empty() {
-                    pending_embedding_batches.push((symbols, snippets));
+                let symbol_len = artifacts.symbols.len();
+                if embedding_enabled && !artifacts.snippets.is_empty() {
+                    pending_embedding_batches.push((artifacts.symbols, artifacts.snippets));
                 }
 
                 processed_files += 1;
@@ -767,7 +744,7 @@ where
 mod tests {
     use super::*;
     use crate::{languages, parser, scanner, snippet_extract, symbol_extract, writer};
-    use cruxe_core::types::{CallEdge, Project, SymbolKind, SymbolRecord};
+    use cruxe_core::types::{CallEdge, FileRecord, Project, SymbolKind, SymbolRecord};
     use cruxe_core::vcs::detect_head_commit;
     use cruxe_state::{db, project, schema};
     use rusqlite::Connection;

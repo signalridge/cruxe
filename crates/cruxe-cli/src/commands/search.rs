@@ -41,13 +41,7 @@ pub fn run(
         .map_err(|e| anyhow::anyhow!("Failed to initialize schema: {}", e))?;
     let proj = project::get_by_root(&conn, &repo_root_str)?
         .ok_or_else(|| anyhow::anyhow!("Project not initialized. Run `cruxe init` first."))?;
-    let resolved_ref = r#ref.map(String::from).unwrap_or_else(|| {
-        if vcs::is_git_repo(&repo_root) {
-            vcs::detect_head_branch(&repo_root).unwrap_or_else(|_| proj.default_ref.clone())
-        } else {
-            proj.default_ref.clone()
-        }
-    });
+    let resolved_ref = vcs::resolve_effective_ref(&repo_root, r#ref, &proj.default_ref);
     let response = search::search_code(
         &index_set,
         Some(&conn),
