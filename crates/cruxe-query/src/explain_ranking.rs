@@ -37,6 +37,11 @@ pub struct RankingScoringBreakdown {
     pub definition_boost: f64,
     pub kind_match: f64,
     pub test_file_penalty: f64,
+    pub confidence_structural_boost: f64,
+    pub structural_weighted_centrality: f64,
+    pub structural_raw_centrality: f64,
+    pub structural_guardrail_multiplier: f64,
+    pub confidence_coverage: f64,
     pub total: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signal_accounting: Vec<RankingSignalContribution>,
@@ -53,6 +58,7 @@ pub struct RankingScoringDetails {
     pub definition_boost_reason: String,
     pub kind_match_reason: String,
     pub test_file_penalty_reason: String,
+    pub confidence_structural_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -118,6 +124,11 @@ pub fn explain_ranking(
             definition_boost: reason.definition_boost,
             kind_match: reason.kind_match,
             test_file_penalty: reason.test_file_penalty,
+            confidence_structural_boost: reason.confidence_structural_boost,
+            structural_weighted_centrality: reason.structural_weighted_centrality,
+            structural_raw_centrality: reason.structural_raw_centrality,
+            structural_guardrail_multiplier: reason.structural_guardrail_multiplier,
+            confidence_coverage: reason.confidence_coverage,
             total: reason.final_score,
             signal_accounting: reason.signal_contributions.clone(),
             precedence_audit: reason.precedence_audit.clone(),
@@ -154,6 +165,7 @@ pub fn explain_ranking(
                 "test-file penalty applied",
                 "no test-file penalty",
             ),
+            confidence_structural_reason: confidence_structural_reason(reason),
         },
     })
 }
@@ -163,6 +175,20 @@ fn component_reason(value: f64, positive: &str, none: &str) -> String {
         return format!("{positive} (contribution={value:.3})");
     }
     none.to_string()
+}
+
+fn confidence_structural_reason(reason: &cruxe_core::types::RankingReasons) -> String {
+    if reason.confidence_structural_boost.abs() <= f64::EPSILON {
+        return "no confidence-weighted structural boost".to_string();
+    }
+    format!(
+        "confidence-weighted structural boost applied (weighted_centrality={:.3}, raw_centrality={:.3}, coverage={:.3}, guardrail={:.3}, contribution={:.3})",
+        reason.structural_weighted_centrality,
+        reason.structural_raw_centrality,
+        reason.confidence_coverage,
+        reason.structural_guardrail_multiplier,
+        reason.confidence_structural_boost
+    )
 }
 
 #[cfg(test)]
