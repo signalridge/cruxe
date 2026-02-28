@@ -2,6 +2,56 @@ use crate::locate::LocateResult;
 use crate::search::SearchResult;
 use cruxe_core::types::{BasicRankingReasons, RankingReasons};
 
+pub fn kind_weight(kind: &str) -> f64 {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "class" | "interface" | "trait" => 2.0,
+        "struct" | "enum" => 1.8,
+        "type_alias" | "function" | "method" => 1.5,
+        "constant" => 1.0,
+        "module" => 0.8,
+        "variable" => 0.5,
+        _ => 0.0,
+    }
+}
+
+pub fn query_intent_boost(query: &str, kind: &str) -> f64 {
+    let query = query.trim();
+    if query.is_empty() {
+        return 0.0;
+    }
+    let query_starts_upper = query.chars().next().is_some_and(char::is_uppercase);
+    let query_has_underscore = query.contains('_');
+    let query_starts_lower = query.chars().next().is_some_and(char::is_lowercase);
+    let kind_lower = kind.trim().to_ascii_lowercase();
+
+    let is_type_kind = matches!(
+        kind_lower.as_str(),
+        "class" | "struct" | "enum" | "trait" | "interface" | "type_alias"
+    );
+    let is_callable_kind = matches!(kind_lower.as_str(), "function" | "method");
+
+    if query_starts_upper && !query_has_underscore && is_type_kind {
+        return 1.0;
+    }
+
+    if (query_starts_lower || query_has_underscore) && is_callable_kind {
+        return 0.5;
+    }
+
+    0.0
+}
+
+pub fn test_file_penalty(path: &str) -> f64 {
+    let lower = path.to_ascii_lowercase();
+    const TEST_FILE_PATTERNS: [&str; 6] =
+        ["_test.", ".test.", ".spec.", "/test/", "/tests/", "test_"];
+    if TEST_FILE_PATTERNS.iter().any(|pat| lower.contains(pat)) {
+        -0.5
+    } else {
+        0.0
+    }
+}
+
 /// Apply rule-based reranking boosts to search results.
 pub fn rerank(results: &mut [SearchResult], query: &str) {
     rerank_inner(results, query, false);
@@ -26,7 +76,12 @@ fn rerank_inner(
         let mut qualified_name_boost = 0.0_f64;
         let mut definition_boost = 0.0_f64;
         let mut path_affinity = 0.0_f64;
-        let kind_match = 0.0_f64; // Reserved for future kind-based scoring
+        let kind_match = result
+            .kind
+            .as_deref()
+            .map(|kind| kind_weight(kind) + query_intent_boost(query, kind))
+            .unwrap_or(0.0);
+        let test_file_penalty = test_file_penalty(&result.path);
 
         // Exact symbol name match boost
         if let Some(ref name) = result.name
@@ -52,8 +107,12 @@ fn rerank_inner(
             path_affinity = 1.0;
         }
 
-        let boost =
-            (exact_match_boost + qualified_name_boost + definition_boost + path_affinity) as f32;
+        let boost = (exact_match_boost
+            + qualified_name_boost
+            + definition_boost
+            + path_affinity
+            + kind_match
+            + test_file_penalty) as f32;
         result.score += boost;
 
         if collect_reasons {
@@ -64,6 +123,7 @@ fn rerank_inner(
                 path_affinity,
                 definition_boost,
                 kind_match,
+                test_file_penalty,
                 bm25_score,
                 final_score: result.score as f64,
             });
@@ -131,12 +191,15 @@ pub fn locate_ranking_reasons(results: &[LocateResult], query: &str) -> Vec<Rank
             } else {
                 0.0
             };
-            let kind_match = 0.0;
+            let kind_match = kind_weight(&r.kind) + query_intent_boost(query, &r.kind);
+            let test_file_penalty = test_file_penalty(&r.path);
             let final_score = bm25_score
                 + exact_match_boost
                 + qualified_name_boost
                 + definition_boost
-                + path_affinity;
+                + path_affinity
+                + kind_match
+                + test_file_penalty;
             RankingReasons {
                 result_index: idx,
                 exact_match_boost,
@@ -144,6 +207,7 @@ pub fn locate_ranking_reasons(results: &[LocateResult], query: &str) -> Vec<Rank
                 path_affinity,
                 definition_boost,
                 kind_match,
+                test_file_penalty,
                 bm25_score,
                 final_score,
             }
@@ -168,4 +232,29 @@ pub fn to_basic_ranking_reasons(reasons: &[RankingReasons]) -> Vec<BasicRankingR
             final_score: r.final_score,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_weight_prefers_type_symbols_over_values() {
+        assert!(kind_weight("class") > kind_weight("function"));
+        assert!(kind_weight("function") > kind_weight("variable"));
+    }
+
+    #[test]
+    fn query_intent_boost_detects_type_and_callable_hints() {
+        assert_eq!(query_intent_boost("AuthService", "class"), 1.0);
+        assert_eq!(query_intent_boost("validate_token", "function"), 0.5);
+        assert_eq!(query_intent_boost("auth", "class"), 0.0);
+    }
+
+    #[test]
+    fn test_file_penalty_triggers_once_per_path() {
+        assert_eq!(test_file_penalty("src/auth/user_test.rs"), -0.5);
+        assert_eq!(test_file_penalty("src/auth/user.spec.ts"), -0.5);
+        assert_eq!(test_file_penalty("src/auth/user.rs"), 0.0);
+    }
 }

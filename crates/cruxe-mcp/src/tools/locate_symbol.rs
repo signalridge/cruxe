@@ -20,6 +20,11 @@ pub fn definition() -> ToolDefinition {
                     "type": "string",
                     "description": "Filter by kind (fn, struct, class, method, etc.)"
                 },
+                "role": {
+                    "type": "string",
+                    "description": "Filter by semantic role; intersects with kind when both are provided.",
+                    "enum": ["type", "callable", "value", "namespace", "alias"]
+                },
                 "language": {
                     "type": "string",
                     "description": "Filter by language"

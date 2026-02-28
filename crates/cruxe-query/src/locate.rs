@@ -39,6 +39,7 @@ pub fn locate_symbol(
     index: &Index,
     name: &str,
     kind: Option<&str>,
+    role: Option<&str>,
     language: Option<&str>,
     r#ref: Option<&str>,
     limit: usize,
@@ -70,6 +71,18 @@ pub fn locate_symbol(
             Occur::Must,
             Box::new(TermQuery::new(
                 Term::from_field_text(kind_field, k),
+                IndexRecordOption::Basic,
+            )),
+        ));
+    }
+
+    // Optional role filter
+    if let Some(r) = role {
+        let role_field = schema.get_field("role").map_err(StateError::tantivy)?;
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(role_field, r),
                 IndexRecordOption::Basic,
             )),
         ));
@@ -169,6 +182,7 @@ pub fn locate_symbol_vcs_merged(
     ctx: VcsLocateContext<'_>,
     name: &str,
     kind: Option<&str>,
+    role: Option<&str>,
     language: Option<&str>,
     limit: usize,
 ) -> Result<(Vec<LocateResult>, usize), StateError> {
@@ -178,6 +192,7 @@ pub fn locate_symbol_vcs_merged(
                 ctx.base_index,
                 name,
                 kind,
+                role,
                 language,
                 Some(ctx.base_ref),
                 limit,
@@ -188,6 +203,7 @@ pub fn locate_symbol_vcs_merged(
                 ctx.overlay_index,
                 name,
                 kind,
+                role,
                 language,
                 Some(ctx.target_ref),
                 limit,

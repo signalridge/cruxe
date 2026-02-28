@@ -4,6 +4,8 @@ use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use tracing::debug;
 
+use crate::import_extract::source_symbol_id_for_path;
+
 /// Extract per-file call edges from parsed AST and resolve caller symbols by line coverage.
 ///
 /// Callee resolution is deferred to `resolve_call_targets`.
@@ -19,18 +21,16 @@ pub fn extract_call_edges_for_file(
     let call_sites = crate::languages::extract_call_sites(tree, source, language);
     let mut edges = Vec::new();
     for site in call_sites {
-        // Known MVP limitation: module/file-scope call-sites are not linked because
-        // we only map calls to function/method symbols as callers.
-        let Some(caller) = resolve_caller_symbol(symbols, site.line) else {
-            continue;
-        };
+        let caller_id = resolve_caller_symbol(symbols, site.line)
+            .map(|caller| caller.symbol_stable_id.clone())
+            .unwrap_or_else(|| source_symbol_id_for_path(source_file));
         if site.callee_name.trim().is_empty() {
             continue;
         }
         edges.push(CallEdge {
             repo: repo.to_string(),
             ref_name: ref_name.to_string(),
-            from_symbol_id: caller.symbol_stable_id.clone(),
+            from_symbol_id: caller_id,
             to_symbol_id: None,
             to_name: Some(site.callee_name),
             edge_type: "calls".to_string(),
@@ -355,6 +355,49 @@ fn validate_token() {}
     }
 
     #[test]
+    fn extract_call_edges_uses_file_source_for_module_scope_calls() {
+        let source = r#"
+const db = createPool();
+
+function handler() {
+    validateToken();
+}
+"#;
+        let tree = parser::parse_file(source, "typescript").unwrap();
+        let symbols = vec![symbol(
+            "repo",
+            "main",
+            "stable-handler",
+            "handler",
+            "handler",
+            4,
+            6,
+        )];
+
+        let edges = extract_call_edges_for_file(
+            &tree,
+            source,
+            "typescript",
+            "src/lib.rs",
+            &symbols,
+            "repo",
+            "main",
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.from_symbol_id == "file::src/lib.rs"),
+            "expected module-scope call to fall back to file::<path> caller"
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.from_symbol_id == "stable-handler"),
+            "expected function-scoped call to retain function caller"
+        );
+    }
+
+    #[test]
     fn resolve_call_targets_prefers_qualified_then_name() {
         let (tmp, conn) = setup();
         let repo_root = tmp.path().join("workspace");
@@ -674,7 +717,7 @@ fn validate_token() {}
     }
 
     #[test]
-    fn extract_call_edges_skips_module_scope_calls_without_function_caller() {
+    fn extract_call_edges_uses_file_caller_for_module_scope_calls() {
         let source = "const x = helper();\nfunction helper() { return 1; }\n";
         let tree = parser::parse_file(source, "typescript").unwrap();
         let symbols = vec![symbol(
@@ -697,8 +740,10 @@ fn validate_token() {}
             "main",
         );
         assert!(
-            edges.is_empty(),
-            "module-scope calls currently have no function/method caller and are intentionally skipped"
+            edges
+                .iter()
+                .any(|edge| edge.from_symbol_id == "file::src/main.ts"),
+            "module-scope call should fall back to file::<path> as caller"
         );
     }
 }

@@ -47,6 +47,7 @@ pub struct FindReferencesResult {
     pub symbol: ReferenceSymbol,
     pub references: Vec<ReferenceResult>,
     pub total_references: usize,
+    pub unresolved_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -167,10 +168,23 @@ pub fn find_references(
         references.truncate(limit);
     }
 
+    let unresolved_target = target_symbol.name.clone();
+    let unresolved_count = if project_row.vcs_mode && ref_name != project_row.default_ref {
+        query_unresolved_count(
+            conn,
+            project_id,
+            &project_row.default_ref,
+            &unresolved_target,
+        )? + query_unresolved_count(conn, project_id, ref_name, &unresolved_target)?
+    } else {
+        query_unresolved_count(conn, project_id, ref_name, &unresolved_target)?
+    };
+
     Ok(FindReferencesResult {
         symbol: target_result_symbol,
         references,
         total_references,
+        unresolved_count,
     })
 }
 
@@ -291,6 +305,45 @@ fn edge_count(conn: &Connection, project_id: &str, ref_name: &str) -> Result<u64
         )
         .map_err(StateError::sqlite)?;
     Ok(count.max(0) as u64)
+}
+
+fn query_unresolved_count(
+    conn: &Connection,
+    project_id: &str,
+    ref_name: &str,
+    target_name: &str,
+) -> Result<usize, StateError> {
+    let escaped = escape_like_pattern(target_name);
+    let dotted_suffix = format!("%.{escaped}");
+    let rust_suffix = format!("%::{escaped}");
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM symbol_edges
+             WHERE repo = ?1 AND \"ref\" = ?2
+               AND to_symbol_id IS NULL
+               AND (
+                    to_name = ?3
+                    OR to_name LIKE ?4 ESCAPE '\\'
+                    OR to_name LIKE ?5 ESCAPE '\\'
+               )",
+            params![
+                project_id,
+                ref_name,
+                target_name,
+                dotted_suffix,
+                rust_suffix
+            ],
+            |row| row.get(0),
+        )
+        .map_err(StateError::sqlite)?;
+    Ok(count.max(0) as usize)
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn to_reference_result(
@@ -436,7 +489,7 @@ fn reference_key(reference: &ReferenceResult) -> (String, String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cruxe_core::types::{SymbolEdge, SymbolKind};
+    use cruxe_core::types::{CallEdge, SymbolEdge, SymbolKind};
     use cruxe_state::{db, edges, schema, symbols};
 
     fn setup() -> (tempfile::TempDir, Connection) {
@@ -820,5 +873,112 @@ mod tests {
             overlay.context.as_deref(),
             Some("fn call_site() { validate_token_feat(); }")
         );
+    }
+
+    #[test]
+    fn find_references_reports_precise_unresolved_count() {
+        let (tmp, conn) = setup();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("src/lib.rs"),
+            "fn unresolved() { validate_token(); }\n",
+        )
+        .unwrap();
+
+        let project_id = "proj";
+        let now = "2026-02-25T00:00:00Z".to_string();
+        project::create_project(
+            &conn,
+            &cruxe_core::types::Project {
+                project_id: project_id.to_string(),
+                repo_root: workspace.to_string_lossy().to_string(),
+                display_name: Some("test".to_string()),
+                default_ref: "main".to_string(),
+                vcs_mode: false,
+                schema_version: 1,
+                parser_version: 1,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+        )
+        .unwrap();
+
+        insert_symbol(
+            &conn,
+            project_id,
+            "main",
+            "sym-target",
+            "stable-target",
+            "validate_token",
+            "src/auth.rs",
+            10,
+        );
+
+        edges::insert_call_edges(
+            &conn,
+            project_id,
+            "main",
+            &[
+                CallEdge {
+                    repo: project_id.to_string(),
+                    ref_name: "main".to_string(),
+                    from_symbol_id: "file::src/lib.rs".to_string(),
+                    to_symbol_id: None,
+                    to_name: Some("validate_token".to_string()),
+                    edge_type: "calls".to_string(),
+                    confidence: "static".to_string(),
+                    source_file: "src/lib.rs".to_string(),
+                    source_line: 1,
+                },
+                CallEdge {
+                    repo: project_id.to_string(),
+                    ref_name: "main".to_string(),
+                    from_symbol_id: "file::src/lib.rs".to_string(),
+                    to_symbol_id: None,
+                    to_name: Some("auth::validate_token".to_string()),
+                    edge_type: "calls".to_string(),
+                    confidence: "static".to_string(),
+                    source_file: "src/lib.rs".to_string(),
+                    source_line: 2,
+                },
+                CallEdge {
+                    repo: project_id.to_string(),
+                    ref_name: "main".to_string(),
+                    from_symbol_id: "file::src/lib.rs".to_string(),
+                    to_symbol_id: None,
+                    to_name: Some("auth.validate_token".to_string()),
+                    edge_type: "calls".to_string(),
+                    confidence: "static".to_string(),
+                    source_file: "src/lib.rs".to_string(),
+                    source_line: 3,
+                },
+                CallEdge {
+                    repo: project_id.to_string(),
+                    ref_name: "main".to_string(),
+                    from_symbol_id: "file::src/lib.rs".to_string(),
+                    to_symbol_id: None,
+                    to_name: Some("validate_token_v2".to_string()),
+                    edge_type: "calls".to_string(),
+                    confidence: "static".to_string(),
+                    source_file: "src/lib.rs".to_string(),
+                    source_line: 4,
+                },
+            ],
+        )
+        .unwrap();
+
+        let result = find_references(
+            &conn,
+            &workspace,
+            project_id,
+            "main",
+            Some("calls"),
+            "validate_token",
+            20,
+        )
+        .unwrap();
+
+        assert_eq!(result.unresolved_count, 3);
     }
 }

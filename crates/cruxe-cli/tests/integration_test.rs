@@ -1004,6 +1004,7 @@ fn t043_index_and_locate_validate_token() {
         None,
         None,
         None,
+        None,
         10,
     )
     .expect("locate_symbol should succeed");
@@ -1110,6 +1111,7 @@ fn t043_index_and_locate_with_kind_filter() {
         Some("function"),
         None,
         None,
+        None,
         10,
     )
     .expect("locate with kind filter");
@@ -1123,6 +1125,7 @@ fn t043_index_and_locate_with_kind_filter() {
         &index_set.symbols,
         "validate_token",
         Some("struct"),
+        None,
         None,
         None,
         10,
@@ -1238,6 +1241,7 @@ fn t043_index_discovers_multiple_symbols() {
         None,
         None,
         None,
+        None,
         10,
     )
     .expect("locate require_role");
@@ -1348,6 +1352,7 @@ fn t043_locate_nonexistent_symbol_returns_empty() {
     let results = cruxe_query::locate::locate_symbol(
         &index_set.symbols,
         "this_symbol_does_not_exist_anywhere",
+        None,
         None,
         None,
         None,
@@ -1937,6 +1942,7 @@ fn t071_ref_scoped_search_isolates_branches() {
         "branch_only_function",
         None,
         None,
+        None,
         Some("main"),
         10,
     )
@@ -1951,6 +1957,7 @@ fn t071_ref_scoped_search_isolates_branches() {
     let results_feat = cruxe_query::locate::locate_symbol(
         &index_set.symbols,
         "branch_only_function",
+        None,
         None,
         None,
         Some("feat/auth"),
@@ -1970,6 +1977,7 @@ fn t071_ref_scoped_search_isolates_branches() {
         None,
         None,
         None,
+        None,
         10,
     )
     .expect("locate without ref filter");
@@ -1984,6 +1992,7 @@ fn t071_ref_scoped_search_isolates_branches() {
         "validate_token",
         None,
         None,
+        None,
         Some("main"),
         10,
     )
@@ -1993,6 +2002,7 @@ fn t071_ref_scoped_search_isolates_branches() {
     let vt_feat = cruxe_query::locate::locate_symbol(
         &index_set.symbols,
         "validate_token",
+        None,
         None,
         None,
         Some("feat/auth"),
@@ -2610,6 +2620,7 @@ fn t081_relevance_benchmark_top1_precision() {
         let results = cruxe_query::locate::locate_symbol(
             &index_set.symbols,
             query_name,
+            None,
             None,
             None,
             None,

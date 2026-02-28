@@ -23,10 +23,10 @@
 - [x] 3.6 Update `cruxe-mcp/src/server.rs` to use `vcs::is_git_repo()` and `vcs::detect_default_ref()`
 - [x] 3.7 Update `cruxe-query/src/find_references.rs` to use `vcs::is_git_repo()`
 
-## 4. Tag Registry and Enricher Infrastructure
+## 4. Tag Registry and Enricher Infrastructure (historical; later superseded by generic mapper refactor)
 
 - [x] 4.1 Create `cruxe-indexer/src/languages/enricher.rs` — define `LanguageEnricher` trait with `language()`, `separator()`, `map_kind()`, `extract_visibility()`, `find_parent_scope()`; add `node_text()` helper
-- [x] 4.2 Create `cruxe-indexer/src/languages/enricher_rust.rs` — implement `RustEnricher` with struct/enum/trait kind disambiguation, `impl_item` parent walking, `visibility_modifier` detection
+- [x] 4.2 Create `cruxe-indexer/src/languages/enricher_rust.rs` — implement legacy `RustEnricher` with struct/enum/trait kind disambiguation, `impl_item` parent walking, `visibility_modifier` detection
 - [x] 4.3 Create `cruxe-indexer/src/languages/enricher_typescript.rs` — implement `TypeScriptEnricher` with class/enum/type discrimination, const detection, export/accessibility visibility
 - [x] 4.4 Create `cruxe-indexer/src/languages/enricher_python.rs` — implement `PythonEnricher` with function/method distinction, class parent walking, underscore visibility
 - [x] 4.5 Create `cruxe-indexer/src/languages/enricher_go.rs` — implement `GoEnricher` with struct/interface type disambiguation, receiver-based parent scope, capitalization visibility

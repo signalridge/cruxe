@@ -466,6 +466,7 @@ fn run_natural_language_eval(
                 search_config: search_config.clone(),
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .map_err(|err| format!("search failed for {}: {err}", case.id))?;
@@ -534,6 +535,7 @@ fn run_symbol_precision_eval(
                 search_config: search_config.clone(),
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .map_err(|err| format!("symbol search failed for {}: {err}", case.query))?;

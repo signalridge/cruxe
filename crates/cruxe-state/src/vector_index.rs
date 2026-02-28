@@ -596,6 +596,23 @@ pub fn delete_vectors_for_ref(
     Ok(deleted)
 }
 
+/// Count semantic vectors for one `(project_id, ref)` scope.
+pub fn count_vectors_for_scope(
+    conn: &Connection,
+    project_id: &str,
+    ref_name: &str,
+) -> Result<usize, StateError> {
+    ensure_schema(conn)?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM semantic_vectors WHERE project_id = ?1 AND \"ref\" = ?2",
+            params![project_id, ref_name],
+            |row| row.get(0),
+        )
+        .map_err(StateError::sqlite)?;
+    Ok(count.max(0) as usize)
+}
+
 /// SQLite brute-force cosine similarity search.
 ///
 /// **Scaling note:** This backend loads all matching vectors into memory for

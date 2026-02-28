@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 /// A registered workspace/project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +30,19 @@ pub enum SymbolKind {
     Constant,
     Variable,
     TypeAlias,
+    #[serde(alias = "import")]
     Module,
-    Import,
+}
+
+/// Cross-language semantic symbol role used for coarse filtering and ranking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolRole {
+    Type,
+    Callable,
+    Value,
+    Namespace,
+    Alias,
 }
 
 impl SymbolKind {
@@ -47,7 +59,6 @@ impl SymbolKind {
             Self::Variable => "variable",
             Self::TypeAlias => "type_alias",
             Self::Module => "module",
-            Self::Import => "import",
         }
     }
 
@@ -63,9 +74,20 @@ impl SymbolKind {
             "constant" | "const" => Some(Self::Constant),
             "variable" | "var" => Some(Self::Variable),
             "type_alias" | "type" => Some(Self::TypeAlias),
-            "module" | "mod" => Some(Self::Module),
-            "import" | "use" => Some(Self::Import),
+            "module" | "mod" | "import" | "use" => Some(Self::Module),
             _ => None,
+        }
+    }
+
+    pub fn role(&self) -> SymbolRole {
+        match self {
+            Self::Struct | Self::Class | Self::Enum | Self::Trait | Self::Interface => {
+                SymbolRole::Type
+            }
+            Self::TypeAlias => SymbolRole::Alias,
+            Self::Function | Self::Method => SymbolRole::Callable,
+            Self::Constant | Self::Variable => SymbolRole::Value,
+            Self::Module => SymbolRole::Namespace,
         }
     }
 }
@@ -73,6 +95,39 @@ impl SymbolKind {
 impl std::fmt::Display for SymbolKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl SymbolRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Type => "type",
+            Self::Callable => "callable",
+            Self::Value => "value",
+            Self::Namespace => "namespace",
+            Self::Alias => "alias",
+        }
+    }
+}
+
+impl std::fmt::Display for SymbolRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SymbolRole {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "type" => Ok(Self::Type),
+            "callable" => Ok(Self::Callable),
+            "value" => Ok(Self::Value),
+            "namespace" => Ok(Self::Namespace),
+            "alias" => Ok(Self::Alias),
+            _ => Err(()),
+        }
     }
 }
 
@@ -237,6 +292,7 @@ pub struct RankingReasons {
     pub path_affinity: f64,
     pub definition_boost: f64,
     pub kind_match: f64,
+    pub test_file_penalty: f64,
     pub bm25_score: f64,
     pub final_score: f64,
 }
@@ -702,9 +758,50 @@ mod tests {
             SymbolKind::Trait,
             SymbolKind::Interface,
             SymbolKind::Constant,
+            SymbolKind::Variable,
+            SymbolKind::TypeAlias,
+            SymbolKind::Module,
         ] {
             assert_eq!(SymbolKind::parse_kind(kind.as_str()), Some(kind));
         }
+    }
+
+    #[test]
+    fn test_symbol_kind_legacy_import_maps_to_module() {
+        assert_eq!(SymbolKind::parse_kind("import"), Some(SymbolKind::Module));
+        assert_eq!(SymbolKind::parse_kind("use"), Some(SymbolKind::Module));
+
+        let parsed: SymbolKind = serde_json::from_str("\"import\"").unwrap();
+        assert_eq!(parsed, SymbolKind::Module);
+    }
+
+    #[test]
+    fn test_symbol_role_roundtrip_and_kind_mapping() {
+        let cases = [
+            (SymbolRole::Type, "\"type\""),
+            (SymbolRole::Callable, "\"callable\""),
+            (SymbolRole::Value, "\"value\""),
+            (SymbolRole::Namespace, "\"namespace\""),
+            (SymbolRole::Alias, "\"alias\""),
+        ];
+
+        for (role, expected_json) in cases {
+            assert_eq!(serde_json::to_string(&role).unwrap(), expected_json);
+            assert_eq!(
+                expected_json.trim_matches('"').parse::<SymbolRole>(),
+                Ok(role)
+            );
+            assert_eq!(
+                serde_json::from_str::<SymbolRole>(expected_json).unwrap(),
+                role
+            );
+        }
+
+        assert_eq!(SymbolKind::Class.role(), SymbolRole::Type);
+        assert_eq!(SymbolKind::Function.role(), SymbolRole::Callable);
+        assert_eq!(SymbolKind::Variable.role(), SymbolRole::Value);
+        assert_eq!(SymbolKind::Module.role(), SymbolRole::Namespace);
+        assert_eq!(SymbolKind::TypeAlias.role(), SymbolRole::Alias);
     }
 
     // ------------------------------------------------------------------

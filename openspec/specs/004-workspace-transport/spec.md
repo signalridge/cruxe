@@ -1,7 +1,8 @@
 # 004-workspace-transport Specification
 
 ## Purpose
-TBD - created by archiving change harden-001-004-maintainability. Update Purpose after archive.
+Define a unified workspace transport contract so stdio/http adapters share one
+dispatch pipeline, workspace resolution, and canonical protocol semantics.
 ## Requirements
 ### Requirement: Tool execution pipeline is transport-agnostic
 `stdio` and `http` MCP transports MUST route tool execution through a shared
@@ -78,4 +79,3 @@ performance guards.
 #### Scenario: Integration suite keeps smoke performance guards
 - **WHEN** integration tests execute on CI
 - **THEN** they MUST enforce only stable smoke-level performance assertions that are resilient to normal CI jitter
-

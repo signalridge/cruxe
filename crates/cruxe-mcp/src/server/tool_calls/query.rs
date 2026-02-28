@@ -107,6 +107,7 @@ fn execute_locate_with_optional_overlay(
     ctx: QueryExecutionContext<'_>,
     name: &str,
     kind: Option<&str>,
+    role: Option<&str>,
     language: Option<&str>,
     limit: usize,
 ) -> Result<(Vec<locate::LocateResult>, usize), StateError> {
@@ -129,6 +130,7 @@ fn execute_locate_with_optional_overlay(
             },
             name,
             kind,
+            role,
             language,
             limit,
         );
@@ -138,6 +140,7 @@ fn execute_locate_with_optional_overlay(
         &index_set.symbols,
         name,
         kind,
+        role,
         language,
         Some(effective_ref),
         limit,
@@ -227,6 +230,7 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
 
     let name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let kind = arguments.get("kind").and_then(|v| v.as_str());
+    let role = arguments.get("role").and_then(|v| v.as_str());
     let language = arguments.get("language").and_then(|v| v.as_str());
     let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
     let limit = arguments
@@ -312,6 +316,7 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
         },
         name,
         kind,
+        role,
         language,
         limit,
     ) {
@@ -391,6 +396,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         .unwrap_or("");
     let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
     let language = arguments.get("language").and_then(|v| v.as_str());
+    let role = arguments.get("role").and_then(|v| v.as_str());
     let limit = arguments
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -502,6 +508,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         search_config: config.search.clone(),
         semantic_ratio_override,
         confidence_threshold_override,
+        role: role.map(ToString::to_string),
     };
     match execute_search_with_optional_overlay(
         QueryExecutionContext {
@@ -561,6 +568,11 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             metadata.semantic_triggered = Some(response.metadata.semantic_triggered);
             metadata.semantic_skipped_reason = response.metadata.semantic_skipped_reason.clone();
             metadata.semantic_fallback = Some(response.metadata.semantic_fallback);
+            metadata.semantic_degraded = Some(response.metadata.semantic_degraded);
+            metadata.semantic_limit_used = Some(response.metadata.semantic_limit_used);
+            metadata.lexical_fanout_used = Some(response.metadata.lexical_fanout_used);
+            metadata.semantic_fanout_used = Some(response.metadata.semantic_fanout_used);
+            metadata.semantic_budget_exhausted = Some(response.metadata.semantic_budget_exhausted);
             metadata.external_provider_blocked = Some(response.metadata.external_provider_blocked);
             metadata.embedding_model_version =
                 Some(response.metadata.embedding_model_version.clone());
@@ -575,6 +587,11 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             metadata.channel_agreement = Some(response.metadata.channel_agreement);
             metadata.query_intent_confidence = Some(response.metadata.query_intent_confidence);
             metadata.intent_escalation_hint = response.metadata.intent_escalation_hint.clone();
+            if !response.metadata.warnings.is_empty() {
+                let mut warnings = metadata.warnings.take().unwrap_or_default();
+                warnings.extend(response.metadata.warnings.clone());
+                metadata.warnings = Some(warnings);
+            }
 
             let suggested_next_actions = if safety_limit_applied {
                 deterministic_suggested_actions(

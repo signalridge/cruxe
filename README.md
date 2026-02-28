@@ -4,12 +4,15 @@ Code search and navigation engine for AI coding assistants.
 
 ## Features
 
-- **Multi-language symbol extraction** -- Rust, TypeScript, Python, and Go via tree-sitter
+- **Multi-language symbol extraction** -- Rust, TypeScript, Python, and Go via tree-sitter-tags generic mapper
+- **Cross-language SymbolRole classification** -- Type, Callable, Value, Namespace, Alias for coarse filtering and ranking
 - **Full-text code search** with intent classification (symbol, path, error, natural language)
 - **Symbol location** with definition-first ranking
+- **Rule-based ranking signals** -- kind_weight, query_intent_boost, test_file_penalty, field boost weights, with explainable scoring
 - **MCP server** (Model Context Protocol) for AI agent integration over stdio
 - **Incremental indexing** with content-hash-based change detection (blake3)
 - **Ref-scoped search** -- branch-level isolation for worktree correctness
+- **Semantic retrieval with graceful degradation** -- `semantic_degraded` flag in responses, automatic lexical-only fallback on backend failure
 
 ## Installation
 
@@ -72,16 +75,17 @@ Auto-indexing templates: `configs/templates/`
 
 ## Architecture
 
-Cruxe is a Rust workspace with 6 crates:
+Cruxe is a Rust workspace with 7 crates:
 
 | Crate | Responsibility |
 |-------|---------------|
-| `cruxe-core` | Shared types, constants, config, error types |
+| `cruxe-core` | Shared types (SymbolKind, SymbolRole), constants, config, error types |
 | `cruxe-state` | SQLite (rusqlite) + Tantivy storage layer |
-| `cruxe-indexer` | tree-sitter parsing and per-language symbol extractors |
-| `cruxe-query` | Search, locate, intent classification, ranking |
+| `cruxe-indexer` | tree-sitter-tags symbol extraction via generic tag mapper, call-site analysis |
+| `cruxe-query` | Search, locate, intent classification, ranking, reranking |
 | `cruxe-mcp` | MCP JSON-RPC server (stdio transport) |
 | `cruxe-cli` | clap-based CLI entry point |
+| `cruxe-vcs` | Git/VCS integration and ref resolution |
 
 Storage is fully embedded -- Tantivy for full-text search, SQLite (WAL mode) for structured data. No external services required.
 
@@ -94,12 +98,15 @@ Storage is fully embedded -- Tantivy for full-text search, SQLite (WAL mode) for
 ## CLI Commands
 
 ```
-cruxe init [--path PATH]                      Initialize project configuration
-cruxe index [--path PATH] [--ref REF] [--force]   Index source code
-cruxe sync [--workspace PATH] [--force]           Incremental sync
-cruxe search <query> [--ref REF] [--lang LANG]    Search code in the index
-cruxe doctor [--path PATH]                        Check project health
-cruxe serve-mcp [--workspace PATH]                Start MCP server (stdio transport)
+cruxe init [--path PATH]                                      Initialize project configuration
+cruxe index [--path PATH] [--ref REF] [--force]               Index source code
+cruxe sync [--workspace PATH] [--force]                       Incremental sync
+cruxe search <query> [--ref REF] [--lang LANG]                Search code in the index
+cruxe doctor [--path PATH]                                    Check project health
+cruxe serve-mcp [--workspace PATH] [--transport stdio|http] [--port PORT]  Start MCP server
+cruxe state export <PATH> [--workspace PATH]                  Export state bundle
+cruxe state import <PATH> [--workspace PATH]                  Import state bundle
+cruxe prune-overlays [--workspace PATH] [--older-than DAYS]   Remove stale overlays
 ```
 
 ## Search Intent Strategy Configuration

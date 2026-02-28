@@ -503,9 +503,10 @@ mod tests {
             qualified_name_boost: 2.0,
             path_affinity: 1.0,
             definition_boost: 1.0,
-            kind_match: 0.0,
+            kind_match: 2.0,
+            test_file_penalty: 0.0,
             bm25_score: 10.0,
-            final_score: 19.0,
+            final_score: 21.0,
         }];
 
         let payload =

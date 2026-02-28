@@ -25,6 +25,11 @@ pub fn definition() -> ToolDefinition {
                     "type": "string",
                     "description": "Filter by language"
                 },
+                "role": {
+                    "type": "string",
+                    "description": "Filter by semantic symbol role",
+                    "enum": ["type", "callable", "value", "namespace", "alias"]
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Max results (default: 10)"

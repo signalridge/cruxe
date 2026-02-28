@@ -43,6 +43,8 @@ struct QueryResultMetric {
     reciprocal_rank: f64,
     hit_rank: Option<usize>,
     zero_results: bool,
+    semantic_degraded: bool,
+    semantic_budget_exhausted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,7 +59,10 @@ struct EvaluationReport {
     mrr: f64,
     symbol_precision_at_1: f64,
     zero_result_rate: f64,
+    degraded_query_rate: f64,
+    semantic_budget_exhaustion_rate: f64,
     external_provider_blocked_count: usize,
+    tier1_acceptance_profile: String,
     per_query: Vec<QueryResultMetric>,
 }
 
@@ -107,6 +112,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut symbol_hits: usize = 0;
     let mut symbol_count: usize = 0;
     let mut zero_results: usize = 0;
+    let mut degraded_queries: usize = 0;
+    let mut budget_exhausted_queries: usize = 0;
     let mut external_provider_blocked_count: usize = 0;
 
     for query_case in &query_pack.queries {
@@ -123,6 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 search_config: config.search.clone(),
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )?;
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -130,6 +138,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         if response.metadata.external_provider_blocked {
             external_provider_blocked_count += 1;
+        }
+        if response.metadata.semantic_degraded {
+            degraded_queries += 1;
+        }
+        if response.metadata.semantic_budget_exhausted {
+            budget_exhausted_queries += 1;
         }
 
         let (rr, rank) = reciprocal_rank(&response.results, &query_case.expected_hint);
@@ -156,6 +170,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             reciprocal_rank: rr,
             hit_rank: rank,
             zero_results: zero,
+            semantic_degraded: response.metadata.semantic_degraded,
+            semantic_budget_exhausted: response.metadata.semantic_budget_exhausted,
         });
     }
 
@@ -181,6 +197,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         zero_results as f64 / metrics.len() as f64
     };
+    let degraded_query_rate = if metrics.is_empty() {
+        0.0
+    } else {
+        degraded_queries as f64 / metrics.len() as f64
+    };
+    let semantic_budget_exhaustion_rate = if metrics.is_empty() {
+        0.0
+    } else {
+        budget_exhausted_queries as f64 / metrics.len() as f64
+    };
 
     let report = EvaluationReport {
         mode: config.search.semantic.mode.clone(),
@@ -193,7 +219,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         mrr,
         symbol_precision_at_1,
         zero_result_rate,
+        degraded_query_rate,
+        semantic_budget_exhaustion_rate,
         external_provider_blocked_count,
+        tier1_acceptance_profile:
+            "Tier-1 acceptance target: p95 latency <= 500ms, report zero_result_rate + MRR evidence."
+                .to_string(),
         per_query: metrics,
     };
 

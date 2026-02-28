@@ -5,7 +5,8 @@ The system SHALL extract symbols from source files using `tree-sitter-tags` `Tag
 
 #### Scenario: Extract symbols from a Rust file
 - **WHEN** a Rust source file containing a `pub struct`, a `pub fn`, and an `impl` block with methods is indexed
-- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries for each symbol with correct `name`, `qualified_name`, `kind` (Struct, Function, Method), `visibility`, `signature`, `line_start`, and `line_end`
+- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries for each symbol with correct `name`, `qualified_name`, `kind` (Struct, Function, Method), `signature`, `line_start`, and `line_end`
+- **AND** `visibility` MAY be absent/`None` when not explicitly extracted
 
 #### Scenario: Rust generic impl parent scope normalization
 - **WHEN** a Rust method is defined in `impl<T> Foo<T>`
@@ -13,7 +14,7 @@ The system SHALL extract symbols from source files using `tree-sitter-tags` `Tag
 
 #### Scenario: Extract symbols from a TypeScript file
 - **WHEN** a TypeScript source file containing an exported class, an interface, an enum, and module-level functions is indexed
-- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries with correct kind discrimination (`Class`, `Interface`, `Enum`, `Function`) and visibility reflecting export status
+- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries with correct kind discrimination (`Class`, `Interface`, `Enum`, `Function`) and stable parent/qualified-name derivation
 
 #### Scenario: TypeScript namespace parent scope detection
 - **WHEN** a TypeScript function is declared inside a `namespace` block
@@ -21,23 +22,23 @@ The system SHALL extract symbols from source files using `tree-sitter-tags` `Tag
 
 #### Scenario: Extract symbols from a Python file
 - **WHEN** a Python source file containing top-level functions, classes with methods, and module-level assignments is indexed
-- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries with method parent scopes derived from class ancestry and visibility derived from underscore naming convention
+- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries with method parent scopes derived from class ancestry
 
-#### Scenario: Python dunder methods are treated as public
+#### Scenario: Python dunder methods are indexed without visibility special-casing
 - **WHEN** a Python symbol name follows double-underscore protocol naming (e.g., `__init__`, `__str__`)
-- **THEN** visibility extraction SHALL classify the symbol as public instead of private
+- **THEN** the symbol SHALL be indexed as normal and `visibility` remains optional (`None` unless explicitly extracted)
 
 #### Scenario: Extract symbols from a Go file
 - **WHEN** a Go source file containing package-level functions, methods with receivers, struct types, and interface types is indexed
-- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries with parent scope derived from receiver type and visibility derived from capitalization convention
+- **THEN** the extraction pipeline SHALL produce `ExtractedSymbol` entries with parent scope derived from receiver type
 
 #### Scenario: Go generic receiver parent scope normalization
 - **WHEN** a Go method receiver type includes generic arguments (e.g., `*Foo[T]`)
 - **THEN** the parent scope used for `qualified_name` SHALL normalize generic arguments (`Foo[T]` -> `Foo`)
 
-#### Scenario: Visibility normalization for default-private declarations
+#### Scenario: Visibility remains missing when unavailable
 - **WHEN** a supported language declaration has no explicit visibility modifier (e.g., Rust `fn` in an `impl`, TypeScript non-exported declaration)
-- **THEN** the enricher SHALL emit a normalized non-public visibility value instead of `None`, so downstream consumers do not need to interpret missing visibility as a separate state
+- **THEN** the generic mapper SHALL emit `visibility = None` rather than inventing a placeholder value
 
 #### Scenario: Signature is emitted for callable symbols only
 - **WHEN** symbols are extracted from a source file
@@ -47,16 +48,16 @@ The system SHALL extract symbols from source files using `tree-sitter-tags` `Tag
 - **WHEN** a source file with an unrecognized language identifier is processed
 - **THEN** the extraction pipeline SHALL return an empty symbol list without errors
 
-### Requirement: Per-language enricher trait
-The system SHALL define a `LanguageEnricher` trait with methods `language`, `map_kind`, `extract_visibility`, `find_parent_scope`, and `separator` that each supported language MUST implement to supplement tag-provided metadata.
+### Requirement: Generic tag mapper replaces per-language enrichers
+The system SHALL use a single generic tag→symbol mapper for all supported languages, replacing the per-language `LanguageEnricher` trait and its four implementations.
 
-#### Scenario: Kind disambiguation via enricher
+#### Scenario: Kind disambiguation via generic mapper
 - **WHEN** a tag with kind `"class"` is produced from a Rust file where the underlying AST node is `enum_item`
-- **THEN** the enricher's `map_kind` SHALL return `SymbolKind::Enum` rather than `SymbolKind::Class`
+- **THEN** the generic mapper SHALL return `SymbolKind::Enum` rather than `SymbolKind::Class`
 
-#### Scenario: Enricher returns None for unrecognized tag kind
+#### Scenario: Generic mapper returns None for unrecognized tag kind
 - **WHEN** a tag with an unrecognized kind string is processed
-- **THEN** the enricher's `map_kind` SHALL return `None` and the tag SHALL be filtered from output
+- **THEN** the generic mapper SHALL return `None` and the tag SHALL be filtered from output
 
 ### Requirement: Tag registry with thread-local storage
 The system SHALL maintain `TagsConfiguration` instances per language and `TagsContext` in thread-local storage, accessible via a `with_tags(|configs, ctx| ...)` closure API.

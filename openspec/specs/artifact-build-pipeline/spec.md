@@ -1,7 +1,8 @@
 # artifact-build-pipeline Specification
 
 ## Purpose
-TBD - created by archiving change tree-sitter-tags-migration. Update Purpose after archive.
+Define the canonical per-file artifact build pipeline for parse, symbols,
+snippets, call edges, and import extraction with deterministic quality signals.
 ## Requirements
 ### Requirement: Consolidated artifact builder
 The system SHALL provide a `build_source_artifacts()` function in `cruxe-indexer::prepare` that encapsulates the full per-file processing pipeline: parse → extract symbols → build snippets → extract call edges → extract imports.
@@ -69,4 +70,3 @@ The scanner SHALL use `globset::GlobSet` for file pattern matching with path sep
 #### Scenario: Cross-platform path matching
 - **WHEN** a file path with backslash separators is checked against ignore patterns
 - **THEN** the scanner SHALL normalize separators to `/` before matching against the `GlobSet`
-

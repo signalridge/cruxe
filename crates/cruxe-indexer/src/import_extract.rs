@@ -1,9 +1,9 @@
 use crate::languages;
 use cruxe_core::error::StateError;
-use cruxe_core::types::SymbolEdge;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 /// Raw import extracted from source code before symbol resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +12,18 @@ pub struct RawImport {
     pub target_qualified_name: String,
     pub target_name: String,
     pub import_line: u32,
+}
+
+/// Resolved import edge payload with nullable `to_symbol_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedImportEdge {
+    pub repo: String,
+    pub ref_name: String,
+    pub from_symbol_id: String,
+    pub to_symbol_id: Option<String>,
+    pub to_name: Option<String>,
+    pub edge_type: String,
+    pub confidence: String,
 }
 
 /// Deterministic pseudo symbol ID for file-scoped import edges.
@@ -35,28 +47,34 @@ pub fn extract_imports(
     }
 }
 
-/// Resolve raw imports to SymbolEdge records.
-///
-/// `to_symbol_id` uses target `symbol_stable_id` when resolved; unresolved targets
-/// use a deterministic stable ID derived from `blake3("unresolved:" + qualified_name)`.
+/// Resolve raw imports to edge records with nullable `to_symbol_id`.
 pub fn resolve_imports(
     conn: &Connection,
     raw_imports: Vec<RawImport>,
     repo: &str,
     ref_name: &str,
-) -> Result<Vec<SymbolEdge>, StateError> {
+) -> Result<Vec<ResolvedImportEdge>, StateError> {
     let mut edges = Vec::new();
     let mut seen = HashSet::new();
 
     for raw in raw_imports {
-        let to_symbol_id = resolve_target_symbol_stable_id(conn, repo, ref_name, &raw)?
-            .unwrap_or_else(|| unresolved_symbol_stable_id(&raw.target_qualified_name));
+        let to_symbol_id = resolve_target_symbol_stable_id(conn, repo, ref_name, &raw)?;
+        let unresolved_name = if to_symbol_id.is_none() {
+            Some(if raw.target_name.trim().is_empty() {
+                raw.target_qualified_name.clone()
+            } else {
+                raw.target_name.clone()
+            })
+        } else {
+            None
+        };
 
-        let edge = SymbolEdge {
+        let edge = ResolvedImportEdge {
             repo: repo.to_string(),
             ref_name: ref_name.to_string(),
             from_symbol_id: raw.source_qualified_name,
             to_symbol_id,
+            to_name: unresolved_name,
             edge_type: "imports".to_string(),
             confidence: "static".to_string(),
         };
@@ -66,6 +84,7 @@ pub fn resolve_imports(
             edge.ref_name.clone(),
             edge.from_symbol_id.clone(),
             edge.to_symbol_id.clone(),
+            edge.to_name.clone(),
             edge.edge_type.clone(),
         );
         if seen.insert(dedupe_key) {
@@ -119,12 +138,195 @@ fn resolve_target_symbol_stable_id(
         }
     }
 
+    if let Some(importing_file) = raw.source_qualified_name.strip_prefix("file::") {
+        let module_spec = module_spec_for_lookup(raw);
+        if let Some(resolved_path) = resolve_import_path(
+            importing_file,
+            module_spec.as_str(),
+            infer_language_from_path(importing_file),
+        ) {
+            if !file_exists_in_manifest(conn, repo, ref_name, &resolved_path)? {
+                return Ok(None);
+            }
+            let mut stmt = conn
+                .prepare(
+                    "SELECT symbol_stable_id
+                     FROM symbol_relations
+                     WHERE repo = ?1 AND \"ref\" = ?2 AND path = ?3
+                       AND (qualified_name = ?4 OR name = ?5)
+                     ORDER BY line_start
+                     LIMIT 1",
+                )
+                .map_err(StateError::sqlite)?;
+            let from_resolved_path = stmt
+                .query_row(
+                    params![
+                        repo,
+                        ref_name,
+                        resolved_path,
+                        raw.target_qualified_name,
+                        raw.target_name
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if from_resolved_path.is_some() {
+                return Ok(from_resolved_path);
+            }
+        }
+    }
+
     Ok(None)
 }
 
-fn unresolved_symbol_stable_id(target_qualified_name: &str) -> String {
-    let input = format!("unresolved:{}", target_qualified_name);
-    blake3::hash(input.as_bytes()).to_hex().to_string()
+fn file_exists_in_manifest(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    path: &str,
+) -> Result<bool, StateError> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM file_manifest
+                WHERE repo = ?1 AND \"ref\" = ?2 AND path = ?3
+                LIMIT 1
+            )",
+            params![repo, ref_name, path],
+            |row| row.get(0),
+        )
+        .map_err(StateError::sqlite)?;
+    Ok(exists == 1)
+}
+
+fn module_spec_for_lookup(raw: &RawImport) -> String {
+    if raw.target_qualified_name.contains("::") {
+        return raw
+            .target_qualified_name
+            .split("::")
+            .next()
+            .unwrap_or(raw.target_qualified_name.as_str())
+            .trim_end_matches("::*")
+            .to_string();
+    }
+
+    if raw.target_qualified_name.contains('.') {
+        let mut parts: Vec<&str> = raw.target_qualified_name.split('.').collect();
+        if parts.len() > 1 {
+            parts.pop();
+            return parts.join(".");
+        }
+    }
+
+    raw.target_qualified_name.clone()
+}
+
+fn infer_language_from_path(path: &str) -> &str {
+    if path.ends_with(".rs") {
+        "rust"
+    } else if path.ends_with(".go") {
+        "go"
+    } else if path.ends_with(".py") {
+        "python"
+    } else if path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".js")
+        || path.ends_with(".jsx")
+    {
+        "typescript"
+    } else {
+        ""
+    }
+}
+
+pub fn resolve_import_path(
+    importing_file: &str,
+    module_spec: &str,
+    language: &str,
+) -> Option<String> {
+    let importing_dir = Path::new(importing_file)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    match language {
+        "typescript" => {
+            let module_path = Path::new(module_spec);
+            let base = if module_path.is_absolute() {
+                module_path.to_path_buf()
+            } else {
+                normalize_path(importing_dir.join(module_path))
+            };
+            for candidate in [
+                base.with_extension("ts"),
+                base.with_extension("tsx"),
+                base.join("index.ts"),
+            ] {
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            Some(base.to_string_lossy().replace('\\', "/"))
+        }
+        "rust" => {
+            let normalized = module_spec.trim();
+            let mut parent = importing_dir.to_path_buf();
+            let mut parts: Vec<&str> = normalized.split("::").collect();
+            while parts.first() == Some(&"super") {
+                parts.remove(0);
+                parent = parent
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .to_path_buf();
+            }
+            while parts.first() == Some(&"crate") {
+                parts.remove(0);
+            }
+            let module = parts.first().copied().unwrap_or("");
+            if module.is_empty() {
+                return None;
+            }
+            let file_candidate = normalize_path(parent.join(format!("{module}.rs")));
+            if file_candidate.exists() {
+                return Some(file_candidate.to_string_lossy().replace('\\', "/"));
+            }
+            let mod_candidate = normalize_path(parent.join(module).join("mod.rs"));
+            if mod_candidate.exists() {
+                return Some(mod_candidate.to_string_lossy().replace('\\', "/"));
+            }
+            Some(file_candidate.to_string_lossy().replace('\\', "/"))
+        }
+        "python" => {
+            let module = module_spec.trim_start_matches('.');
+            let dotted = module.replace('.', "/");
+            let py_candidate = normalize_path(importing_dir.join(format!("{dotted}.py")));
+            if py_candidate.exists() {
+                return Some(py_candidate.to_string_lossy().replace('\\', "/"));
+            }
+            let init_candidate = normalize_path(importing_dir.join(dotted).join("__init__.py"));
+            if init_candidate.exists() {
+                return Some(init_candidate.to_string_lossy().replace('\\', "/"));
+            }
+            Some(py_candidate.to_string_lossy().replace('\\', "/"))
+        }
+        "go" => None,
+        _ => None,
+    }
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(seg) => normalized.push(seg),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                normalized.push(component.as_os_str())
+            }
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -178,7 +380,8 @@ mod tests {
 
         let edges = resolve_imports(&conn, imports, "my-repo", "main").unwrap();
         assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].to_symbol_id, "stable_claims");
+        assert_eq!(edges[0].to_symbol_id.as_deref(), Some("stable_claims"));
+        assert!(edges[0].to_name.is_none());
     }
 
     #[test]
@@ -195,23 +398,27 @@ mod tests {
 
         let edges = resolve_imports(&conn, imports, "my-repo", "main").unwrap();
         assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].to_symbol_id, "stable_claims_by_name");
+        assert_eq!(
+            edges[0].to_symbol_id.as_deref(),
+            Some("stable_claims_by_name")
+        );
+        assert!(edges[0].to_name.is_none());
     }
 
     #[test]
-    fn resolve_imports_generates_unresolved_id() {
+    fn resolve_imports_uses_to_name_for_unresolved_target() {
         let conn = setup_test_db();
-        let target = "missing::Symbol".to_string();
         let imports = vec![RawImport {
             source_qualified_name: source_symbol_id_for_path("src/lib.rs"),
-            target_qualified_name: target.clone(),
+            target_qualified_name: "missing::Symbol".to_string(),
             target_name: "Symbol".to_string(),
             import_line: 8,
         }];
 
         let edges = resolve_imports(&conn, imports, "my-repo", "main").unwrap();
         assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].to_symbol_id, unresolved_symbol_stable_id(&target));
+        assert!(edges[0].to_symbol_id.is_none());
+        assert_eq!(edges[0].to_name.as_deref(), Some("Symbol"));
     }
 
     #[test]

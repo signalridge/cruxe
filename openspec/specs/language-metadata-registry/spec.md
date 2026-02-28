@@ -1,7 +1,8 @@
 # language-metadata-registry Specification
 
 ## Purpose
-TBD - created by archiving change tree-sitter-tags-migration. Update Purpose after archive.
+Define one authoritative language registry for indexable languages, extension
+mapping, and parser metadata usage across indexing and query subsystems.
 ## Requirements
 ### Requirement: Canonical indexable language list
 The system SHALL define a single authoritative constant `INDEXABLE_SOURCE_LANGUAGES` in `cruxe-core::languages` containing the canonical set of supported languages for indexing.
@@ -44,4 +45,3 @@ The system SHALL provide an `is_semantic_code_language(lang)` function that retu
 #### Scenario: Non-code language rejected
 - **WHEN** `is_semantic_code_language("markdown")` is called
 - **THEN** it SHALL return `false`
-

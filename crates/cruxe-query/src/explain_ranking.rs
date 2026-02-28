@@ -34,6 +34,7 @@ pub struct RankingScoringBreakdown {
     pub path_affinity: f64,
     pub definition_boost: f64,
     pub kind_match: f64,
+    pub test_file_penalty: f64,
     pub total: f64,
 }
 
@@ -45,6 +46,7 @@ pub struct RankingScoringDetails {
     pub path_affinity_reason: String,
     pub definition_boost_reason: String,
     pub kind_match_reason: String,
+    pub test_file_penalty_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -109,6 +111,7 @@ pub fn explain_ranking(
             path_affinity: reason.path_affinity,
             definition_boost: reason.definition_boost,
             kind_match: reason.kind_match,
+            test_file_penalty: reason.test_file_penalty,
             total: reason.final_score,
         },
         scoring_details: RankingScoringDetails {
@@ -138,12 +141,17 @@ pub fn explain_ranking(
                 "kind-specific boost applied",
                 "no kind-specific boost",
             ),
+            test_file_penalty_reason: component_reason(
+                reason.test_file_penalty,
+                "test-file penalty applied",
+                "no test-file penalty",
+            ),
         },
     })
 }
 
 fn component_reason(value: f64, positive: &str, none: &str) -> String {
-    if value > 0.0 {
+    if value.abs() > f64::EPSILON {
         return format!("{positive} (contribution={value:.3})");
     }
     none.to_string()
@@ -271,7 +279,8 @@ mod tests {
             + scoring.qualified_name
             + scoring.path_affinity
             + scoring.definition_boost
-            + scoring.kind_match;
+            + scoring.kind_match
+            + scoring.test_file_penalty;
         assert!(
             (sum - scoring.total).abs() < 1e-6,
             "sum={} total={}",

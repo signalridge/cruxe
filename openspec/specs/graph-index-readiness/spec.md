@@ -1,7 +1,8 @@
 # graph-index-readiness Specification
 
 ## Purpose
-TBD - created by archiving change harden-001-004-maintainability. Update Purpose after archive.
+Define required SQLite index strategy for `symbol_edges` hot paths so graph
+lookups remain predictable and performant as VCS/call-graph features scale.
 ## Requirements
 ### Requirement: symbol_edges query paths MUST have explicit index strategy
 The system MUST define and apply an explicit SQLite index strategy for
@@ -20,4 +21,3 @@ The strategy MUST cover:
 #### Scenario: Forward edge lookup is backed by indexed access path
 - **WHEN** a forward graph query resolves callees or outbound edges
 - **THEN** query path MUST use an index strategy aligned with `repo/ref/from_symbol_id/edge_type` predicates
-

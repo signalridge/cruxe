@@ -1,7 +1,8 @@
 # runtime-connection-lifecycle Specification
 
 ## Purpose
-TBD - created by archiving change harden-001-004-maintainability. Update Purpose after archive.
+Define managed runtime SQLite connection lifecycle semantics so request paths
+reuse connections safely and recover deterministically from failures.
 ## Requirements
 ### Requirement: Runtime SQLite access MUST use managed connection lifecycle
 MCP runtime paths MUST use a shared connection lifecycle abstraction for SQLite
@@ -20,4 +21,3 @@ Managed lifecycle behavior MUST include:
 #### Scenario: Repeated request path avoids repeated ad-hoc open churn
 - **WHEN** multiple tool requests are served in the same runtime process
 - **THEN** runtime MUST use the managed lifecycle abstraction instead of opening a new independent connection per handler branch
-

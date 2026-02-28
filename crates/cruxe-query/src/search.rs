@@ -1,6 +1,8 @@
 use cruxe_core::config::SearchConfig as CoreSearchConfig;
 use cruxe_core::error::StateError;
-use cruxe_core::types::{QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolRecord};
+use cruxe_core::types::{
+    QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolKind, SymbolRecord, SymbolRole,
+};
 use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -10,14 +12,16 @@ use tantivy::Term;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
 use tantivy::schema::{IndexRecordOption, Value};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::confidence::evaluate_confidence;
 use crate::hybrid::{blend_hybrid_results, semantic_query};
 use crate::intent::{IntentPolicy, classify_intent_with_policy};
 use crate::overlay_merge;
 use crate::planner::build_plan_with_ref;
-use crate::ranking::{rerank, rerank_with_reasons};
+use crate::ranking::{
+    kind_weight, query_intent_boost, rerank, rerank_with_reasons, test_file_penalty,
+};
 use crate::rerank::{RerankDocument, rerank_documents};
 use crate::scoring::normalize_relevance_score;
 
@@ -99,6 +103,11 @@ pub struct SearchMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_skipped_reason: Option<String>,
     pub semantic_fallback: bool,
+    pub semantic_degraded: bool,
+    pub semantic_limit_used: usize,
+    pub lexical_fanout_used: usize,
+    pub semantic_fanout_used: usize,
+    pub semantic_budget_exhausted: bool,
     pub external_provider_blocked: bool,
     pub embedding_model_version: String,
     pub rerank_provider: String,
@@ -115,6 +124,8 @@ pub struct SearchMetadata {
     pub query_intent_confidence: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent_escalation_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,6 +133,7 @@ pub struct SearchExecutionOptions {
     pub search_config: CoreSearchConfig,
     pub semantic_ratio_override: Option<f64>,
     pub confidence_threshold_override: Option<f64>,
+    pub role: Option<String>,
 }
 
 /// Optional debug payload for search_code.
@@ -191,6 +203,11 @@ pub fn search_code_with_options(
     let effective_ref = plan.ref_scope.r#ref.clone();
     let search_ref = Some(effective_ref.as_str());
     let mut semantic_state = semantic_execution_state(&intent, &options);
+    let mut semantic_limit_used = 0usize;
+    let mut lexical_fanout_used = 0usize;
+    let mut semantic_fanout_used = 0usize;
+    let mut semantic_budget_exhausted = false;
+    let mut response_warnings = Vec::new();
 
     let mut all_results = Vec::new();
 
@@ -209,6 +226,7 @@ pub fn search_code_with_options(
             SearchScope {
                 ref_name: search_ref,
                 language,
+                role: options.role.as_deref(),
             },
             limit,
         )?;
@@ -227,6 +245,7 @@ pub fn search_code_with_options(
             SearchScope {
                 ref_name: search_ref,
                 language,
+                role: options.role.as_deref(),
             },
             limit,
         )?;
@@ -245,6 +264,7 @@ pub fn search_code_with_options(
             SearchScope {
                 ref_name: search_ref,
                 language,
+                role: options.role.as_deref(),
             },
             limit,
         )?;
@@ -266,10 +286,30 @@ pub fn search_code_with_options(
     if semantic_state.semantic_eligible() {
         let (semantic_limit, lexical_fanout, semantic_fanout) =
             semantic_fanout_limits(limit, &options.search_config);
+        semantic_limit_used = semantic_limit;
+        lexical_fanout_used = lexical_fanout;
+        semantic_fanout_used = semantic_fanout;
         if let Some(conn) = conn {
             if let Some(project_id) =
                 resolve_semantic_project_id(conn, effective_ref.as_str(), &all_results)
             {
+                if let Ok(vector_count) = cruxe_state::vector_index::count_vectors_for_scope(
+                    conn,
+                    &project_id,
+                    &effective_ref,
+                ) {
+                    if vector_count >= 200_000 {
+                        response_warnings.push(format!(
+                            "semantic_vector_scale_tier3: {} vectors indexed for ref {}; sqlite backend may degrade. consider search.semantic.embedding.vector_backend=\"lancedb\"",
+                            vector_count, effective_ref
+                        ));
+                    } else if vector_count >= 50_000 {
+                        response_warnings.push(format!(
+                            "semantic_vector_scale_tier2: {} vectors indexed for ref {}; sqlite backend may degrade with larger corpora",
+                            vector_count, effective_ref
+                        ));
+                    }
+                }
                 match semantic_query(
                     conn,
                     &options.search_config,
@@ -284,20 +324,46 @@ pub fn search_code_with_options(
                         if semantic_output.results.is_empty() {
                             semantic_state.mark_skipped("semantic_no_matches");
                         } else {
+                            let mut semantic_results = semantic_output.results;
+                            enrich_semantic_hits_with_symbol_index(
+                                &index_set.symbols,
+                                &mut semantic_results,
+                                effective_ref.as_str(),
+                            )?;
+                            let effective_semantic_cap = semantic_limit.min(semantic_fanout);
+                            semantic_budget_exhausted =
+                                semantic_results.len() >= effective_semantic_cap;
                             all_results = blend_hybrid_results(
                                 all_results,
-                                semantic_output.results,
+                                semantic_results,
                                 semantic_state.semantic_ratio_used,
                                 lexical_fanout,
                                 semantic_fanout,
                             );
+                            for result in &mut all_results {
+                                if result.provenance == "semantic" {
+                                    let kind_match = result
+                                        .kind
+                                        .as_deref()
+                                        .map(|kind| {
+                                            kind_weight(kind) + query_intent_boost(query, kind)
+                                        })
+                                        .unwrap_or(0.0);
+                                    let penalty = test_file_penalty(&result.path);
+                                    result.score += (kind_match + penalty) as f32;
+                                }
+                            }
                             semantic_state.semantic_triggered = true;
                             semantic_state.semantic_skipped_reason = None;
                         }
                     }
                     Err(err) => {
-                        debug!(
+                        warn!(
                             error = %err,
+                            query,
+                            ref_name = %effective_ref,
+                            project_id = %project_id,
+                            reason = "semantic_backend_error",
                             mode = %options.search_config.semantic.mode,
                             "semantic query failed, falling back to lexical-only results"
                         );
@@ -311,6 +377,13 @@ pub fn search_code_with_options(
         } else {
             semantic_state.mark_skipped("semantic_requires_state_connection");
         }
+    }
+
+    // Role-filtered searches are symbol-channel queries. Semantic/hybrid blending
+    // can introduce additional symbol candidates, so enforce a final role guard
+    // before response shaping.
+    if let Some(role) = options.role.as_deref() {
+        retain_role_filtered_results(&mut all_results, role);
     }
 
     let total = all_results.len();
@@ -378,6 +451,11 @@ pub fn search_code_with_options(
         semantic_triggered: semantic_state.semantic_triggered,
         semantic_skipped_reason: semantic_state.semantic_skipped_reason,
         semantic_fallback: semantic_state.semantic_fallback,
+        semantic_degraded: semantic_state.semantic_fallback,
+        semantic_limit_used,
+        lexical_fanout_used,
+        semantic_fanout_used,
+        semantic_budget_exhausted,
         external_provider_blocked: semantic_state.external_provider_blocked,
         embedding_model_version: options
             .search_config
@@ -396,6 +474,7 @@ pub fn search_code_with_options(
         channel_agreement: confidence.channel_agreement,
         query_intent_confidence: intent.confidence,
         intent_escalation_hint: intent.escalation_hint.clone(),
+        warnings: response_warnings,
     };
 
     // Build suggested next actions
@@ -611,13 +690,13 @@ fn clone_connection_for_parallel(conn: &Connection) -> Option<Connection> {
 fn semantic_fanout_limits(limit: usize, search_config: &CoreSearchConfig) -> (usize, usize, usize) {
     let semantic_limit = limit
         .saturating_mul(search_config.semantic.semantic_limit_multiplier)
-        .max(20);
+        .clamp(20, 1000);
     let lexical_fanout = limit
         .saturating_mul(search_config.semantic.lexical_fanout_multiplier)
-        .max(40);
+        .clamp(40, 2000);
     let semantic_fanout = limit
         .saturating_mul(search_config.semantic.semantic_fanout_multiplier)
-        .max(30);
+        .clamp(30, 1000);
     (semantic_limit, lexical_fanout, semantic_fanout)
 }
 
@@ -738,6 +817,22 @@ fn default_result_provenance() -> String {
     "lexical".to_string()
 }
 
+fn retain_role_filtered_results(results: &mut Vec<SearchResult>, role: &str) {
+    let Ok(expected_role) = role.parse::<SymbolRole>() else {
+        results.clear();
+        return;
+    };
+
+    results.retain(|result| {
+        result.result_type == "symbol"
+            && result
+                .kind
+                .as_deref()
+                .and_then(SymbolKind::parse_kind)
+                .is_some_and(|kind| kind.role() == expected_role)
+    });
+}
+
 #[derive(Debug, Clone)]
 struct SemanticExecutionState {
     semantic_ratio_used: f64,
@@ -831,6 +926,7 @@ impl SemanticExecutionState {
 struct SearchScope<'a> {
     ref_name: Option<&'a str>,
     language: Option<&'a str>,
+    role: Option<&'a str>,
 }
 
 fn search_index(
@@ -842,6 +938,10 @@ fn search_index(
     scope: SearchScope<'_>,
     limit: usize,
 ) -> Result<Vec<SearchResult>, StateError> {
+    if scope.role.is_some() && result_type != "symbol" {
+        return Ok(Vec::new());
+    }
+
     let reader = index.reader().map_err(StateError::tantivy)?;
     let searcher = reader.searcher();
     let schema = index.schema();
@@ -872,14 +972,31 @@ fn search_index(
         return Ok(Vec::new());
     }
 
-    let query_parser = QueryParser::for_index(index, search_fields);
+    let mut query_parser = QueryParser::for_index(index, search_fields);
+    if result_type == "symbol" {
+        if let Ok(field) = schema.get_field("symbol_exact") {
+            query_parser.set_field_boost(field, 10.0);
+        }
+        if let Ok(field) = schema.get_field("qualified_name") {
+            query_parser.set_field_boost(field, 3.0);
+        }
+        if let Ok(field) = schema.get_field("signature") {
+            query_parser.set_field_boost(field, 1.5);
+        }
+        if let Ok(field) = schema.get_field("path") {
+            query_parser.set_field_boost(field, 1.0);
+        }
+        if let Ok(field) = schema.get_field("content") {
+            query_parser.set_field_boost(field, 0.5);
+        }
+    }
     let parsed_query = query_parser
         .parse_query(query)
         .map_err(StateError::tantivy)?;
 
     // Build final query with optional ref and language filters
     let final_query: Box<dyn tantivy::query::Query> =
-        if scope.ref_name.is_some() || scope.language.is_some() {
+        if scope.ref_name.is_some() || scope.language.is_some() || scope.role.is_some() {
             let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
             clauses.push((Occur::Must, parsed_query));
 
@@ -901,6 +1018,17 @@ fn search_index(
                     Occur::Must,
                     Box::new(TermQuery::new(
                         Term::from_field_text(lang_field, lang),
+                        IndexRecordOption::Basic,
+                    )),
+                ));
+            }
+            if let Some(role) = scope.role
+                && let Ok(role_field) = schema.get_field("role")
+            {
+                clauses.push((
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(role_field, role),
                         IndexRecordOption::Basic,
                     )),
                 ));
@@ -1137,6 +1265,97 @@ fn compute_stable_result_id(input: StableResultIdInput<'_>) -> String {
     format!("res_{}", blake3::hash(payload.as_bytes()).to_hex())
 }
 
+/// Enrich semantic-only hits with symbol metadata using `symbol_stable_id` lookup.
+///
+/// This is the parity bridge introduced by `refactor-multilang-symbol-contract` task 6.8:
+/// semantic candidates should carry the same `kind`/`name`/`qualified_name` fields
+/// as lexical candidates before downstream ranking and protocol serialization.
+/// `semantic-retrieval-quality-contract` then layers degraded-state/budget metadata
+/// on top of this enrichment path (it does not introduce a second enrichment pipeline).
+fn enrich_semantic_hits_with_symbol_index(
+    symbol_index: &tantivy::Index,
+    results: &mut [SearchResult],
+    ref_name: &str,
+) -> Result<(), StateError> {
+    if results.is_empty() {
+        return Ok(());
+    }
+
+    let reader = symbol_index.reader().map_err(StateError::tantivy)?;
+    let searcher = reader.searcher();
+    let schema = symbol_index.schema();
+
+    let Some(symbol_stable_id_field) = schema.get_field("symbol_stable_id").ok() else {
+        return Ok(());
+    };
+    let ref_field = schema.get_field("ref").ok();
+    let kind_field = schema.get_field("kind").ok();
+    let name_field = schema.get_field("symbol_exact").ok();
+    let qualified_name_field = schema.get_field("qualified_name").ok();
+
+    for result in results.iter_mut() {
+        if result.kind.is_some() && result.name.is_some() && result.qualified_name.is_some() {
+            continue;
+        }
+        let Some(symbol_stable_id) = result
+            .symbol_stable_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+
+        let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = vec![(
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(symbol_stable_id_field, symbol_stable_id),
+                IndexRecordOption::Basic,
+            )),
+        )];
+        if let Some(field) = ref_field {
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(field, ref_name),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+
+        let query = BooleanQuery::new(clauses);
+        let top_docs = searcher
+            .search(&query, &TopDocs::with_limit(1))
+            .map_err(StateError::tantivy)?;
+        let Some((_, doc_address)) = top_docs.into_iter().next() else {
+            continue;
+        };
+        let doc = searcher
+            .doc::<tantivy::TantivyDocument>(doc_address)
+            .map_err(StateError::tantivy)?;
+
+        if result.kind.is_none() {
+            result.kind = kind_field
+                .and_then(|field| doc.get_first(field))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string);
+        }
+        if result.name.is_none() {
+            result.name = name_field
+                .and_then(|field| doc.get_first(field))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string);
+        }
+        if result.qualified_name.is_none() {
+            result.qualified_name = qualified_name_field
+                .and_then(|field| doc.get_first(field))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string);
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,6 +1501,7 @@ mod tests {
                 search_config,
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .unwrap();
@@ -1295,6 +1515,105 @@ mod tests {
         assert!(response.metadata.semantic_triggered);
         assert!(response.metadata.semantic_ratio_used > 0.0);
         assert!(response.metadata.semantic_skipped_reason.is_none());
+    }
+
+    #[test]
+    fn hybrid_mode_role_filter_is_enforced_after_semantic_blend() {
+        let dir = tempdir().unwrap();
+        let index_set = IndexSet::open(dir.path()).unwrap();
+
+        let db_path = dir.path().join("state.db");
+        let conn = db::open_connection(&db_path).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        let mut search_config = CoreSearchConfig::default();
+        search_config.semantic.mode = "hybrid".to_string();
+        search_config.semantic.embedding.provider = "local".to_string();
+        search_config.semantic.embedding.profile = "fast_local".to_string();
+        search_config.semantic.embedding.model = "NomicEmbedTextV15Q".to_string();
+        search_config.semantic.embedding.model_version = "fastembed-1".to_string();
+        search_config.semantic.embedding.dimensions = 768;
+        search_config.semantic.ratio = 0.6;
+        search_config.semantic.rerank.provider = "none".to_string();
+
+        let mut provider =
+            cruxe_state::embedding::build_embedding_provider(&search_config.semantic)
+                .unwrap()
+                .provider;
+        let query_text = "where is user login flow handled";
+        let query_vector = provider.embed_batch(&[query_text.to_string()]).unwrap();
+        let vector = query_vector.into_iter().next().unwrap();
+
+        vector_index::upsert_vectors(
+            &conn,
+            &[VectorRecord {
+                project_id: "proj-semantic".to_string(),
+                ref_name: "main".to_string(),
+                symbol_stable_id: "stable-auth-1".to_string(),
+                snippet_hash: "hash-auth-1".to_string(),
+                embedding_model_id: provider.model_id().to_string(),
+                embedding_model_version: provider.model_version().to_string(),
+                embedding_dimensions: provider.dimensions(),
+                path: "src/auth.rs".to_string(),
+                line_start: 10,
+                line_end: 24,
+                language: "rust".to_string(),
+                chunk_type: Some("function_body".to_string()),
+                snippet_text: "fn authenticate_user(request: LoginRequest) -> Result<User>"
+                    .to_string(),
+                vector,
+            }],
+        )
+        .unwrap();
+        cruxe_state::symbols::insert_symbol(
+            &conn,
+            &SymbolRecord {
+                repo: "proj-semantic".to_string(),
+                r#ref: "main".to_string(),
+                commit: None,
+                path: "src/auth.rs".to_string(),
+                language: "rust".to_string(),
+                symbol_id: "sym-auth-1".to_string(),
+                symbol_stable_id: "stable-auth-1".to_string(),
+                name: "authenticate_user".to_string(),
+                qualified_name: "authenticate_user".to_string(),
+                kind: SymbolKind::Function,
+                signature: Some(
+                    "fn authenticate_user(request: LoginRequest) -> Result<User>".to_string(),
+                ),
+                line_start: 10,
+                line_end: 24,
+                parent_symbol_id: None,
+                visibility: Some("pub".to_string()),
+                content: Some(
+                    "fn authenticate_user(request: LoginRequest) -> Result<User> { todo!() }"
+                        .to_string(),
+                ),
+            },
+        )
+        .unwrap();
+
+        let response = search_code_with_options(
+            &index_set,
+            Some(&conn),
+            query_text,
+            Some("main"),
+            Some("rust"),
+            10,
+            false,
+            SearchExecutionOptions {
+                search_config,
+                semantic_ratio_override: None,
+                confidence_threshold_override: None,
+                role: Some("type".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            response.results.is_empty(),
+            "semantic function hits must not leak into role=type queries"
+        );
     }
 
     #[test]
@@ -1387,6 +1706,7 @@ mod tests {
                 search_config,
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .unwrap();
@@ -1519,6 +1839,7 @@ mod tests {
                 search_config,
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .unwrap();
@@ -1555,6 +1876,7 @@ mod tests {
                 search_config,
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .unwrap();
@@ -1615,12 +1937,14 @@ mod tests {
                 search_config,
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
+                role: None,
             },
         )
         .unwrap();
 
         assert!(!response.metadata.semantic_triggered);
         assert!(response.metadata.semantic_fallback);
+        assert!(response.metadata.semantic_degraded);
         assert_eq!(
             response.metadata.semantic_skipped_reason.as_deref(),
             Some("semantic_backend_error")
@@ -1654,6 +1978,7 @@ mod tests {
                 search_config,
                 semantic_ratio_override: None,
                 confidence_threshold_override: Some(0.91),
+                role: None,
             },
         )
         .unwrap();
@@ -1676,5 +2001,14 @@ mod tests {
         config.semantic.semantic_fanout_multiplier = 7;
         assert_eq!(semantic_fanout_limits(3, &config), (20, 40, 30));
         assert_eq!(semantic_fanout_limits(10, &config), (50, 60, 70));
+    }
+
+    #[test]
+    fn semantic_fanout_limits_apply_caps() {
+        let mut config = CoreSearchConfig::default();
+        config.semantic.semantic_limit_multiplier = 200;
+        config.semantic.lexical_fanout_multiplier = 300;
+        config.semantic.semantic_fanout_multiplier = 400;
+        assert_eq!(semantic_fanout_limits(20, &config), (1000, 2000, 1000));
     }
 }

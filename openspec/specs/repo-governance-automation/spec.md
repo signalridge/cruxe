@@ -1,7 +1,8 @@
 # repo-governance-automation Specification
 
 ## Purpose
-TBD - created by archiving change harden-001-004-maintainability. Update Purpose after archive.
+Define enforceable repository governance via required CI quality gates and
+benchmark harness entrypoints for regression-sensitive capabilities.
 ## Requirements
 ### Requirement: Repository quality gates are automated and required
 The repository MUST provide automated CI quality gates for pull requests,
@@ -70,4 +71,3 @@ explicit and behavior-safe.
 #### Scenario: External review findings are triaged with explicit scope boundaries
 - **WHEN** maintainers receive external spec-vs-code review findings spanning multiple domains
 - **THEN** artifacts MUST classify each finding (confirmed/partial/not-confirmed) and map confirmed/partial items to explicit task groups in the active change workflow
-

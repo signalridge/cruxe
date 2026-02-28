@@ -5,11 +5,7 @@ pub mod rust;
 pub mod typescript;
 
 // tree-sitter-tags pipeline (replaces per-language symbol extraction).
-pub mod enricher;
-pub mod enricher_go;
-pub mod enricher_python;
-pub mod enricher_rust;
-pub mod enricher_typescript;
+pub mod generic_mapper;
 pub mod tag_extract;
 pub mod tag_registry;
 pub(crate) mod text;
@@ -62,17 +58,8 @@ pub fn extract_symbols_with_diagnostics(
     source: &str,
     language: &str,
 ) -> (Vec<ExtractedSymbol>, SymbolExtractionDiagnostics) {
-    use enricher::LanguageEnricher;
-
-    let enricher: &dyn LanguageEnricher = match language {
-        "rust" => &enricher_rust::RustEnricher,
-        "typescript" => &enricher_typescript::TypeScriptEnricher,
-        "python" => &enricher_python::PythonEnricher,
-        "go" => &enricher_go::GoEnricher,
-        _ => return (Vec::new(), SymbolExtractionDiagnostics::default()),
-    };
     let (symbols, diagnostics) =
-        tag_extract::extract_symbols_via_tags_with_diagnostics(tree, source, language, enricher);
+        tag_extract::extract_symbols_via_tags_with_diagnostics(tree, source, language);
     (
         symbols,
         SymbolExtractionDiagnostics {

@@ -1,5 +1,5 @@
 use super::ExtractedSymbol;
-use super::enricher::LanguageEnricher;
+use super::generic_mapper;
 use super::tag_registry;
 use tracing::debug;
 use tree_sitter_tags::Tag;
@@ -18,16 +18,14 @@ pub fn extract_symbols_via_tags(
     tree: &tree_sitter::Tree,
     source: &str,
     language: &str,
-    enricher: &dyn LanguageEnricher,
 ) -> Vec<ExtractedSymbol> {
-    extract_symbols_via_tags_with_diagnostics(tree, source, language, enricher).0
+    extract_symbols_via_tags_with_diagnostics(tree, source, language).0
 }
 
 pub fn extract_symbols_via_tags_with_diagnostics(
     tree: &tree_sitter::Tree,
     source: &str,
     language: &str,
-    enricher: &dyn LanguageEnricher,
 ) -> (Vec<ExtractedSymbol>, TagExtractionDiagnostics) {
     let source_bytes = source.as_bytes();
 
@@ -61,7 +59,7 @@ pub fn extract_symbols_via_tags_with_diagnostics(
     // Step 3: Map definition tags to ExtractedSymbol.
     let symbols = tags
         .iter()
-        .filter_map(|(tag, kind_name)| map_tag_to_symbol(tag, kind_name, source, tree, enricher))
+        .filter_map(|(tag, kind_name)| map_tag_to_symbol(tag, kind_name, source, tree, language))
         .collect();
 
     (symbols, TagExtractionDiagnostics { had_parse_error })
@@ -72,7 +70,7 @@ fn map_tag_to_symbol(
     tag_kind: &str,
     source: &str,
     tree: &tree_sitter::Tree,
-    enricher: &dyn LanguageEnricher,
+    language: &str,
 ) -> Option<ExtractedSymbol> {
     let name = source.get(tag.name_range.clone())?.to_string();
     let body = source.get(tag.range.clone()).map(String::from);
@@ -82,25 +80,20 @@ fn map_tag_to_symbol(
         .root_node()
         .descendant_for_byte_range(tag.range.start, tag.range.end);
 
-    let parent_name = node.and_then(|n| enricher.find_parent_scope(n, source));
+    let parent_name = node.and_then(|n| generic_mapper::find_parent_scope(n, source));
     let has_parent = parent_name.is_some();
 
-    let kind = enricher.map_kind(tag_kind, has_parent, node, source)?;
-    let signature = if matches!(
-        kind,
-        cruxe_core::types::SymbolKind::Function | cruxe_core::types::SymbolKind::Method
-    ) {
-        source
-            .get(tag.line_range.clone())
-            .map(|s| s.trim().to_string())
-    } else {
-        None
-    };
-
-    let visibility = node.and_then(|n| enricher.extract_visibility(n, source));
+    let kind = generic_mapper::map_tag_kind(tag_kind, has_parent, node.map(|n| n.kind()))?;
+    let signature = generic_mapper::extract_signature(kind, source, tag.line_range.clone());
+    let visibility = None;
 
     let qualified_name = match &parent_name {
-        Some(p) => format!("{}{}{}", p, enricher.separator(), name),
+        Some(p) => format!(
+            "{}{}{}",
+            p,
+            generic_mapper::separator_for_language(language),
+            name
+        ),
         None => name.clone(),
     };
 
@@ -120,7 +113,7 @@ fn map_tag_to_symbol(
         name,
         qualified_name,
         kind,
-        language: enricher.language().to_string(),
+        language: language.to_string(),
         signature,
         line_start,
         line_end,
@@ -133,7 +126,6 @@ fn map_tag_to_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::languages::enricher_rust::RustEnricher;
     use crate::parser::parse_file;
 
     #[test]
@@ -146,8 +138,7 @@ struct Foo {
 fn run() {}
 "#;
         let tree = parse_file(source, "rust").expect("parse rust");
-        let enricher = RustEnricher;
-        let symbols = extract_symbols_via_tags(&tree, source, "rust", &enricher);
+        let symbols = extract_symbols_via_tags(&tree, source, "rust");
 
         let struct_symbol = symbols.iter().find(|s| s.name == "Foo").expect("Foo");
         assert_eq!(struct_symbol.signature, None);
@@ -160,9 +151,8 @@ fn run() {}
     fn diagnostics_flag_partial_parse_errors() {
         let source = "fn broken( {";
         let tree = parse_file(source, "rust").expect("parse rust");
-        let enricher = RustEnricher;
         let (_symbols, diagnostics) =
-            extract_symbols_via_tags_with_diagnostics(&tree, source, "rust", &enricher);
+            extract_symbols_via_tags_with_diagnostics(&tree, source, "rust");
         assert!(diagnostics.had_parse_error);
     }
 
@@ -176,8 +166,7 @@ fn outer() {
 fn inner() {}
 "#;
         let tree = parse_file(source, "rust").expect("parse rust");
-        let enricher = RustEnricher;
-        let symbols = extract_symbols_via_tags(&tree, source, "rust", &enricher);
+        let symbols = extract_symbols_via_tags(&tree, source, "rust");
         let outer = symbols.iter().find(|s| s.name == "outer").expect("outer");
         assert!(
             outer.line_end > outer.line_start,

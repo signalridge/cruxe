@@ -22,6 +22,7 @@ const REQUIRED_SYMBOL_FIELDS: &[&str] = &[
     "ref",
     "symbol_exact",
     "kind",
+    "role",
     "language",
     "symbol_id",
     "symbol_stable_id",
@@ -133,10 +134,16 @@ fn open_existing_index(
 
 fn validate_required_fields(index: &Index, required_fields: &[&str]) -> Result<(), StateError> {
     let schema = index.schema();
-    if required_fields
+    let missing: Vec<&str> = required_fields
         .iter()
-        .any(|name| schema.get_field(name).is_err())
-    {
+        .copied()
+        .filter(|name| schema.get_field(name).is_err())
+        .collect();
+    if !missing.is_empty() {
+        tracing::warn!(
+            missing_fields = ?missing,
+            "index schema is incompatible with current required fields; reindex required"
+        );
         return Err(StateError::SchemaMigrationRequired {
             current: 0,
             required: constants::SCHEMA_VERSION,
@@ -169,6 +176,7 @@ fn build_symbols_schema() -> Schema {
     builder.add_text_field("commit", STORED);
     builder.add_text_field("symbol_exact", STRING | STORED);
     builder.add_text_field("kind", STRING | STORED);
+    builder.add_text_field("role", STRING | STORED);
     builder.add_text_field("language", STRING | STORED);
     builder.add_text_field("visibility", STORED);
     builder.add_text_field("symbol_id", STRING | STORED);

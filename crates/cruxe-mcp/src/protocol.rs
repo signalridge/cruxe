@@ -33,6 +33,16 @@ pub struct ProtocolMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_fallback: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_degraded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_limit_used: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lexical_fanout_used: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_fanout_used: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_budget_exhausted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_provider_blocked: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_model_version: Option<String>,
@@ -86,6 +96,11 @@ impl ProtocolMetadata {
             semantic_triggered: None,
             semantic_skipped_reason: None,
             semantic_fallback: None,
+            semantic_degraded: None,
+            semantic_limit_used: None,
+            lexical_fanout_used: None,
+            semantic_fanout_used: None,
+            semantic_budget_exhausted: None,
             external_provider_blocked: None,
             embedding_model_version: None,
             rerank_provider: None,

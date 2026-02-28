@@ -1,7 +1,8 @@
 # parallel-development-guardrails Specification
 
 ## Purpose
-TBD - created by archiving change harden-001-004-maintainability. Update Purpose after archive.
+Define parallel-delivery guardrails (ownership, conflict hotspots, escalation)
+so multi-stream implementation stays coordinated and merge-safe.
 ## Requirements
 ### Requirement: execution-order MUST include parallel development guardrails
 The cross-spec execution order documentation MUST define parallel development
@@ -25,4 +26,3 @@ implementation starts.
 #### Scenario: Governance baseline blocks non-compliant integration
 - **WHEN** a pull request violates required quality/security/policy checks
 - **THEN** repository governance automation MUST block merge until compliance is restored
-

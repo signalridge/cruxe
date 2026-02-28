@@ -140,6 +140,7 @@ impl BatchWriter {
         let f_commit = f("commit")?;
         let f_symbol_exact = f("symbol_exact")?;
         let f_kind = f("kind")?;
+        let f_role = f("role")?;
         let f_language = f("language")?;
         let f_visibility = f("visibility")?;
         let f_symbol_id = f("symbol_id")?;
@@ -160,6 +161,7 @@ impl BatchWriter {
                 f_commit => sym.commit.as_deref().unwrap_or(""),
                 f_symbol_exact => sym.name.as_str(),
                 f_kind => sym.kind.as_str(),
+                f_role => sym.kind.role().as_str(),
                 f_language => sym.language.as_str(),
                 f_visibility => sym.visibility.as_deref().unwrap_or(""),
                 f_symbol_id => sym.symbol_id.as_str(),
@@ -379,13 +381,51 @@ pub fn replace_import_edges_for_file(
 ) -> Result<(), StateError> {
     let source_edge_id = import_extract::source_symbol_id_for_path(file_path);
     let resolved = import_extract::resolve_imports(conn, raw_imports, repo, ref_name)?;
-    edges::replace_edges_for_file(
-        conn,
-        repo,
-        ref_name,
-        vec![source_edge_id.as_str()],
-        resolved,
-    )?;
+    conn.execute_batch("SAVEPOINT cruxe_replace_import_edges")
+        .map_err(StateError::sqlite)?;
+    let result = (|| {
+        conn.execute(
+            "DELETE FROM symbol_edges
+             WHERE repo = ?1 AND \"ref\" = ?2 AND from_symbol_id = ?3 AND edge_type = 'imports'",
+            rusqlite::params![repo, ref_name, source_edge_id],
+        )
+        .map_err(StateError::sqlite)?;
+
+        let mut stmt = conn
+            .prepare(
+                "INSERT OR REPLACE INTO symbol_edges
+                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .map_err(StateError::sqlite)?;
+        for edge in resolved {
+            stmt.execute(rusqlite::params![
+                edge.repo,
+                edge.ref_name,
+                edge.from_symbol_id,
+                edge.to_symbol_id,
+                edge.to_name,
+                edge.edge_type,
+                edge.confidence,
+            ])
+            .map_err(StateError::sqlite)?;
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("RELEASE SAVEPOINT cruxe_replace_import_edges")
+                .map_err(StateError::sqlite)?;
+        }
+        Err(err) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO SAVEPOINT cruxe_replace_import_edges;
+                 RELEASE SAVEPOINT cruxe_replace_import_edges",
+            );
+            return Err(err);
+        }
+    }
     Ok(())
 }
 
@@ -426,6 +466,7 @@ fn write_symbols_to_tantivy(
     let f_commit = f("commit")?;
     let f_symbol_exact = f("symbol_exact")?;
     let f_kind = f("kind")?;
+    let f_role = f("role")?;
     let f_language = f("language")?;
     let f_visibility = f("visibility")?;
     let f_symbol_id = f("symbol_id")?;
@@ -447,6 +488,7 @@ fn write_symbols_to_tantivy(
             f_commit => sym.commit.as_deref().unwrap_or(""),
             f_symbol_exact => sym.name.as_str(),
             f_kind => sym.kind.as_str(),
+            f_role => sym.kind.role().as_str(),
             f_language => sym.language.as_str(),
             f_visibility => sym.visibility.as_deref().unwrap_or(""),
             f_symbol_id => sym.symbol_id.as_str(),
