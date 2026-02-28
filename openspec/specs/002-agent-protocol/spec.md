@@ -401,3 +401,100 @@ Note: snippet search fields (`content`, `path`, `imports`) and file search field
 - **WHEN** Tantivy returns results with field-boosted BM25 scores
 - **THEN** the reranking layer MUST apply kind_weight, exact_match, and other boost signals on top of the field-boosted BM25 base scores (the two layers are independent and additive)
 
+### Requirement: Protocol MUST expose policy-governance metadata
+Search and context-pack responses MUST include additive policy metadata fields.
+
+Required fields:
+- `policy_mode`
+- `policy_blocked_count`
+- `policy_redacted_count`
+- `policy_warnings` (when present)
+
+#### Scenario: Blocked content count is observable
+- **WHEN** policy filtering removes one or more candidates
+- **THEN** response metadata MUST include `policy_blocked_count` greater than zero
+
+#### Scenario: Redaction is observable
+- **WHEN** one or more snippets are redacted
+- **THEN** response metadata MUST include `policy_redacted_count` greater than zero
+
+### Requirement: Policy override requests MUST honor governance constraints
+If protocol allows per-request policy override parameters, runtime MUST enforce governance constraints on allowed override modes.
+
+#### Scenario: Disallowed override is rejected deterministically
+- **WHEN** request attempts to set a policy override not permitted by runtime governance
+- **THEN** runtime MUST reject or normalize the override using deterministic policy rules
+
+### Requirement: Explain output MUST expose budgeted signal accounting
+When ranking explainability is enabled, protocol metadata MUST expose budget accounting fields for each signal contribution.
+
+Required fields per signal in full mode:
+- `raw_value`
+- `clamped_value`
+- `effective_value`
+
+#### Scenario: Full explain includes budget accounting fields
+- **WHEN** `ranking_explain_level` resolves to `full`
+- **THEN** each emitted signal contribution MUST include raw/clamped/effective fields
+
+#### Scenario: Basic explain remains compact
+- **WHEN** `ranking_explain_level` resolves to `basic`
+- **THEN** response MAY omit per-signal raw/clamped breakdown while preserving compatibility
+
+### Requirement: Precedence audit metadata is additive
+The protocol MUST include additive precedence-audit metadata showing whether lexical-dominance guards altered effective signal contributions.
+
+#### Scenario: Guard-triggered adjustment is observable
+- **WHEN** precedence guard reduces one or more secondary contributions
+- **THEN** metadata MUST include deterministic audit information describing the adjustment
+
+### Requirement: Protocol MUST expose adaptive query plan metadata
+`search_code` metadata MUST include additive fields describing adaptive planning decisions.
+
+Required additive fields:
+- `query_plan_selected`
+- `query_plan_executed`
+- `query_plan_selection_reason`
+- `query_plan_downgraded` (boolean)
+- `query_plan_downgrade_reason` (when downgraded)
+- `query_plan_budget_used`
+
+#### Scenario: Selected plan appears in metadata
+- **WHEN** search executes with adaptive planning enabled
+- **THEN** response metadata MUST include `query_plan_selected`
+
+#### Scenario: Downgraded execution includes reason
+- **WHEN** runtime downgrades from a deeper plan to a lighter plan
+- **THEN** metadata MUST include `query_plan_downgraded=true` and a deterministic reason code
+- **AND** `query_plan_executed` MUST reflect the final executed plan
+
+#### Scenario: Selection reason is always present
+- **WHEN** adaptive planning is enabled
+- **THEN** metadata MUST include `query_plan_selection_reason` with a deterministic rule code
+
+### Requirement: Protocol MUST support build_context_pack tool
+The MCP protocol surface MUST include a `build_context_pack` tool for structured, budgeted context assembly.
+
+Request contract MUST include:
+- `query`
+- `ref` (optional, default current)
+- `budget_tokens`
+- optional tuning parameters for section priority.
+
+#### Scenario: Tool invocation returns structured pack payload
+- **WHEN** client calls `build_context_pack` with valid parameters
+- **THEN** response MUST include sectioned pack items and pack-level diagnostics
+
+### Requirement: Context pack response MUST expose coverage diagnostics
+Response metadata MUST include additive coverage diagnostics for iterative retrieval.
+
+Required diagnostics:
+- `token_budget_used`
+- `dropped_candidates`
+- `coverage_summary`
+- `suggested_next_queries` (when coverage is insufficient)
+
+#### Scenario: Insufficient coverage emits next-query hints
+- **WHEN** budget exhaustion prevents desired section coverage
+- **THEN** response MUST include deterministic `suggested_next_queries`
+
