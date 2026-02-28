@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn counters_track_selection_and_downgrade() {
-        reset_counters_for_test();
+        let before = snapshot_counters();
         let mut controller = PlanController::select(PlanSelectionInput {
             intent: QueryIntent::NaturalLanguage,
             lexical_confidence: 0.1,
@@ -537,12 +537,12 @@ mod tests {
         controller.downgrade(DowngradeReason::BudgetExhausted);
         let counters = snapshot_counters();
         assert!(
-            counters.selected_semantic_deep >= 1,
-            "expected semantic_deep selection counter to increase"
+            counters.selected_semantic_deep > before.selected_semantic_deep,
+            "expected semantic_deep selection counter to increase from baseline"
         );
         assert!(
-            counters.downgrade_budget_exhausted >= 1,
-            "expected budget_exhausted downgrade counter to increase"
+            counters.downgrade_budget_exhausted > before.downgrade_budget_exhausted,
+            "expected budget_exhausted downgrade counter to increase from baseline"
         );
     }
 }
