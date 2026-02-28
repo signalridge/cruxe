@@ -23,14 +23,16 @@ cargo test -p cruxe-query context_pack::tests -- --nocapture
 cargo test -p cruxe-mcp build_context_pack -- --nocapture
 cargo test -p cruxe-mcp t363_context_pack_iterative_fixture_drives_followup_query_loop -- --nocapture
 cargo test -p cruxe-mcp t366_build_context_pack_zero_results_emits_underfilled_guidance -- --nocapture
+cargo test -p cruxe-mcp t367_build_context_pack_rejects_excessive_budget_tokens -- --nocapture
 ```
 
 Result:
-- `cruxe-query` context-pack unit tests: PASS (8/8)
-- MCP integration tests for `build_context_pack`: PASS (6/6), including:
+- `cruxe-query` context-pack unit tests: PASS (9/9)
+- MCP integration tests for `build_context_pack`: PASS (7/7), including:
   - `t364_build_context_pack_accepts_partial_section_caps_patch`
   - `t365_build_context_pack_enforces_max_candidates_upper_bound`
   - `t366_build_context_pack_zero_results_emits_underfilled_guidance`
+  - `t367_build_context_pack_rejects_excessive_budget_tokens`
 - Iterative fixture workflow test (`pack -> follow-up pack`): PASS
 
 ## Sample Pack Contract (excerpt)
@@ -91,6 +93,8 @@ Representative response shape from the implemented MCP contract:
   - Asserts selected and raw candidate counts do not exceed `max_candidates`.
 - Underfilled guidance guard: `t366_build_context_pack_zero_results_emits_underfilled_guidance`
   - Asserts zero-result runs include explicit expansion hints and follow-up queries.
+- Budget upper-bound guard: `t367_build_context_pack_rejects_excessive_budget_tokens`
+  - Asserts requests above `budget_tokens=200000` are rejected with `invalid_max_tokens`.
 - Iterative retrieval guard: `t363_context_pack_iterative_fixture_drives_followup_query_loop`
   - Uses fixture `testdata/fixtures/context-pack/iterative-workflow.json` and validates low-budget pack produces actionable follow-up query.
 
@@ -100,8 +104,11 @@ Representative response shape from the implemented MCP contract:
 - MCP handler now accepts partial `section_caps` objects and merges with mode defaults.
 - Dedup key includes symbol + span to avoid collapsing distinct spans of the same symbol.
 - Candidate pre-dedup truncation now enforces `max_candidates` as a hard upper bound.
+- Test snippets now remain in `tests` section even when usage-like chunk signals exist.
+- Git ref snippet extraction now invokes `git show -- <ref:path>` to avoid `-`-prefixed ref flag confusion.
 - Section classification moved into `context_pack/sectioning.rs` to keep assembly logic focused.
 - Metadata now exposes `budget_utilization_ratio`, token estimation method, and `aider_minimal` alias mapping.
+- Budget-driven follow-up queries now use valid retrieval terms (`broader context`) instead of pseudo-syntax.
 
 ## Compatibility Evidence
 

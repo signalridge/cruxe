@@ -28,9 +28,10 @@ pub fn definition() -> ToolDefinition {
                 },
                 "budget_tokens": {
                     "type": "integer",
-                    "description": "Token budget for the pack payload (default: 4000).",
+                    "description": "Token budget for the pack payload (default: 4000, max: 200000).",
                     "default": 4000,
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 200000
                 },
                 "max_candidates": {
                     "type": "integer",

@@ -710,6 +710,7 @@ fn read_source_range_from_git_ref(
         .arg("-C")
         .arg(workspace)
         .arg("show")
+        .arg("--")
         .arg(object)
         .output()
         .ok()?;
@@ -838,10 +839,7 @@ fn build_followup_guidance(
     }
 
     if dropped_candidates > 0 {
-        next_queries.push(format!(
-            "{query} (budget>{})",
-            budget_tokens.saturating_mul(2)
-        ));
+        next_queries.push(format!("{query} broader context"));
         hints.push(format!(
             "{} candidate(s) were dropped by budget; increase budget_tokens or tighten query.",
             dropped_candidates
@@ -962,6 +960,23 @@ mod tests {
         let mut result = make_result("test-snippet", "snippet", "tests/auth_test.rs", 1, 5, 0.5);
         result.chunk_type = Some("comment".to_string());
         result.snippet = Some("assert_eq!(1, 1);".to_string());
+
+        let (section, _reason) = assign_section(&result);
+        assert_eq!(section, ContextPackSection::Tests);
+    }
+
+    #[test]
+    fn assign_section_routes_test_snippet_to_tests_even_with_usage_signal() {
+        let mut result = make_result(
+            "test-usage-snippet",
+            "snippet",
+            "tests/auth_test.rs",
+            1,
+            5,
+            0.5,
+        );
+        result.chunk_type = Some("call_reference".to_string());
+        result.snippet = Some("validate_token call".to_string());
 
         let (section, _reason) = assign_section(&result);
         assert_eq!(section, ContextPackSection::Tests);

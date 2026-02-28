@@ -112,6 +112,7 @@ Most query/navigation tools also accept these optional fields:
 ```
 
 Notes:
+- `budget_tokens` accepts `1..=200000`.
 - Response section keys are canonicalized as `definitions`, `usages`, `deps`, `tests`, `config`, `docs`.
 - Metadata includes `section_aliases` for Continue-style naming (`key_usages` -> `usages`, `dependencies` -> `deps`).
 - Mode alias: `aider_minimal` is accepted as an alias for `edit_minimal`.

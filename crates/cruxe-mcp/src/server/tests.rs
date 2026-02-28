@@ -2529,6 +2529,60 @@ fn t366_build_context_pack_zero_results_emits_underfilled_guidance() {
 }
 
 #[test]
+fn t367_build_context_pack_rejects_excessive_budget_tokens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = cruxe_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "build_context_pack",
+            "arguments": {
+                "query": "validate_token",
+                "budget_tokens": 300001
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "MCP tool errors are in content");
+    let payload = extract_payload_from_response(&response);
+    let error = payload
+        .get("error")
+        .expect("excessive budget_tokens response should contain error");
+    assert_eq!(
+        error.get("code").and_then(|v| v.as_str()),
+        Some("invalid_max_tokens")
+    );
+    assert!(
+        error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|msg| msg.contains("200000")),
+        "error message should report the max budget bound"
+    );
+}
+
+#[test]
 fn t191_new_tools_error_codes_follow_protocol_registry() {
     let tmp = tempfile::tempdir().unwrap();
     let (index_set, db_path) = build_fixture_index_with_db(tmp.path());

@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_CONTEXT_PACK_BUDGET_TOKENS: usize = 200_000;
+
 pub(super) fn handle_get_code_context(params: QueryToolParams<'_>) -> JsonRpcResponse {
     let QueryToolParams {
         id,
@@ -244,7 +246,18 @@ pub(super) fn handle_build_context_pack(params: QueryToolParams<'_>) -> JsonRpcR
                     );
                 }
                 match usize::try_from(raw_u64) {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        if v > MAX_CONTEXT_PACK_BUDGET_TOKENS {
+                            return tool_error_response(
+                                id,
+                                ProtocolErrorCode::InvalidMaxTokens,
+                                "Parameter `budget_tokens` must be less than or equal to 200000.",
+                                None,
+                                metadata,
+                            );
+                        }
+                        v
+                    }
                     Err(_) => {
                         return tool_error_response(
                             id,

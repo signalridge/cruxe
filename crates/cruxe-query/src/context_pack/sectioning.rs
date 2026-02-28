@@ -56,7 +56,7 @@ pub(super) fn assign_section(result: &SearchResult) -> (ContextPackSection, &'st
         || chunk_type.contains("call")
         || chunk_type.contains("reference")
         || snippet.contains(" call ");
-    let is_usage = has_usage_signal
+    let is_usage = (has_usage_signal && !is_test && !is_dependency && !is_config && !is_docs)
         || (result.result_type == "snippet"
             && !is_dependency
             && !is_test
