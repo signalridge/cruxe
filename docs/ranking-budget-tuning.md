@@ -32,9 +32,10 @@ Normalization behavior detail:
   implementation now sets the final score directly from the normalized breakdown.
 - Exact lexical matches are intentionally ordered ahead of non-exact matches as a
   deterministic precedence policy.
-- Legacy explain fields (`exact_match_boost`, `kind_match`, etc.) now report
-  **effective** values (post clamp/precedence). Raw values remain available in
-  `signal_accounting` / `signal_contributions`.
+- Legacy explain fields (`exact_match_boost`, `kind_match`, etc.) preserve
+  **raw** signal values for backward compatibility.
+- Post-clamp / post-precedence values are available in `signal_accounting` /
+  `signal_contributions`.
 
 ## 2) Run fixture-based retrieval evaluation (before/after)
 
