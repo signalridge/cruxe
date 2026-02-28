@@ -35,6 +35,11 @@ pub fn definition() -> ToolDefinition {
                 "language": {
                     "type": "string",
                     "description": "Language filter"
+                },
+                "policy_mode": {
+                    "type": "string",
+                    "description": "Optional retrieval policy override when allowed by runtime policy config.",
+                    "enum": ["strict", "balanced", "off", "audit_only"]
                 }
             },
             "required": ["query"]

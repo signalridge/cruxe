@@ -1,0 +1,26 @@
+[search.policy]
+mode = "strict"
+allow_request_override = false
+
+[search.policy.path]
+deny = ["**/secrets/**", "**/.env*", "**/id_rsa", "**/*.pem", "**/prod/**"]
+
+[search.policy.kind]
+deny_result_types = []
+allow_result_types = ["symbol", "snippet", "file"]
+
+[search.policy.redaction]
+enabled = true
+email_masking = true
+high_entropy_min_length = 20
+high_entropy_threshold = 3.5
+
+[search.policy.detect_secrets]
+enabled = true
+plugins = ["aws", "github", "slack", "privatekey"]
+
+[search.policy.opa]
+enabled = false
+command = "opa"
+query = "data.cruxe.allow"
+policy_path = ""

@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SCHEMA_VERSION: u32 = 14;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -301,6 +301,164 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                 .map_err(StateError::sqlite)?;
             Ok(())
         },
+        // V13: confidence-aware edge provenance dimensions.
+        |conn| {
+            let has_edge_provider: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('symbol_edges') WHERE name = 'edge_provider'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_edge_provider {
+                conn.execute_batch(
+                    "ALTER TABLE symbol_edges ADD COLUMN edge_provider TEXT NOT NULL DEFAULT 'legacy';",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+
+            let has_resolution_outcome: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('symbol_edges') WHERE name = 'resolution_outcome'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_resolution_outcome {
+                conn.execute_batch(
+                    "ALTER TABLE symbol_edges ADD COLUMN resolution_outcome TEXT NOT NULL DEFAULT 'unresolved';",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+
+            let has_confidence_weight: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('symbol_edges') WHERE name = 'confidence_weight'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StateError::sqlite)?;
+            if !has_confidence_weight {
+                conn.execute_batch(
+                    "ALTER TABLE symbol_edges ADD COLUMN confidence_weight REAL NOT NULL DEFAULT 0.2;",
+                )
+                .map_err(StateError::sqlite)?;
+            }
+
+            conn.execute_batch(
+                "SAVEPOINT migration_v13_edge_confidence_backfill;
+                 UPDATE symbol_edges
+                 SET resolution_outcome = CASE
+                     WHEN COALESCE(to_symbol_id, '') <> '' THEN 'resolved_internal'
+                     WHEN COALESCE(to_name, '') <> ''
+                       AND (
+                         INSTR(to_name, '.') > 0
+                         OR INSTR(to_name, '/') > 0
+                         OR to_name LIKE 'external::%'
+                         OR to_name LIKE 'std::%'
+                         OR to_name LIKE 'core::%'
+                         OR to_name LIKE 'alloc::%'
+                         OR to_name LIKE 'proc_macro::%'
+                         OR to_name LIKE 'test::%'
+                       ) THEN 'external_reference'
+                     ELSE 'unresolved'
+                   END;
+
+                 UPDATE symbol_edges
+                 SET confidence = CASE
+                     WHEN LOWER(TRIM(confidence)) IN ('high', 'medium', 'low')
+                        THEN CASE
+                            WHEN LOWER(TRIM(confidence)) = 'medium'
+                                 AND LOWER(TRIM(resolution_outcome)) = 'unresolved'
+                                THEN 'low'
+                            ELSE LOWER(TRIM(confidence))
+                        END
+                     WHEN LOWER(TRIM(confidence)) = 'static'
+                         THEN 'high'
+                     WHEN LOWER(TRIM(confidence)) = 'heuristic'
+                         THEN 'low'
+                     WHEN LOWER(TRIM(resolution_outcome)) = 'resolved_internal'
+                         THEN 'high'
+                     WHEN LOWER(TRIM(resolution_outcome)) = 'external_reference'
+                         THEN 'medium'
+                     ELSE 'low'
+                   END;
+
+                 UPDATE symbol_edges
+                 SET edge_provider = CASE
+                     WHEN LOWER(TRIM(edge_provider)) IN ('import_resolver', 'call_resolver')
+                         THEN LOWER(TRIM(edge_provider))
+                     WHEN edge_type = 'imports'
+                         THEN 'import_resolver'
+                     WHEN edge_type = 'calls'
+                         THEN 'call_resolver'
+                     ELSE 'legacy'
+                   END;
+
+                 UPDATE symbol_edges
+                 SET confidence_weight = CASE LOWER(TRIM(confidence))
+                     WHEN 'high' THEN 1.0
+                     WHEN 'medium' THEN 0.6
+                     ELSE 0.2
+                  END;
+                 RELEASE migration_v13_edge_confidence_backfill;",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
+        // V14: align legacy `resolution_outcome` inference with conservative
+        // Rust-name heuristics (do not treat arbitrary `foo::bar` as external).
+        |conn| {
+            conn.execute_batch(
+                "SAVEPOINT migration_v14_edge_confidence_align;
+                 UPDATE symbol_edges
+                 SET resolution_outcome = CASE
+                     WHEN COALESCE(to_symbol_id, '') <> '' THEN 'resolved_internal'
+                     WHEN COALESCE(to_name, '') <> ''
+                       AND (
+                         INSTR(to_name, '.') > 0
+                         OR INSTR(to_name, '/') > 0
+                         OR to_name LIKE 'external::%'
+                         OR to_name LIKE 'std::%'
+                         OR to_name LIKE 'core::%'
+                         OR to_name LIKE 'alloc::%'
+                         OR to_name LIKE 'proc_macro::%'
+                         OR to_name LIKE 'test::%'
+                       ) THEN 'external_reference'
+                     ELSE 'unresolved'
+                   END;
+
+                 UPDATE symbol_edges
+                 SET confidence = CASE
+                     WHEN LOWER(TRIM(confidence)) IN ('high', 'medium', 'low')
+                        THEN CASE
+                            WHEN LOWER(TRIM(confidence)) = 'medium'
+                                 AND LOWER(TRIM(resolution_outcome)) = 'unresolved'
+                                THEN 'low'
+                            ELSE LOWER(TRIM(confidence))
+                        END
+                     WHEN LOWER(TRIM(confidence)) = 'static'
+                         THEN 'high'
+                     WHEN LOWER(TRIM(confidence)) = 'heuristic'
+                         THEN 'low'
+                     WHEN LOWER(TRIM(resolution_outcome)) = 'resolved_internal'
+                         THEN 'high'
+                     WHEN LOWER(TRIM(resolution_outcome)) = 'external_reference'
+                         THEN 'medium'
+                     ELSE 'low'
+                   END;
+
+                 UPDATE symbol_edges
+                 SET confidence_weight = CASE LOWER(TRIM(confidence))
+                     WHEN 'high' THEN 1.0
+                     WHEN 'medium' THEN 0.6
+                     ELSE 0.2
+                   END;
+                 RELEASE migration_v14_edge_confidence_align;",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
     ];
 
     for version in (current + 1)..=(CURRENT_SCHEMA_VERSION) {
@@ -385,7 +543,10 @@ CREATE TABLE IF NOT EXISTS symbol_edges (
     to_symbol_id TEXT,
     to_name TEXT,
     edge_type TEXT NOT NULL,
-    confidence TEXT DEFAULT 'static',
+    confidence TEXT DEFAULT 'low',
+    edge_provider TEXT NOT NULL DEFAULT 'legacy',
+    resolution_outcome TEXT NOT NULL DEFAULT 'unresolved',
+    confidence_weight REAL NOT NULL DEFAULT 0.2,
     source_file TEXT,
     source_line INTEGER,
     CHECK (to_symbol_id IS NOT NULL OR to_name IS NOT NULL)
@@ -611,6 +772,9 @@ mod tests {
         assert!(symbol_edge_cols.contains(&"to_name".to_string()));
         assert!(symbol_edge_cols.contains(&"source_file".to_string()));
         assert!(symbol_edge_cols.contains(&"source_line".to_string()));
+        assert!(symbol_edge_cols.contains(&"edge_provider".to_string()));
+        assert!(symbol_edge_cols.contains(&"resolution_outcome".to_string()));
+        assert!(symbol_edge_cols.contains(&"confidence_weight".to_string()));
         let symbol_edge_unique_idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -682,5 +846,156 @@ mod tests {
             })
             .unwrap();
         assert_eq!(version2, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_v13_backfills_confidence_provenance_from_legacy_rows() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("legacy.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO schema_migrations (version) VALUES (12);
+             CREATE TABLE IF NOT EXISTS symbol_edges (
+                repo TEXT NOT NULL,
+                \"ref\" TEXT NOT NULL,
+                from_symbol_id TEXT NOT NULL,
+                to_symbol_id TEXT,
+                to_name TEXT,
+                edge_type TEXT NOT NULL,
+                confidence TEXT DEFAULT 'static',
+                source_file TEXT,
+                source_line INTEGER,
+                CHECK (to_symbol_id IS NOT NULL OR to_name IS NOT NULL)
+             );
+             INSERT INTO symbol_edges (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, source_file, source_line)
+             VALUES
+                ('repo', 'main', 'src/a::caller', 'stable::target', NULL, 'calls', 'static', 'src/a.rs', 10),
+                ('repo', 'main', 'src/b::caller', NULL, 'external::audit', 'calls', '', 'src/b.rs', 20),
+                ('repo', 'main', 'src/c::caller', NULL, 'fallback', 'calls', 'heuristic', 'src/c.rs', 30);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let rows: Vec<(String, String, String, f64)> = conn
+            .prepare(
+                "SELECT confidence, edge_provider, resolution_outcome, confidence_weight
+                 FROM symbol_edges
+                 ORDER BY source_line",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            rows[0],
+            (
+                "high".to_string(),
+                "call_resolver".to_string(),
+                "resolved_internal".to_string(),
+                1.0
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                "medium".to_string(),
+                "call_resolver".to_string(),
+                "external_reference".to_string(),
+                0.6
+            )
+        );
+        assert_eq!(
+            rows[2],
+            (
+                "low".to_string(),
+                "call_resolver".to_string(),
+                "unresolved".to_string(),
+                0.2
+            )
+        );
+    }
+
+    #[test]
+    fn test_v14_reclassifies_non_std_rust_paths_as_unresolved() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("legacy-v13.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO schema_migrations (version) VALUES (13);
+             CREATE TABLE IF NOT EXISTS symbol_edges (
+                repo TEXT NOT NULL,
+                \"ref\" TEXT NOT NULL,
+                from_symbol_id TEXT NOT NULL,
+                to_symbol_id TEXT,
+                to_name TEXT,
+                edge_type TEXT NOT NULL,
+                confidence TEXT DEFAULT 'medium',
+                edge_provider TEXT NOT NULL DEFAULT 'call_resolver',
+                resolution_outcome TEXT NOT NULL DEFAULT 'external_reference',
+                confidence_weight REAL NOT NULL DEFAULT 0.6,
+                source_file TEXT,
+                source_line INTEGER,
+                CHECK (to_symbol_id IS NOT NULL OR to_name IS NOT NULL)
+             );
+             INSERT INTO symbol_edges
+                (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight, source_file, source_line)
+             VALUES
+                ('repo', 'main', 'src/a::caller', NULL, 'auth::validate_token', 'calls', 'medium', 'call_resolver', 'external_reference', 0.6, 'src/a.rs', 10),
+                ('repo', 'main', 'src/b::caller', NULL, 'std::fs::read_to_string', 'calls', 'medium', 'call_resolver', 'external_reference', 0.6, 'src/b.rs', 20);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let rows: Vec<(String, String, f64)> = conn
+            .prepare(
+                "SELECT to_name, resolution_outcome, confidence_weight
+                 FROM symbol_edges
+                 ORDER BY source_line",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            rows[0],
+            (
+                "auth::validate_token".to_string(),
+                "unresolved".to_string(),
+                0.2
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                "std::fs::read_to_string".to_string(),
+                "external_reference".to_string(),
+                0.6
+            )
+        );
     }
 }

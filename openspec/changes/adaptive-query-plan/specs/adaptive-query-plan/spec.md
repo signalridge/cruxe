@@ -45,8 +45,12 @@ Each plan MUST enforce bounded fanout/latency budgets and degrade one-way on bud
 - **AND** MUST still return a valid response
 
 ### Requirement: Plan selection and downgrade MUST be observable
-Runtime MUST emit plan metadata including selected plan and deterministic reason codes for both selection and downgrade paths.
+Runtime MUST emit plan metadata including selected plan, executed plan, and deterministic reason codes for both selection and downgrade paths.
 
 #### Scenario: Downgrade reason is reported
 - **WHEN** a query plan is downgraded
 - **THEN** metadata MUST include a deterministic downgrade reason code
+
+#### Scenario: Budget metadata follows executed plan after downgrade
+- **WHEN** runtime downgrades from selected plan to a lighter executed plan
+- **THEN** reported budget metadata MUST reflect the executed plan budget profile

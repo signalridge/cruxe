@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-27T07:02:47Z",
+  "generated_at": "2026-02-28T16:42:41Z",
   "generator": "scripts/generate_mcp_tool_schemas.sh",
   "source": "tools/list",
   "binary": "cruxe",
@@ -58,6 +58,8 @@
           },
           "confidence_threshold": {
             "description": "Optional low-confidence threshold override (0.0-1.0).",
+            "maximum": 1.0,
+            "minimum": 0.0,
             "type": "number"
           },
           "detail_level": {
@@ -86,6 +88,16 @@
             "description": "Max results (default: 10)",
             "type": "integer"
           },
+          "policy_mode": {
+            "description": "Optional retrieval policy override when allowed by runtime policy config.",
+            "enum": [
+              "strict",
+              "balanced",
+              "off",
+              "audit_only"
+            ],
+            "type": "string"
+          },
           "query": {
             "description": "Search query (symbol name, path, error string, or natural language)",
             "type": "string"
@@ -103,8 +115,21 @@
             "description": "Branch/ref scope",
             "type": "string"
           },
+          "role": {
+            "description": "Filter by semantic symbol role",
+            "enum": [
+              "type",
+              "callable",
+              "value",
+              "namespace",
+              "alias"
+            ],
+            "type": "string"
+          },
           "semantic_ratio": {
             "description": "Optional semantic blend ratio cap override (0.0-1.0). Runtime may reduce actual usage.",
+            "maximum": 1.0,
+            "minimum": 0.0,
             "type": "number"
           },
           "workspace": {
@@ -172,6 +197,17 @@
           },
           "ref": {
             "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "role": {
+            "description": "Filter by semantic role; intersects with kind when both are provided.",
+            "enum": [
+              "type",
+              "callable",
+              "value",
+              "namespace",
+              "alias"
+            ],
             "type": "string"
           },
           "workspace": {
@@ -394,6 +430,16 @@
             "description": "Maximum estimated tokens in returned context (default: 4000)",
             "type": "integer"
           },
+          "policy_mode": {
+            "description": "Optional retrieval policy override when allowed by runtime policy config.",
+            "enum": [
+              "strict",
+              "balanced",
+              "off",
+              "audit_only"
+            ],
+            "type": "string"
+          },
           "query": {
             "description": "Search query for relevant code context",
             "type": "string"
@@ -449,6 +495,10 @@
           "previous_results": {
             "description": "Result summary from the previous query (top_score, total_candidates, query_intent, etc.).",
             "type": "object"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
           },
           "workspace": {
             "description": "Absolute path to target workspace. Default: server's default project.",
@@ -527,7 +577,14 @@
       "inputSchema": {
         "properties": {
           "kind": {
-            "description": "Optional edge type filter (imports, calls, implements, extends, references).",
+            "description": "Optional edge type filter.",
+            "enum": [
+              "imports",
+              "calls",
+              "implements",
+              "extends",
+              "references"
+            ],
             "type": "string"
           },
           "limit": {

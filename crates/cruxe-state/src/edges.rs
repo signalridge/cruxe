@@ -1,3 +1,4 @@
+use cruxe_core::edge_confidence::assign_edge_confidence;
 use cruxe_core::error::StateError;
 use cruxe_core::types::{CallEdge, SymbolEdge};
 use rusqlite::{Connection, Statement, ToSql, params, params_from_iter};
@@ -15,24 +16,30 @@ pub fn insert_edges(
     let mut stmt = conn
         .prepare(
             "INSERT OR REPLACE INTO symbol_edges
-             (repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
         .map_err(StateError::sqlite)?;
 
     for edge in edges {
-        let confidence = if edge.confidence.is_empty() {
-            "static"
-        } else {
-            edge.confidence.as_str()
-        };
+        let assignment = assign_edge_confidence(
+            None,
+            Some(edge.edge_type.as_str()),
+            None,
+            Some(edge.to_symbol_id.as_str()),
+            None,
+            Some(edge.confidence.as_str()),
+        );
         stmt.execute(params![
             repo,
             ref_name,
             edge.from_symbol_id,
             edge.to_symbol_id,
             edge.edge_type,
-            confidence
+            assignment.bucket,
+            assignment.provider,
+            assignment.outcome,
+            assignment.weight
         ])
         .map_err(StateError::sqlite)?;
     }
@@ -91,16 +98,19 @@ pub fn replace_edges_for_file(
         let mut ins_stmt = conn
             .prepare(
                 "INSERT OR REPLACE INTO symbol_edges
-                 (repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (repo, \"ref\", from_symbol_id, to_symbol_id, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )
             .map_err(StateError::sqlite)?;
         for edge in new_edges {
-            let confidence = if edge.confidence.is_empty() {
-                "static"
-            } else {
-                edge.confidence.as_str()
-            };
+            let assignment = assign_edge_confidence(
+                None,
+                Some(edge.edge_type.as_str()),
+                None,
+                Some(edge.to_symbol_id.as_str()),
+                None,
+                Some(edge.confidence.as_str()),
+            );
             ins_stmt
                 .execute(params![
                     repo,
@@ -108,7 +118,10 @@ pub fn replace_edges_for_file(
                     edge.from_symbol_id,
                     edge.to_symbol_id,
                     edge.edge_type,
-                    confidence
+                    assignment.bucket,
+                    assignment.provider,
+                    assignment.outcome,
+                    assignment.weight
                 ])
                 .map_err(StateError::sqlite)?;
         }
@@ -308,8 +321,8 @@ pub fn insert_call_edges(
         let mut stmt = conn
             .prepare(
                 "INSERT OR REPLACE INTO symbol_edges
-                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, source_file, source_line)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight, source_file, source_line)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )
             .map_err(StateError::sqlite)?;
         for edge in edges {
@@ -366,8 +379,8 @@ pub fn replace_call_edges_for_files(
         let mut insert_stmt = conn
             .prepare(
                 "INSERT OR REPLACE INTO symbol_edges
-                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, source_file, source_line)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (repo, \"ref\", from_symbol_id, to_symbol_id, to_name, edge_type, confidence, edge_provider, resolution_outcome, confidence_weight, source_file, source_line)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )
             .map_err(StateError::sqlite)?;
 
@@ -406,11 +419,14 @@ fn execute_insert_call_edge(
     } else {
         edge.edge_type.as_str()
     };
-    let confidence = if edge.confidence.trim().is_empty() {
-        "static"
-    } else {
-        edge.confidence.as_str()
-    };
+    let assignment = assign_edge_confidence(
+        None,
+        Some(edge_type),
+        None,
+        edge.to_symbol_id.as_deref(),
+        edge.to_name.as_deref(),
+        Some(edge.confidence.as_str()),
+    );
     stmt.execute(params![
         repo,
         ref_name,
@@ -418,7 +434,10 @@ fn execute_insert_call_edge(
         edge.to_symbol_id,
         edge.to_name,
         edge_type,
-        confidence,
+        assignment.bucket,
+        assignment.provider,
+        assignment.outcome,
+        assignment.weight,
         edge.source_file,
         i64::from(edge.source_line),
     ])
@@ -811,7 +830,7 @@ mod tests {
         assert_eq!(callees[0].to_name.as_deref(), None);
         assert_eq!(callees[1].to_symbol_id, None);
         assert_eq!(callees[1].to_name.as_deref(), Some("external::audit"));
-        assert_eq!(callees[1].confidence, "heuristic");
+        assert_eq!(callees[1].confidence, "low");
 
         let callers = get_callers(&conn, "my-repo", "main", "sym::validate").unwrap();
         assert_eq!(callers.len(), 2);
@@ -824,6 +843,86 @@ mod tests {
             callers
                 .iter()
                 .any(|edge| edge.from_symbol_id == "sym::entry")
+        );
+    }
+
+    #[test]
+    fn test_call_edge_confidence_assignment_persists_resolved_external_and_unresolved_outcomes() {
+        let conn = setup_test_db();
+        let calls = vec![
+            call_edge(
+                "sym::handler",
+                Some("sym::validate"),
+                None,
+                "src/handler.rs",
+                12,
+                "static",
+            ),
+            call_edge(
+                "sym::handler",
+                None,
+                Some("external::audit"),
+                "src/handler.rs",
+                13,
+                "",
+            ),
+            call_edge(
+                "sym::handler",
+                None,
+                Some("fallback"),
+                "src/handler.rs",
+                14,
+                "heuristic",
+            ),
+        ];
+        insert_call_edges(&conn, "my-repo", "main", &calls).unwrap();
+
+        let persisted: Vec<(String, String, String, f64)> = conn
+            .prepare(
+                "SELECT confidence, edge_provider, resolution_outcome, confidence_weight
+                 FROM symbol_edges
+                 WHERE edge_type = 'calls'
+                 ORDER BY source_line",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            persisted[0],
+            (
+                "high".to_string(),
+                "call_resolver".to_string(),
+                "resolved_internal".to_string(),
+                1.0
+            )
+        );
+        assert_eq!(
+            persisted[1],
+            (
+                "medium".to_string(),
+                "call_resolver".to_string(),
+                "external_reference".to_string(),
+                0.6
+            )
+        );
+        assert_eq!(
+            persisted[2],
+            (
+                "low".to_string(),
+                "call_resolver".to_string(),
+                "unresolved".to_string(),
+                0.2
+            )
         );
     }
 

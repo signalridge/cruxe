@@ -1,0 +1,59 @@
+{
+  "version": "adaptive-router-fixtures-v1",
+  "cases": [
+    {
+      "id": "router-override-wins",
+      "intent": "natural_language",
+      "lexical_confidence": 0.12,
+      "semantic_runtime_available": true,
+      "override_plan": "lexical_fast",
+      "expected_selected": "lexical_fast",
+      "expected_selection_reason": "override"
+    },
+    {
+      "id": "router-symbol-high-confidence",
+      "intent": "symbol",
+      "lexical_confidence": 0.88,
+      "semantic_runtime_available": true,
+      "override_plan": null,
+      "expected_selected": "lexical_fast",
+      "expected_selection_reason": "high_confidence_lexical_rule"
+    },
+    {
+      "id": "router-path-semantic-unavailable",
+      "intent": "path",
+      "lexical_confidence": 0.40,
+      "semantic_runtime_available": false,
+      "override_plan": null,
+      "expected_selected": "lexical_fast",
+      "expected_selection_reason": "semantic_unavailable_rule"
+    },
+    {
+      "id": "router-natural-language-low-confidence",
+      "intent": "natural_language",
+      "lexical_confidence": 0.25,
+      "semantic_runtime_available": true,
+      "override_plan": null,
+      "expected_selected": "semantic_deep",
+      "expected_selection_reason": "low_confidence_exploratory_rule"
+    },
+    {
+      "id": "router-natural-language-default-hybrid",
+      "intent": "natural_language",
+      "lexical_confidence": 0.72,
+      "semantic_runtime_available": true,
+      "override_plan": null,
+      "expected_selected": "hybrid_standard",
+      "expected_selection_reason": "default_hybrid_rule"
+    },
+    {
+      "id": "router-natural-language-semantic-unavailable",
+      "intent": "natural_language",
+      "lexical_confidence": 0.22,
+      "semantic_runtime_available": false,
+      "override_plan": null,
+      "expected_selected": "hybrid_standard",
+      "expected_selection_reason": "semantic_unavailable_rule"
+    }
+  ]
+}

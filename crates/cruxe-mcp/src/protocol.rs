@@ -21,6 +21,18 @@ pub struct ProtocolMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_blocked_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_redacted_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_warnings: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_audit_counts: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_redaction_categories: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_enabled: Option<bool>,
@@ -68,6 +80,18 @@ pub struct ProtocolMetadata {
     pub query_intent_confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent_escalation_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_selected: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_executed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_selection_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_downgraded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_downgrade_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_budget_used: Option<Value>,
 }
 
 impl ProtocolMetadata {
@@ -90,6 +114,12 @@ impl ProtocolMetadata {
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
             warnings: None,
+            policy_mode: None,
+            policy_blocked_count: None,
+            policy_redacted_count: None,
+            policy_warnings: None,
+            policy_audit_counts: None,
+            policy_redaction_categories: None,
             semantic_mode: None,
             semantic_enabled: None,
             semantic_ratio_used: None,
@@ -114,6 +144,12 @@ impl ProtocolMetadata {
             channel_agreement: None,
             query_intent_confidence: None,
             intent_escalation_hint: None,
+            query_plan_selected: None,
+            query_plan_executed: None,
+            query_plan_selection_reason: None,
+            query_plan_downgraded: None,
+            query_plan_downgrade_reason: None,
+            query_plan_budget_used: None,
         }
     }
 
