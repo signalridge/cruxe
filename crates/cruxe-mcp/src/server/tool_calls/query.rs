@@ -509,6 +509,35 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         }
         None => None,
     };
+    let plan_override = match arguments.get("plan").and_then(|v| v.as_str()) {
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            let valid = matches!(
+                normalized.as_str(),
+                "lexical_fast" | "hybrid_standard" | "semantic_deep"
+            );
+            if !valid {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Parameter `plan` must be one of: lexical_fast, hybrid_standard, semantic_deep.",
+                    Some(json!({ "plan": raw })),
+                    metadata,
+                );
+            }
+            if !config.search.adaptive_plan.allow_override {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Plan override is disabled by configuration (`search.adaptive_plan.allow_override=false`).",
+                    Some(json!({ "plan": raw })),
+                    metadata,
+                );
+            }
+            Some(normalized)
+        }
+        None => None,
+    };
     let policy_mode_override = match arguments.get("policy_mode").and_then(|v| v.as_str()) {
         Some(raw) => match raw.parse::<PolicyMode>() {
             Ok(mode) => Some(mode),
@@ -529,6 +558,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         semantic_ratio_override,
         confidence_threshold_override,
         role: role.map(ToString::to_string),
+        plan_override,
         policy_mode_override,
         policy_runtime: None,
     };
@@ -623,6 +653,15 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             metadata.channel_agreement = Some(response.metadata.channel_agreement);
             metadata.query_intent_confidence = Some(response.metadata.query_intent_confidence);
             metadata.intent_escalation_hint = response.metadata.intent_escalation_hint.clone();
+            metadata.query_plan_selected = Some(response.metadata.query_plan_selected.clone());
+            metadata.query_plan_executed = Some(response.metadata.query_plan_executed.clone());
+            metadata.query_plan_selection_reason =
+                Some(response.metadata.query_plan_selection_reason.clone());
+            metadata.query_plan_downgraded = Some(response.metadata.query_plan_downgraded);
+            metadata.query_plan_downgrade_reason =
+                response.metadata.query_plan_downgrade_reason.clone();
+            metadata.query_plan_budget_used =
+                serde_json::to_value(&response.metadata.query_plan_budget_used).ok();
             if !response.metadata.warnings.is_empty() {
                 let mut warnings = metadata.warnings.take().unwrap_or_default();
                 warnings.extend(response.metadata.warnings.clone());
