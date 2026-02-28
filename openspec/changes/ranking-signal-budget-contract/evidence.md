@@ -45,3 +45,13 @@ Case `exact_vs_structural_a`:
 - post-contract top result: `exact_validate_token`
 - `precedence_audit.lexical_dominance_applied`: `false -> true`
 - `kind_match` signal accounting: `raw 2.0, clamped 2.0, effective 1.3333` (post)
+
+## 5) Behavior-change notes (for release/changelog)
+
+- Ranking score composition now uses `raw -> clamped -> effective` budgeting, so absolute
+  `final_score` values are not directly comparable to pre-contract runs.
+- Ranking policy changed: exact lexical matches are precedence-guarded and are forced to rank
+  ahead of non-exact results that only win via secondary structural signals.
+- Legacy explain fields (`exact_match_boost`, `qualified_name_boost`, `path_affinity`,
+  `definition_boost`, `kind_match`, `test_file_penalty`, `bm25_score`) remain raw-signal
+  compatible; budget-adjusted values are exposed via `signal_contributions`.

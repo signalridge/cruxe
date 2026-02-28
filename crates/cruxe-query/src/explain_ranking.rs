@@ -5,6 +5,8 @@ use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+const EXPLAIN_SIGNAL_TOLERANCE: f64 = 1e-9;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExplainRankingError {
     #[error("result not found")]
@@ -157,7 +159,7 @@ pub fn explain_ranking(
 }
 
 fn component_reason(value: f64, positive: &str, none: &str) -> String {
-    if value.abs() > f64::EPSILON {
+    if value.abs() > EXPLAIN_SIGNAL_TOLERANCE {
         return format!("{positive} (contribution={value:.3})");
     }
     none.to_string()
@@ -260,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn explain_ranking_scoring_components_sum_to_total() {
+    fn explain_ranking_scoring_components_match_raw_signal_accounting() {
         let tmp = tempfile::tempdir().unwrap();
         let index_set = IndexSet::open(tmp.path()).unwrap();
         let conn = db::open_connection(&tmp.path().join("state.db")).unwrap();
@@ -280,18 +282,23 @@ mod tests {
         .unwrap();
 
         let scoring = &explanation.scoring;
-        let sum = scoring.bm25
+        let raw_sum = scoring.bm25
             + scoring.exact_match
             + scoring.qualified_name
             + scoring.path_affinity
             + scoring.definition_boost
             + scoring.kind_match
             + scoring.test_file_penalty;
+        let accounting_raw_sum: f64 = scoring
+            .signal_accounting
+            .iter()
+            .map(|entry| entry.raw_value)
+            .sum();
         assert!(
-            (sum - scoring.total).abs() < 1e-6,
-            "sum={} total={}",
-            sum,
-            scoring.total
+            (raw_sum - accounting_raw_sum).abs() < 1e-6,
+            "raw_sum={} accounting_raw_sum={}",
+            raw_sum,
+            accounting_raw_sum
         );
     }
 

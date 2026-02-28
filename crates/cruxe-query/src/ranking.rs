@@ -63,13 +63,15 @@ impl BudgetedScoreBreakdown {
     fn to_reason(&self, result_index: usize) -> RankingReasons {
         RankingReasons {
             result_index,
-            exact_match_boost: self.exact_match.effective,
-            qualified_name_boost: self.qualified_name.effective,
-            path_affinity: self.path_affinity.effective,
-            definition_boost: self.definition_boost.effective,
-            kind_match: self.kind_match.effective,
-            test_file_penalty: self.test_file_penalty.effective,
-            bm25_score: self.bm25.effective,
+            // Keep legacy fields aligned with pre-budget semantics (raw signal values)
+            // for backward compatibility with existing consumers.
+            exact_match_boost: self.exact_match.raw,
+            qualified_name_boost: self.qualified_name.raw,
+            path_affinity: self.path_affinity.raw,
+            definition_boost: self.definition_boost.raw,
+            kind_match: self.kind_match.raw,
+            test_file_penalty: self.test_file_penalty.raw,
+            bm25_score: self.bm25.raw,
             final_score: self.final_score(),
             signal_contributions: vec![
                 signal_contribution(SIGNAL_BM25, self.bm25),
@@ -520,7 +522,13 @@ mod tests {
         )];
         let reasons = rerank_with_reasons_with_budget(&mut results, "validate_token", &budgets);
         let reason = reasons.first().unwrap();
-        assert!(reason.kind_match <= 0.75 + SCORE_EPSILON);
+        let kind = reason
+            .signal_contributions
+            .iter()
+            .find(|c| c.signal == SIGNAL_KIND_MATCH)
+            .unwrap();
+        assert!(kind.clamped_value <= 0.75 + SCORE_EPSILON);
+        assert!(reason.kind_match >= kind.clamped_value);
         let qualified = reason
             .signal_contributions
             .iter()
