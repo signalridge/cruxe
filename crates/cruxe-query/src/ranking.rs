@@ -118,12 +118,18 @@ fn rerank_inner(
         if collect_reasons {
             reasons.push(RankingReasons {
                 result_index: idx,
+                result_id: result.result_id.clone(),
                 exact_match_boost,
                 qualified_name_boost,
                 path_affinity,
                 definition_boost,
                 kind_match,
                 test_file_penalty,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
                 bm25_score,
                 final_score: result.score as f64,
             });
@@ -202,12 +208,18 @@ pub fn locate_ranking_reasons(results: &[LocateResult], query: &str) -> Vec<Rank
                 + test_file_penalty;
             RankingReasons {
                 result_index: idx,
+                result_id: format!("{}:{}:{}", r.path, r.line_start, r.name),
                 exact_match_boost,
                 qualified_name_boost,
                 path_affinity,
                 definition_boost,
                 kind_match,
                 test_file_penalty,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
                 bm25_score,
                 final_score,
             }
