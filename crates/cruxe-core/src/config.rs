@@ -978,7 +978,7 @@ impl Config {
             })
             .collect();
         config.search.policy.detect_secrets.plugins =
-            normalize_non_empty_list_lowercase(&config.search.policy.detect_secrets.plugins);
+            normalize_detect_secrets_plugins(&config.search.policy.detect_secrets.plugins);
         config.search.policy.detect_secrets.custom_patterns =
             normalize_non_empty_list(&config.search.policy.detect_secrets.custom_patterns);
         if config.search.policy.opa.command.trim().is_empty() {
@@ -1472,6 +1472,27 @@ fn normalize_policy_result_type_list(values: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn normalize_detect_secrets_plugins(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values
+        .iter()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+    {
+        let canonical = match value.as_str() {
+            "awskeydetector" | "aws" => "aws",
+            "githubtokendetector" | "github" => "github",
+            "slackdetector" | "slack" => "slack",
+            "privatekeydetector" | "privatekey" => "privatekey",
+            _ => continue,
+        };
+        if !normalized.iter().any(|existing| existing == canonical) {
+            normalized.push(canonical.to_string());
+        }
+    }
+    normalized
+}
+
 fn normalize_embedding_profile(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "fast_local" => "fast_local".to_string(),
@@ -1810,6 +1831,26 @@ mod tests {
         assert_eq!(parse_env_bool("0"), Some(false));
 
         assert_eq!(parse_env_bool("maybe"), None);
+    }
+
+    #[test]
+    fn normalize_detect_secrets_plugins_filters_unknown_and_canonicalizes_aliases() {
+        assert_eq!(
+            normalize_detect_secrets_plugins(&[
+                " AWSKeyDetector ".to_string(),
+                "github".to_string(),
+                "unknown".to_string(),
+                "privatekeydetector".to_string(),
+                "aws".to_string(),
+                "slackdetector".to_string(),
+            ]),
+            vec![
+                "aws".to_string(),
+                "github".to_string(),
+                "privatekey".to_string(),
+                "slack".to_string(),
+            ]
+        );
     }
 
     #[test]
