@@ -21,6 +21,18 @@ pub struct ProtocolMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_blocked_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_redacted_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_warnings: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_audit_counts: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_redaction_categories: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_enabled: Option<bool>,
@@ -90,6 +102,12 @@ impl ProtocolMetadata {
             suppressed_duplicate_count: None,
             safety_limit_applied: None,
             warnings: None,
+            policy_mode: None,
+            policy_blocked_count: None,
+            policy_redacted_count: None,
+            policy_warnings: None,
+            policy_audit_counts: None,
+            policy_redaction_categories: None,
             semantic_mode: None,
             semantic_enabled: None,
             semantic_ratio_used: None,

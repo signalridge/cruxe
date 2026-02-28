@@ -13,6 +13,7 @@ pub mod intent;
 pub mod locate;
 pub mod overlay_merge;
 pub mod planner;
+pub mod policy;
 pub mod ranking;
 pub mod related;
 pub mod rerank;

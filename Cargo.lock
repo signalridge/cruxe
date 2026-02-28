@@ -1178,6 +1178,8 @@ dependencies = [
  "cruxe-indexer",
  "cruxe-state",
  "cruxe-vcs",
+ "globset",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

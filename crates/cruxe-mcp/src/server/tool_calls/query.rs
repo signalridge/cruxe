@@ -1,4 +1,5 @@
 use super::*;
+use cruxe_core::types::PolicyMode;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::warn;
@@ -504,11 +505,27 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         }
         None => None,
     };
+    let policy_mode_override = match arguments.get("policy_mode").and_then(|v| v.as_str()) {
+        Some(raw) => match raw.parse::<PolicyMode>() {
+            Ok(mode) => Some(mode),
+            Err(_) => {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Parameter `policy_mode` must be one of: strict, balanced, off, audit_only.",
+                    None,
+                    metadata,
+                );
+            }
+        },
+        None => None,
+    };
     let search_options = search::SearchExecutionOptions {
         search_config: config.search.clone(),
         semantic_ratio_override,
         confidence_threshold_override,
         role: role.map(ToString::to_string),
+        policy_mode_override,
     };
     match execute_search_with_optional_overlay(
         QueryExecutionContext {
@@ -563,6 +580,20 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             }
 
             metadata.semantic_mode = Some(response.metadata.semantic_mode.clone());
+            metadata.policy_mode = Some(response.metadata.policy_mode.clone());
+            metadata.policy_blocked_count = Some(response.metadata.policy_blocked_count);
+            metadata.policy_redacted_count = Some(response.metadata.policy_redacted_count);
+            if !response.metadata.policy_warnings.is_empty() {
+                metadata.policy_warnings = Some(response.metadata.policy_warnings.clone());
+            }
+            if !response.metadata.policy_audit_counts.is_empty() {
+                metadata.policy_audit_counts =
+                    serde_json::to_value(&response.metadata.policy_audit_counts).ok();
+            }
+            if !response.metadata.policy_redaction_categories.is_empty() {
+                metadata.policy_redaction_categories =
+                    serde_json::to_value(&response.metadata.policy_redaction_categories).ok();
+            }
             metadata.semantic_enabled = Some(response.metadata.semantic_enabled);
             metadata.semantic_ratio_used = Some(response.metadata.semantic_ratio_used);
             metadata.semantic_triggered = Some(response.metadata.semantic_triggered);

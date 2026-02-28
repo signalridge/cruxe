@@ -1,7 +1,7 @@
 use crate::constants;
 use crate::error::ConfigError;
 use crate::languages;
-use crate::types::{FreshnessPolicy, QueryIntent, RankingExplainLevel, SemanticMode};
+use crate::types::{FreshnessPolicy, PolicyMode, QueryIntent, RankingExplainLevel, SemanticMode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -53,6 +53,8 @@ pub struct SearchConfig {
     pub intent: SearchIntentConfig,
     #[serde(default)]
     pub semantic: SemanticConfig,
+    #[serde(default)]
+    pub policy: RetrievalPolicyConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -119,6 +121,91 @@ pub struct SemanticConfig {
     pub rerank: SemanticRerankConfig,
     #[serde(default)]
     pub overrides: SemanticOverridesConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalPolicyConfig {
+    #[serde(default = "default_policy_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub allow_request_override: bool,
+    #[serde(default = "default_policy_allowed_override_modes")]
+    pub allowed_override_modes: Vec<String>,
+    #[serde(default)]
+    pub path: PolicyPathConfig,
+    #[serde(default)]
+    pub kind: PolicyKindConfig,
+    #[serde(default)]
+    pub redaction: PolicyRedactionConfig,
+    #[serde(default)]
+    pub detect_secrets: DetectSecretsCompatConfig,
+    #[serde(default)]
+    pub opa: OpaPolicyConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PolicyPathConfig {
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PolicyKindConfig {
+    #[serde(default)]
+    pub deny_result_types: Vec<String>,
+    #[serde(default)]
+    pub allow_result_types: Vec<String>,
+    #[serde(default)]
+    pub deny_symbol_kinds: Vec<String>,
+    #[serde(default)]
+    pub allow_symbol_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRedactionConfig {
+    #[serde(default = "default_policy_redaction_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_policy_email_masking")]
+    pub email_masking: bool,
+    #[serde(default = "default_policy_high_entropy_min_length")]
+    pub high_entropy_min_length: usize,
+    #[serde(default = "default_policy_high_entropy_threshold")]
+    pub high_entropy_threshold: f64,
+    #[serde(default)]
+    pub custom_rules: Vec<PolicyRedactionRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRedactionRule {
+    pub name: String,
+    pub category: String,
+    pub pattern: String,
+    #[serde(default = "default_policy_redaction_placeholder")]
+    pub placeholder: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DetectSecretsCompatConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub plugins: Vec<String>,
+    #[serde(default)]
+    pub custom_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpaPolicyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_policy_opa_command")]
+    pub command: String,
+    #[serde(default = "default_policy_opa_query")]
+    pub query: String,
+    #[serde(default)]
+    pub policy_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -323,6 +410,37 @@ fn default_semantic_rerank_provider() -> String {
 fn default_semantic_rerank_timeout_ms() -> u64 {
     5000
 }
+fn default_policy_mode() -> String {
+    "balanced".into()
+}
+fn default_policy_allowed_override_modes() -> Vec<String> {
+    vec![
+        "balanced".to_string(),
+        "off".to_string(),
+        "audit_only".to_string(),
+    ]
+}
+fn default_policy_redaction_enabled() -> bool {
+    true
+}
+fn default_policy_email_masking() -> bool {
+    true
+}
+fn default_policy_high_entropy_min_length() -> usize {
+    20
+}
+fn default_policy_high_entropy_threshold() -> f64 {
+    3.5
+}
+fn default_policy_redaction_placeholder() -> String {
+    "[REDACTED]".to_string()
+}
+fn default_policy_opa_command() -> String {
+    "opa".to_string()
+}
+fn default_policy_opa_query() -> String {
+    "data.cruxe.allow".to_string()
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -356,6 +474,7 @@ impl Default for SearchConfig {
             max_response_bytes: default_max_response_bytes(),
             intent: SearchIntentConfig::default(),
             semantic: SemanticConfig::default(),
+            policy: RetrievalPolicyConfig::default(),
         }
     }
 }
@@ -444,6 +563,44 @@ impl Default for SemanticRerankConfig {
     }
 }
 
+impl Default for RetrievalPolicyConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_policy_mode(),
+            allow_request_override: false,
+            allowed_override_modes: default_policy_allowed_override_modes(),
+            path: PolicyPathConfig::default(),
+            kind: PolicyKindConfig::default(),
+            redaction: PolicyRedactionConfig::default(),
+            detect_secrets: DetectSecretsCompatConfig::default(),
+            opa: OpaPolicyConfig::default(),
+        }
+    }
+}
+
+impl Default for PolicyRedactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_policy_redaction_enabled(),
+            email_masking: default_policy_email_masking(),
+            high_entropy_min_length: default_policy_high_entropy_min_length(),
+            high_entropy_threshold: default_policy_high_entropy_threshold(),
+            custom_rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for OpaPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: default_policy_opa_command(),
+            query: default_policy_opa_query(),
+            policy_path: None,
+        }
+    }
+}
+
 impl SearchConfig {
     pub fn freshness_policy_typed(&self) -> FreshnessPolicy {
         parse_freshness_policy(&self.freshness_policy).unwrap_or(FreshnessPolicy::Balanced)
@@ -459,6 +616,10 @@ impl SearchConfig {
 
     pub fn semantic_enabled(&self) -> bool {
         self.semantic_mode_typed() != SemanticMode::Off
+    }
+
+    pub fn policy_mode_typed(&self) -> PolicyMode {
+        parse_policy_mode(&self.policy.mode).unwrap_or(PolicyMode::Balanced)
     }
 
     pub fn semantic_ratio_for_intent(
@@ -505,6 +666,37 @@ impl SearchConfig {
             default_confidence_threshold(),
             "search.request.confidence_threshold",
         )
+    }
+
+    pub fn resolve_policy_mode(
+        &self,
+        request_override: Option<PolicyMode>,
+    ) -> Result<(PolicyMode, Vec<String>), String> {
+        let mut warnings = Vec::new();
+        let config_mode = self.policy_mode_typed();
+        let Some(request_mode) = request_override else {
+            return Ok((config_mode, warnings));
+        };
+        if !self.policy.allow_request_override {
+            return Err("request policy override is disabled by configuration".to_string());
+        }
+
+        let allowed = normalized_policy_mode_list(
+            &self.policy.allowed_override_modes,
+            default_policy_allowed_override_modes(),
+        );
+        if allowed.iter().any(|mode| mode == request_mode.as_str()) {
+            warnings.push(format!(
+                "policy_mode_override_applied: {} -> {}",
+                config_mode, request_mode
+            ));
+            return Ok((request_mode, warnings));
+        }
+
+        Err(format!(
+            "requested policy mode `{}` is not allowed by configuration",
+            request_mode
+        ))
     }
 }
 
@@ -730,6 +922,79 @@ impl Config {
         if config.search.max_response_bytes == 0 {
             config.search.max_response_bytes = default_max_response_bytes();
         }
+        config.search.policy.mode = normalize_policy_mode(&config.search.policy.mode);
+        config.search.policy.allowed_override_modes = normalized_policy_mode_list(
+            &config.search.policy.allowed_override_modes,
+            default_policy_allowed_override_modes(),
+        );
+        config.search.policy.path.deny = normalize_non_empty_list(&config.search.policy.path.deny);
+        config.search.policy.path.allow =
+            normalize_non_empty_list(&config.search.policy.path.allow);
+        config.search.policy.kind.deny_result_types =
+            normalize_policy_result_type_list(&config.search.policy.kind.deny_result_types);
+        config.search.policy.kind.allow_result_types =
+            normalize_policy_result_type_list(&config.search.policy.kind.allow_result_types);
+        config.search.policy.kind.deny_symbol_kinds =
+            normalize_non_empty_list_lowercase(&config.search.policy.kind.deny_symbol_kinds);
+        config.search.policy.kind.allow_symbol_kinds =
+            normalize_non_empty_list_lowercase(&config.search.policy.kind.allow_symbol_kinds);
+        config.search.policy.redaction.high_entropy_min_length = clamp_min_usize_with_warning(
+            config.search.policy.redaction.high_entropy_min_length,
+            8,
+            default_policy_high_entropy_min_length(),
+            "search.policy.redaction.high_entropy_min_length",
+        );
+        config.search.policy.redaction.high_entropy_threshold = clamp_range_f64_with_warning(
+            config.search.policy.redaction.high_entropy_threshold,
+            1.0,
+            8.0,
+            default_policy_high_entropy_threshold(),
+            "search.policy.redaction.high_entropy_threshold",
+        );
+        config.search.policy.redaction.custom_rules = config
+            .search
+            .policy
+            .redaction
+            .custom_rules
+            .iter()
+            .filter_map(|rule| {
+                let name = rule.name.trim().to_string();
+                let category = rule.category.trim().to_string();
+                let pattern = rule.pattern.trim().to_string();
+                if name.is_empty() || category.is_empty() || pattern.is_empty() {
+                    return None;
+                }
+                let placeholder = if rule.placeholder.trim().is_empty() {
+                    default_policy_redaction_placeholder()
+                } else {
+                    rule.placeholder.trim().to_string()
+                };
+                Some(PolicyRedactionRule {
+                    name,
+                    category,
+                    pattern,
+                    placeholder,
+                })
+            })
+            .collect();
+        config.search.policy.detect_secrets.plugins =
+            normalize_non_empty_list_lowercase(&config.search.policy.detect_secrets.plugins);
+        config.search.policy.detect_secrets.custom_patterns =
+            normalize_non_empty_list(&config.search.policy.detect_secrets.custom_patterns);
+        if config.search.policy.opa.command.trim().is_empty() {
+            config.search.policy.opa.command = default_policy_opa_command();
+        }
+        if config.search.policy.opa.query.trim().is_empty() {
+            config.search.policy.opa.query = default_policy_opa_query();
+        }
+        config.search.policy.opa.policy_path = config
+            .search
+            .policy
+            .opa
+            .policy_path
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         // Legacy compatibility fallback.
         if config.search.ranking_explain_level == "off" && config.debug.ranking_reasons {
@@ -820,6 +1085,80 @@ fn apply_env_overrides(config: &mut Config) {
         && let Ok(n) = v.parse()
     {
         config.search.max_response_bytes = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_MODE") {
+        config.search.policy.mode = v;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_ALLOW_REQUEST_OVERRIDE")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.allow_request_override = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_ALLOWED_OVERRIDE_MODES") {
+        config.search.policy.allowed_override_modes = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_PATH_DENY") {
+        config.search.policy.path.deny = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_PATH_ALLOW") {
+        config.search.policy.path.allow = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_DENY_RESULT_TYPES") {
+        config.search.policy.kind.deny_result_types = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_ALLOW_RESULT_TYPES") {
+        config.search.policy.kind.allow_result_types = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_DENY_SYMBOL_KINDS") {
+        config.search.policy.kind.deny_symbol_kinds = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_KIND_ALLOW_SYMBOL_KINDS") {
+        config.search.policy.kind.allow_symbol_kinds = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.redaction.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_EMAIL_MASKING")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.redaction.email_masking = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_HIGH_ENTROPY_MIN_LENGTH")
+        && let Ok(n) = v.parse()
+    {
+        config.search.policy.redaction.high_entropy_min_length = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_REDACTION_HIGH_ENTROPY_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.search.policy.redaction.high_entropy_threshold = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_DETECT_SECRETS_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.detect_secrets.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_DETECT_SECRETS_PLUGINS") {
+        config.search.policy.detect_secrets.plugins = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_DETECT_SECRETS_CUSTOM_PATTERNS") {
+        config.search.policy.detect_secrets.custom_patterns = parse_csv_env_list(&v);
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.policy.opa.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_COMMAND") {
+        config.search.policy.opa.command = v;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_QUERY") {
+        config.search.policy.opa.query = v;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_POLICY_OPA_POLICY_PATH") {
+        config.search.policy.opa.policy_path = Some(v);
     }
     if let Ok(v) = std::env::var("CRUXE_SEARCH_INTENT_RULE_ORDER") {
         config.search.intent.rule_order = parse_csv_env_list(&v);
@@ -1081,6 +1420,58 @@ fn normalize_semantic_mode(raw: &str) -> String {
     semantic_mode_to_str(mode).to_string()
 }
 
+fn parse_policy_mode(raw: &str) -> Option<PolicyMode> {
+    raw.parse::<PolicyMode>().ok()
+}
+
+fn policy_mode_to_str(mode: PolicyMode) -> &'static str {
+    mode.as_str()
+}
+
+fn normalize_policy_mode(raw: &str) -> String {
+    let mode = parse_policy_mode(raw).unwrap_or(PolicyMode::Balanced);
+    policy_mode_to_str(mode).to_string()
+}
+
+fn normalized_policy_mode_list(values: &[String], fallback: Vec<String>) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .filter_map(|value| parse_policy_mode(value).map(policy_mode_to_str))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    if out.is_empty() { fallback } else { out }
+}
+
+fn normalize_non_empty_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn normalize_non_empty_list_lowercase(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+fn normalize_policy_result_type_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter_map(|value| match value.as_str() {
+            "symbol" | "snippet" | "file" => Some(value),
+            _ => None,
+        })
+        .collect()
+}
+
 fn normalize_embedding_profile(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "fast_local" => "fast_local".to_string(),
@@ -1252,6 +1643,30 @@ fn clamp_non_negative_f64_with_warning(value: f64, fallback: f64, field: &str) -
     value
 }
 
+fn clamp_range_f64_with_warning(value: f64, min: f64, max: f64, fallback: f64, field: &str) -> f64 {
+    if !value.is_finite() {
+        tracing::warn!(
+            field,
+            value,
+            fallback,
+            "invalid non-finite config value; falling back to default"
+        );
+        return fallback;
+    }
+    if value < min || value > max {
+        tracing::warn!(
+            field,
+            value,
+            min,
+            max,
+            fallback,
+            "config value out of range; falling back to default"
+        );
+        return fallback;
+    }
+    value
+}
+
 fn clamp_min_usize_with_warning(value: usize, min: usize, fallback: usize, field: &str) -> usize {
     if value < min {
         tracing::warn!(
@@ -1303,6 +1718,33 @@ mod tests {
         assert_eq!(normalize_semantic_mode("shadow"), "rerank_only");
         assert_eq!(normalize_semantic_mode("ENABLED"), "hybrid");
         assert_eq!(normalize_semantic_mode("unknown"), "off");
+    }
+
+    #[test]
+    fn normalize_policy_mode_values() {
+        assert_eq!(normalize_policy_mode("strict"), "strict");
+        assert_eq!(normalize_policy_mode("BALANCED"), "balanced");
+        assert_eq!(normalize_policy_mode("audit"), "audit_only");
+        assert_eq!(normalize_policy_mode("unknown"), "balanced");
+    }
+
+    #[test]
+    fn search_policy_override_resolution_respects_allowlist() {
+        let mut config = SearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        config.policy.allow_request_override = true;
+        config.policy.allowed_override_modes = vec!["off".to_string(), "audit_only".to_string()];
+
+        let (effective, warnings) = config
+            .resolve_policy_mode(Some(PolicyMode::AuditOnly))
+            .expect("audit_only should be allowed");
+        assert_eq!(effective, PolicyMode::AuditOnly);
+        assert!(!warnings.is_empty());
+
+        let err = config
+            .resolve_policy_mode(Some(PolicyMode::Strict))
+            .expect_err("strict should be denied by allowlist");
+        assert!(err.contains("not allowed"));
     }
 
     #[test]

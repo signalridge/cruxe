@@ -1,12 +1,13 @@
 use cruxe_core::config::SearchConfig as CoreSearchConfig;
 use cruxe_core::error::StateError;
 use cruxe_core::types::{
-    QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolKind, SymbolRecord, SymbolRole,
+    PolicyMode, QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolKind, SymbolRecord,
+    SymbolRole,
 };
 use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tantivy::Term;
 use tantivy::collector::TopDocs;
@@ -19,6 +20,7 @@ use crate::hybrid::{blend_hybrid_results, semantic_query};
 use crate::intent::{IntentPolicy, classify_intent_with_policy};
 use crate::overlay_merge;
 use crate::planner::build_plan_with_ref;
+use crate::policy::PolicyRuntime;
 use crate::ranking::{
     kind_weight, query_intent_boost, rerank, rerank_with_reasons, test_file_penalty,
 };
@@ -96,6 +98,15 @@ pub struct SearchResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMetadata {
+    pub policy_mode: String,
+    pub policy_blocked_count: usize,
+    pub policy_redacted_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policy_audit_counts: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policy_redaction_categories: BTreeMap<String, usize>,
     pub semantic_mode: String,
     pub semantic_enabled: bool,
     pub semantic_ratio_used: f64,
@@ -134,6 +145,7 @@ pub struct SearchExecutionOptions {
     pub semantic_ratio_override: Option<f64>,
     pub confidence_threshold_override: Option<f64>,
     pub role: Option<String>,
+    pub policy_mode_override: Option<PolicyMode>,
 }
 
 /// Optional debug payload for search_code.
@@ -386,6 +398,17 @@ pub fn search_code_with_options(
         retain_role_filtered_results(&mut all_results, role);
     }
 
+    let policy_runtime =
+        PolicyRuntime::from_search_config(&options.search_config, options.policy_mode_override)?;
+    let policy_application = policy_runtime.apply(all_results)?;
+    let policy_mode = policy_application.mode;
+    let policy_blocked_count = policy_application.blocked_count;
+    let policy_redacted_count = policy_application.redacted_count;
+    let policy_warnings = policy_application.warnings;
+    let policy_audit_counts = policy_application.audit_counts;
+    let policy_redaction_categories = policy_application.active_redaction_categories;
+    all_results = policy_application.results;
+
     let total = all_results.len();
 
     let rerank_enabled = options.search_config.semantic_mode_typed()
@@ -445,6 +468,12 @@ pub fn search_code_with_options(
     );
 
     let metadata = SearchMetadata {
+        policy_mode: policy_mode.to_string(),
+        policy_blocked_count,
+        policy_redacted_count,
+        policy_warnings,
+        policy_audit_counts,
+        policy_redaction_categories,
         semantic_mode: options.search_config.semantic.mode.clone(),
         semantic_enabled: options.search_config.semantic_enabled(),
         semantic_ratio_used: semantic_state.semantic_ratio_used,
@@ -647,6 +676,22 @@ pub fn search_code_vcs_merged_with_options(
 
     // Recalculate confidence on the merged result set (not the stale overlay snapshot).
     let mut metadata = overlay.metadata;
+    metadata.policy_blocked_count += base.metadata.policy_blocked_count;
+    metadata.policy_redacted_count += base.metadata.policy_redacted_count;
+    if !base.metadata.policy_warnings.is_empty() {
+        metadata
+            .policy_warnings
+            .extend(base.metadata.policy_warnings.iter().cloned());
+    }
+    for (key, value) in &base.metadata.policy_audit_counts {
+        *metadata.policy_audit_counts.entry(key.clone()).or_insert(0) += *value;
+    }
+    for (key, value) in &base.metadata.policy_redaction_categories {
+        *metadata
+            .policy_redaction_categories
+            .entry(key.clone())
+            .or_insert(0) += *value;
+    }
     let confidence_threshold = options
         .search_config
         .confidence_threshold(options.confidence_threshold_override);
@@ -1502,6 +1547,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
             },
         )
         .unwrap();
@@ -1606,6 +1652,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: Some("type".to_string()),
+                policy_mode_override: None,
             },
         )
         .unwrap();
@@ -1707,6 +1754,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
             },
         )
         .unwrap();
@@ -1840,6 +1888,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
             },
         )
         .unwrap();
@@ -1877,6 +1926,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
             },
         )
         .unwrap();
@@ -1938,6 +1988,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                policy_mode_override: None,
             },
         )
         .unwrap();
@@ -1979,6 +2030,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: Some(0.91),
                 role: None,
+                policy_mode_override: None,
             },
         )
         .unwrap();

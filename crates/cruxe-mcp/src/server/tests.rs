@@ -3338,6 +3338,9 @@ fn t403_search_code_exposes_semantic_and_confidence_metadata() {
     );
     assert!(meta.get("query_intent_confidence").is_some());
     assert!(meta.get("low_confidence").is_some());
+    assert!(meta.get("policy_mode").is_some());
+    assert!(meta.get("policy_blocked_count").is_some());
+    assert!(meta.get("policy_redacted_count").is_some());
 
     let first = payload["results"]
         .as_array()
@@ -3479,6 +3482,115 @@ fn t404_search_code_invalid_confidence_threshold_returns_invalid_input_envelope(
             .and_then(|v| v.as_str()),
         Some(cruxe_core::constants::PROTOCOL_VERSION)
     );
+}
+
+#[test]
+fn t470_search_code_policy_mode_override_rejected_in_strict_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let mut config = Config::default();
+    config.search.policy.mode = "strict".to_string();
+    config.search.policy.allow_request_override = false;
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "policy_mode": "off"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(
+        response.error.is_none(),
+        "tool call should return canonical content envelope"
+    );
+    let payload = extract_payload_from_response(&response);
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_input")
+    );
+    assert!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("Policy")
+    );
+}
+
+#[test]
+fn t471_search_code_exposes_policy_metadata_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let mut config = Config::default();
+    config.search.policy.mode = "balanced".to_string();
+    config.search.policy.allow_request_override = true;
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "policy_mode": "audit_only"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let metadata = payload.get("metadata").expect("metadata should be present");
+    assert_eq!(
+        metadata.get("policy_mode").and_then(|v| v.as_str()),
+        Some("audit_only")
+    );
+    assert!(metadata.get("policy_blocked_count").is_some());
+    assert!(metadata.get("policy_redacted_count").is_some());
 }
 
 #[test]
@@ -4081,6 +4193,10 @@ fn t134_tools_list_schema_verification() {
     assert!(context_props.get("max_tokens").is_some());
     assert!(context_props.get("strategy").is_some());
     assert!(
+        context_props.get("policy_mode").is_some(),
+        "get_code_context should expose policy_mode override"
+    );
+    assert!(
         context_props.get("compact").is_none(),
         "003 tools must not expose compact parameter in this phase"
     );
@@ -4100,6 +4216,10 @@ fn t134_tools_list_schema_verification() {
     assert!(
         search_props.get("confidence_threshold").is_some(),
         "search_code should expose confidence_threshold override"
+    );
+    assert!(
+        search_props.get("policy_mode").is_some(),
+        "search_code should expose policy_mode override"
     );
 }
 

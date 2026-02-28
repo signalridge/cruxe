@@ -91,6 +91,52 @@ ratio = 0.0
 [search.semantic.overrides.error]
 ratio = 0.0
 
+[search.policy]
+# Retrieval policy mode:
+# - strict: fail closed when policy config is invalid/unavailable
+# - balanced: enforce policy, fail open with warnings on non-fatal issues (default)
+# - off: bypass policy filtering/redaction
+# - audit_only: report blocked/redacted counters without mutating payloads
+mode = "balanced"
+# Allow per-request policy override (search_code/get_code_context `policy_mode`)
+allow_request_override = false
+# Allowed override modes when allow_request_override=true
+allowed_override_modes = ["balanced", "off", "audit_only"]
+
+[search.policy.path]
+# Deny/allow glob patterns applied to result path before emission.
+# Example: deny = ["**/secrets/**", "**/.env*"]
+deny = []
+allow = []
+
+[search.policy.kind]
+# Optional allow/deny lists for result/symbol types.
+# result types: symbol | snippet | file
+deny_result_types = []
+allow_result_types = []
+deny_symbol_kinds = []
+allow_symbol_kinds = []
+
+[search.policy.redaction]
+enabled = true
+email_masking = true
+# Generic high-entropy detector guardrails
+high_entropy_min_length = 20
+high_entropy_threshold = 3.5
+
+[search.policy.detect_secrets]
+# Compatibility surface for detect-secrets style plugin families.
+enabled = false
+plugins = []
+custom_patterns = []
+
+[search.policy.opa]
+# Optional prototype hook: if enabled, Cruxe shells out to OPA for allow/deny.
+enabled = false
+command = "opa"
+query = "data.cruxe.allow"
+policy_path = ""
+
 [logging]
 # Default log level: error, warn, info, debug, trace
 level = "info"
