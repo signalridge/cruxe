@@ -346,7 +346,8 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
             }
 
             conn.execute_batch(
-                "UPDATE symbol_edges
+                "SAVEPOINT migration_v13_edge_confidence_backfill;
+                 UPDATE symbol_edges
                  SET resolution_outcome = CASE
                      WHEN COALESCE(to_symbol_id, '') <> '' THEN 'resolved_internal'
                      WHEN COALESCE(to_name, '') <> ''
@@ -399,7 +400,8 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                      WHEN 'high' THEN 1.0
                      WHEN 'medium' THEN 0.6
                      ELSE 0.2
-                  END;",
+                  END;
+                 RELEASE migration_v13_edge_confidence_backfill;",
             )
             .map_err(StateError::sqlite)?;
             Ok(())
@@ -408,7 +410,8 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
         // Rust-name heuristics (do not treat arbitrary `foo::bar` as external).
         |conn| {
             conn.execute_batch(
-                "UPDATE symbol_edges
+                "SAVEPOINT migration_v14_edge_confidence_align;
+                 UPDATE symbol_edges
                  SET resolution_outcome = CASE
                      WHEN COALESCE(to_symbol_id, '') <> '' THEN 'resolved_internal'
                      WHEN COALESCE(to_name, '') <> ''
@@ -450,7 +453,8 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                      WHEN 'high' THEN 1.0
                      WHEN 'medium' THEN 0.6
                      ELSE 0.2
-                   END;",
+                   END;
+                 RELEASE migration_v14_edge_confidence_align;",
             )
             .map_err(StateError::sqlite)?;
             Ok(())
