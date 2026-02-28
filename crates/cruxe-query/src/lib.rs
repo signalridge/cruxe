@@ -1,3 +1,4 @@
+pub mod adaptive_plan;
 pub mod call_graph;
 pub mod confidence;
 pub mod context;

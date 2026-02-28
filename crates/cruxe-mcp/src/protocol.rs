@@ -68,6 +68,18 @@ pub struct ProtocolMetadata {
     pub query_intent_confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent_escalation_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_selected: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_executed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_selection_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_downgraded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_downgrade_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_budget_used: Option<Value>,
 }
 
 impl ProtocolMetadata {
@@ -114,6 +126,12 @@ impl ProtocolMetadata {
             channel_agreement: None,
             query_intent_confidence: None,
             intent_escalation_hint: None,
+            query_plan_selected: None,
+            query_plan_executed: None,
+            query_plan_selection_reason: None,
+            query_plan_downgraded: None,
+            query_plan_downgrade_reason: None,
+            query_plan_budget_used: None,
         }
     }
 

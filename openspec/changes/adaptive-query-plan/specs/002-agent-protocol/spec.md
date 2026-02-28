@@ -5,6 +5,7 @@
 
 Required additive fields:
 - `query_plan_selected`
+- `query_plan_executed`
 - `query_plan_selection_reason`
 - `query_plan_downgraded` (boolean)
 - `query_plan_downgrade_reason` (when downgraded)
@@ -17,6 +18,7 @@ Required additive fields:
 #### Scenario: Downgraded execution includes reason
 - **WHEN** runtime downgrades from a deeper plan to a lighter plan
 - **THEN** metadata MUST include `query_plan_downgraded=true` and a deterministic reason code
+- **AND** `query_plan_executed` MUST reflect the final executed plan
 
 #### Scenario: Selection reason is always present
 - **WHEN** adaptive planning is enabled

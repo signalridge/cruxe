@@ -52,6 +52,8 @@ pub struct SearchConfig {
     #[serde(default)]
     pub intent: SearchIntentConfig,
     #[serde(default)]
+    pub adaptive_plan: AdaptivePlanConfig,
+    #[serde(default)]
     pub semantic: SemanticConfig,
 }
 
@@ -79,6 +81,38 @@ pub struct SearchIntentConfig {
     pub symbol_kind_keywords: Vec<String>,
     #[serde(default = "default_intent_enable_wrapped_quoted_error_literal")]
     pub enable_wrapped_quoted_error_literal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptivePlanConfig {
+    #[serde(default = "default_adaptive_plan_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_adaptive_plan_allow_override")]
+    pub allow_override: bool,
+    #[serde(default = "default_adaptive_plan_high_confidence_threshold")]
+    pub high_confidence_threshold: f64,
+    #[serde(default = "default_adaptive_plan_low_confidence_threshold")]
+    pub low_confidence_threshold: f64,
+    #[serde(default = "default_lexical_fast_lexical_fanout_multiplier")]
+    pub lexical_fast_lexical_fanout_multiplier: usize,
+    #[serde(default = "default_hybrid_standard_semantic_limit_multiplier")]
+    pub hybrid_standard_semantic_limit_multiplier: usize,
+    #[serde(default = "default_hybrid_standard_lexical_fanout_multiplier")]
+    pub hybrid_standard_lexical_fanout_multiplier: usize,
+    #[serde(default = "default_hybrid_standard_semantic_fanout_multiplier")]
+    pub hybrid_standard_semantic_fanout_multiplier: usize,
+    #[serde(default = "default_semantic_deep_semantic_limit_multiplier")]
+    pub semantic_deep_semantic_limit_multiplier: usize,
+    #[serde(default = "default_semantic_deep_lexical_fanout_multiplier")]
+    pub semantic_deep_lexical_fanout_multiplier: usize,
+    #[serde(default = "default_semantic_deep_semantic_fanout_multiplier")]
+    pub semantic_deep_semantic_fanout_multiplier: usize,
+    #[serde(default = "default_lexical_fast_latency_budget_ms")]
+    pub lexical_fast_latency_budget_ms: u64,
+    #[serde(default = "default_hybrid_standard_latency_budget_ms")]
+    pub hybrid_standard_latency_budget_ms: u64,
+    #[serde(default = "default_semantic_deep_latency_budget_ms")]
+    pub semantic_deep_latency_budget_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +291,48 @@ fn default_intent_symbol_kind_keywords() -> Vec<String> {
 fn default_intent_enable_wrapped_quoted_error_literal() -> bool {
     true
 }
+fn default_adaptive_plan_enabled() -> bool {
+    true
+}
+fn default_adaptive_plan_allow_override() -> bool {
+    true
+}
+fn default_adaptive_plan_high_confidence_threshold() -> f64 {
+    0.75
+}
+fn default_adaptive_plan_low_confidence_threshold() -> f64 {
+    0.55
+}
+fn default_lexical_fast_lexical_fanout_multiplier() -> usize {
+    2
+}
+fn default_hybrid_standard_semantic_limit_multiplier() -> usize {
+    default_semantic_limit_multiplier()
+}
+fn default_hybrid_standard_lexical_fanout_multiplier() -> usize {
+    default_lexical_fanout_multiplier()
+}
+fn default_hybrid_standard_semantic_fanout_multiplier() -> usize {
+    default_semantic_fanout_multiplier()
+}
+fn default_semantic_deep_semantic_limit_multiplier() -> usize {
+    4
+}
+fn default_semantic_deep_lexical_fanout_multiplier() -> usize {
+    6
+}
+fn default_semantic_deep_semantic_fanout_multiplier() -> usize {
+    5
+}
+fn default_lexical_fast_latency_budget_ms() -> u64 {
+    120
+}
+fn default_hybrid_standard_latency_budget_ms() -> u64 {
+    300
+}
+fn default_semantic_deep_latency_budget_ms() -> u64 {
+    700
+}
 fn default_semantic_mode() -> String {
     "off".into()
 }
@@ -355,6 +431,7 @@ impl Default for SearchConfig {
             ranking_explain_level: default_ranking_explain_level(),
             max_response_bytes: default_max_response_bytes(),
             intent: SearchIntentConfig::default(),
+            adaptive_plan: AdaptivePlanConfig::default(),
             semantic: SemanticConfig::default(),
         }
     }
@@ -377,6 +454,34 @@ impl Default for SearchIntentConfig {
             symbol_kind_keywords: default_intent_symbol_kind_keywords(),
             enable_wrapped_quoted_error_literal: default_intent_enable_wrapped_quoted_error_literal(
             ),
+        }
+    }
+}
+
+impl Default for AdaptivePlanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_adaptive_plan_enabled(),
+            allow_override: default_adaptive_plan_allow_override(),
+            high_confidence_threshold: default_adaptive_plan_high_confidence_threshold(),
+            low_confidence_threshold: default_adaptive_plan_low_confidence_threshold(),
+            lexical_fast_lexical_fanout_multiplier: default_lexical_fast_lexical_fanout_multiplier(
+            ),
+            hybrid_standard_semantic_limit_multiplier:
+                default_hybrid_standard_semantic_limit_multiplier(),
+            hybrid_standard_lexical_fanout_multiplier:
+                default_hybrid_standard_lexical_fanout_multiplier(),
+            hybrid_standard_semantic_fanout_multiplier:
+                default_hybrid_standard_semantic_fanout_multiplier(),
+            semantic_deep_semantic_limit_multiplier:
+                default_semantic_deep_semantic_limit_multiplier(),
+            semantic_deep_lexical_fanout_multiplier:
+                default_semantic_deep_lexical_fanout_multiplier(),
+            semantic_deep_semantic_fanout_multiplier:
+                default_semantic_deep_semantic_fanout_multiplier(),
+            lexical_fast_latency_budget_ms: default_lexical_fast_latency_budget_ms(),
+            hybrid_standard_latency_budget_ms: default_hybrid_standard_latency_budget_ms(),
+            semantic_deep_latency_budget_ms: default_semantic_deep_latency_budget_ms(),
         }
     }
 }
@@ -590,6 +695,7 @@ impl Config {
         config.search.ranking_explain_level =
             normalize_ranking_explain_level(&config.search.ranking_explain_level);
         config.search.intent = config.search.intent.normalized();
+        config.search.adaptive_plan = normalize_adaptive_plan_config(config.search.adaptive_plan);
         config.search.semantic.mode = normalize_semantic_mode(&config.search.semantic.mode);
         config.search.semantic.ratio = clamp_unit_f64_with_warning(
             config.search.semantic.ratio,
@@ -837,6 +943,107 @@ fn apply_env_overrides(config: &mut Config) {
         && let Some(parsed) = parse_env_bool(&v)
     {
         config.search.intent.enable_wrapped_quoted_error_literal = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_ENABLED")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.adaptive_plan.enabled = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_ALLOW_OVERRIDE")
+        && let Some(parsed) = parse_env_bool(&v)
+    {
+        config.search.adaptive_plan.allow_override = parsed;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_HIGH_CONFIDENCE_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.search.adaptive_plan.high_confidence_threshold = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_LOW_CONFIDENCE_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.search.adaptive_plan.low_confidence_threshold = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_LEXICAL_FAST_LEXICAL_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .lexical_fast_lexical_fanout_multiplier = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_HYBRID_STANDARD_SEMANTIC_LIMIT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .hybrid_standard_semantic_limit_multiplier = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_HYBRID_STANDARD_LEXICAL_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .hybrid_standard_lexical_fanout_multiplier = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_HYBRID_STANDARD_SEMANTIC_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .hybrid_standard_semantic_fanout_multiplier = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_SEMANTIC_DEEP_SEMANTIC_LIMIT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .semantic_deep_semantic_limit_multiplier = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_SEMANTIC_DEEP_LEXICAL_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .semantic_deep_lexical_fanout_multiplier = n;
+    }
+    if let Ok(v) =
+        std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_SEMANTIC_DEEP_SEMANTIC_FANOUT_MULTIPLIER")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .semantic_deep_semantic_fanout_multiplier = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_LEXICAL_FAST_LATENCY_BUDGET_MS")
+        && let Ok(n) = v.parse()
+    {
+        config.search.adaptive_plan.lexical_fast_latency_budget_ms = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_HYBRID_STANDARD_LATENCY_BUDGET_MS")
+        && let Ok(n) = v.parse()
+    {
+        config
+            .search
+            .adaptive_plan
+            .hybrid_standard_latency_budget_ms = n;
+    }
+    if let Ok(v) = std::env::var("CRUXE_SEARCH_ADAPTIVE_PLAN_SEMANTIC_DEEP_LATENCY_BUDGET_MS")
+        && let Ok(n) = v.parse()
+    {
+        config.search.adaptive_plan.semantic_deep_latency_budget_ms = n;
     }
     if let Ok(v) = std::env::var("CRUXE_SEMANTIC_MODE") {
         config.search.semantic.mode = v;
@@ -1208,6 +1415,91 @@ fn normalize_intent_symbol_kind_keywords(raw: &[String]) -> Vec<String> {
     }
 }
 
+fn normalize_adaptive_plan_config(mut config: AdaptivePlanConfig) -> AdaptivePlanConfig {
+    config.high_confidence_threshold = clamp_unit_f64_with_warning(
+        config.high_confidence_threshold,
+        default_adaptive_plan_high_confidence_threshold(),
+        "search.adaptive_plan.high_confidence_threshold",
+    );
+    config.low_confidence_threshold = clamp_unit_f64_with_warning(
+        config.low_confidence_threshold,
+        default_adaptive_plan_low_confidence_threshold(),
+        "search.adaptive_plan.low_confidence_threshold",
+    );
+    if config.low_confidence_threshold > config.high_confidence_threshold {
+        tracing::warn!(
+            low_confidence_threshold = config.low_confidence_threshold,
+            high_confidence_threshold = config.high_confidence_threshold,
+            "adaptive plan thresholds inverted; restoring defaults"
+        );
+        config.high_confidence_threshold = default_adaptive_plan_high_confidence_threshold();
+        config.low_confidence_threshold = default_adaptive_plan_low_confidence_threshold();
+    }
+
+    config.lexical_fast_lexical_fanout_multiplier = clamp_min_usize_with_warning(
+        config.lexical_fast_lexical_fanout_multiplier,
+        1,
+        default_lexical_fast_lexical_fanout_multiplier(),
+        "search.adaptive_plan.lexical_fast_lexical_fanout_multiplier",
+    );
+    config.hybrid_standard_semantic_limit_multiplier = clamp_min_usize_with_warning(
+        config.hybrid_standard_semantic_limit_multiplier,
+        1,
+        default_hybrid_standard_semantic_limit_multiplier(),
+        "search.adaptive_plan.hybrid_standard_semantic_limit_multiplier",
+    );
+    config.hybrid_standard_lexical_fanout_multiplier = clamp_min_usize_with_warning(
+        config.hybrid_standard_lexical_fanout_multiplier,
+        1,
+        default_hybrid_standard_lexical_fanout_multiplier(),
+        "search.adaptive_plan.hybrid_standard_lexical_fanout_multiplier",
+    );
+    config.hybrid_standard_semantic_fanout_multiplier = clamp_min_usize_with_warning(
+        config.hybrid_standard_semantic_fanout_multiplier,
+        1,
+        default_hybrid_standard_semantic_fanout_multiplier(),
+        "search.adaptive_plan.hybrid_standard_semantic_fanout_multiplier",
+    );
+    config.semantic_deep_semantic_limit_multiplier = clamp_min_usize_with_warning(
+        config.semantic_deep_semantic_limit_multiplier,
+        1,
+        default_semantic_deep_semantic_limit_multiplier(),
+        "search.adaptive_plan.semantic_deep_semantic_limit_multiplier",
+    );
+    config.semantic_deep_lexical_fanout_multiplier = clamp_min_usize_with_warning(
+        config.semantic_deep_lexical_fanout_multiplier,
+        1,
+        default_semantic_deep_lexical_fanout_multiplier(),
+        "search.adaptive_plan.semantic_deep_lexical_fanout_multiplier",
+    );
+    config.semantic_deep_semantic_fanout_multiplier = clamp_min_usize_with_warning(
+        config.semantic_deep_semantic_fanout_multiplier,
+        1,
+        default_semantic_deep_semantic_fanout_multiplier(),
+        "search.adaptive_plan.semantic_deep_semantic_fanout_multiplier",
+    );
+    config.lexical_fast_latency_budget_ms = clamp_min_u64_with_warning(
+        config.lexical_fast_latency_budget_ms,
+        1,
+        default_lexical_fast_latency_budget_ms(),
+        "search.adaptive_plan.lexical_fast_latency_budget_ms",
+    );
+    config.hybrid_standard_latency_budget_ms = clamp_min_u64_with_warning(
+        config.hybrid_standard_latency_budget_ms,
+        1,
+        default_hybrid_standard_latency_budget_ms(),
+        "search.adaptive_plan.hybrid_standard_latency_budget_ms",
+    );
+    config.semantic_deep_latency_budget_ms = clamp_min_u64_with_warning(
+        config.semantic_deep_latency_budget_ms,
+        1,
+        default_semantic_deep_latency_budget_ms(),
+        "search.adaptive_plan.semantic_deep_latency_budget_ms",
+    );
+
+    config
+}
+
 fn clamp_unit_f64_with_warning(value: f64, fallback: f64, field: &str) -> f64 {
     if !value.is_finite() {
         tracing::warn!(
@@ -1253,6 +1545,21 @@ fn clamp_non_negative_f64_with_warning(value: f64, fallback: f64, field: &str) -
 }
 
 fn clamp_min_usize_with_warning(value: usize, min: usize, fallback: usize, field: &str) -> usize {
+    if value < min {
+        tracing::warn!(
+            field,
+            value,
+            min,
+            fallback,
+            "config value below minimum; falling back to default"
+        );
+        fallback
+    } else {
+        value
+    }
+}
+
+fn clamp_min_u64_with_warning(value: u64, min: u64, fallback: u64, field: &str) -> u64 {
     if value < min {
         tracing::warn!(
             field,
@@ -1607,6 +1914,58 @@ mod tests {
         assert_eq!(semantic.semantic_limit_multiplier, 2);
         assert_eq!(semantic.lexical_fanout_multiplier, 4);
         assert_eq!(semantic.semantic_fanout_multiplier, 3);
+    }
+
+    #[test]
+    fn adaptive_plan_defaults_are_stable() {
+        let adaptive = AdaptivePlanConfig::default();
+        assert!(adaptive.enabled);
+        assert!(adaptive.allow_override);
+        assert!((adaptive.high_confidence_threshold - 0.75).abs() < f64::EPSILON);
+        assert!((adaptive.low_confidence_threshold - 0.55).abs() < f64::EPSILON);
+        assert_eq!(adaptive.lexical_fast_lexical_fanout_multiplier, 2);
+        assert_eq!(adaptive.hybrid_standard_semantic_limit_multiplier, 2);
+        assert_eq!(adaptive.hybrid_standard_lexical_fanout_multiplier, 4);
+        assert_eq!(adaptive.hybrid_standard_semantic_fanout_multiplier, 3);
+        assert_eq!(adaptive.semantic_deep_semantic_limit_multiplier, 4);
+        assert_eq!(adaptive.semantic_deep_lexical_fanout_multiplier, 6);
+        assert_eq!(adaptive.semantic_deep_semantic_fanout_multiplier, 5);
+        assert_eq!(adaptive.lexical_fast_latency_budget_ms, 120);
+        assert_eq!(adaptive.hybrid_standard_latency_budget_ms, 300);
+        assert_eq!(adaptive.semantic_deep_latency_budget_ms, 700);
+    }
+
+    #[test]
+    fn adaptive_plan_config_normalizes_invalid_values() {
+        let normalized = normalize_adaptive_plan_config(AdaptivePlanConfig {
+            enabled: true,
+            allow_override: true,
+            high_confidence_threshold: 0.2,
+            low_confidence_threshold: 0.9,
+            lexical_fast_lexical_fanout_multiplier: 0,
+            hybrid_standard_semantic_limit_multiplier: 0,
+            hybrid_standard_lexical_fanout_multiplier: 0,
+            hybrid_standard_semantic_fanout_multiplier: 0,
+            semantic_deep_semantic_limit_multiplier: 0,
+            semantic_deep_lexical_fanout_multiplier: 0,
+            semantic_deep_semantic_fanout_multiplier: 0,
+            lexical_fast_latency_budget_ms: 0,
+            hybrid_standard_latency_budget_ms: 0,
+            semantic_deep_latency_budget_ms: 0,
+        });
+
+        assert!((normalized.high_confidence_threshold - 0.75).abs() < f64::EPSILON);
+        assert!((normalized.low_confidence_threshold - 0.55).abs() < f64::EPSILON);
+        assert_eq!(normalized.lexical_fast_lexical_fanout_multiplier, 2);
+        assert_eq!(normalized.hybrid_standard_semantic_limit_multiplier, 2);
+        assert_eq!(normalized.hybrid_standard_lexical_fanout_multiplier, 4);
+        assert_eq!(normalized.hybrid_standard_semantic_fanout_multiplier, 3);
+        assert_eq!(normalized.semantic_deep_semantic_limit_multiplier, 4);
+        assert_eq!(normalized.semantic_deep_lexical_fanout_multiplier, 6);
+        assert_eq!(normalized.semantic_deep_semantic_fanout_multiplier, 5);
+        assert_eq!(normalized.lexical_fast_latency_budget_ms, 120);
+        assert_eq!(normalized.hybrid_standard_latency_budget_ms, 300);
+        assert_eq!(normalized.semantic_deep_latency_budget_ms, 700);
     }
 
     #[test]

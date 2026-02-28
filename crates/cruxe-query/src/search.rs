@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::Instant;
 use tantivy::Term;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
@@ -24,6 +25,10 @@ use crate::ranking::{
 };
 use crate::rerank::{RerankDocument, rerank_documents};
 use crate::scoring::normalize_relevance_score;
+use crate::{
+    adaptive_plan::{DowngradeReason, PlanController, PlanSelectionInput, QueryPlan, plan_budget},
+    scoring,
+};
 
 /// Reciprocal Rank Fusion constant (standard value from the RRF paper).
 /// Used by both per-index RRF in `search_code_with_options` and channel-level
@@ -124,8 +129,23 @@ pub struct SearchMetadata {
     pub query_intent_confidence: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent_escalation_hint: Option<String>,
+    pub query_plan_selected: String,
+    pub query_plan_executed: String,
+    pub query_plan_selection_reason: String,
+    pub query_plan_downgraded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_plan_downgrade_reason: Option<String>,
+    pub query_plan_budget_used: QueryPlanBudgetUsed,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryPlanBudgetUsed {
+    pub semantic_limit: usize,
+    pub lexical_fanout: usize,
+    pub semantic_fanout: usize,
+    pub latency_budget_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -134,6 +154,7 @@ pub struct SearchExecutionOptions {
     pub semantic_ratio_override: Option<f64>,
     pub confidence_threshold_override: Option<f64>,
     pub role: Option<String>,
+    pub plan_override: Option<String>,
 }
 
 /// Optional debug payload for search_code.
@@ -191,6 +212,7 @@ pub fn search_code_with_options(
     debug_ranking: bool,
     options: SearchExecutionOptions,
 ) -> Result<SearchResponse, StateError> {
+    let query_start = Instant::now();
     let mut debug = tracing::enabled!(tracing::Level::DEBUG).then_some(SearchDebugInfo::default());
 
     let intent_policy = IntentPolicy::from(&options.search_config.intent);
@@ -203,9 +225,6 @@ pub fn search_code_with_options(
     let effective_ref = plan.ref_scope.r#ref.clone();
     let search_ref = Some(effective_ref.as_str());
     let mut semantic_state = semantic_execution_state(&intent, &options);
-    let mut semantic_limit_used = 0usize;
-    let mut lexical_fanout_used = 0usize;
-    let mut semantic_fanout_used = 0usize;
     let mut semantic_budget_exhausted = false;
     let mut response_warnings = Vec::new();
 
@@ -283,12 +302,40 @@ pub fn search_code_with_options(
     // Short-circuit semantic only after lexical rerank has shaped score spread.
     semantic_state.apply_lexical_short_circuit(&all_results);
 
-    if semantic_state.semantic_eligible() {
-        let (semantic_limit, lexical_fanout, semantic_fanout) =
-            semantic_fanout_limits(limit, &options.search_config);
-        semantic_limit_used = semantic_limit;
-        lexical_fanout_used = lexical_fanout;
-        semantic_fanout_used = semantic_fanout;
+    let lexical_confidence = all_results
+        .iter()
+        .map(|result| scoring::normalize_relevance_score(result.score as f64))
+        .fold(0.0_f64, f64::max);
+    let semantic_runtime_available = conn.is_some()
+        && options.search_config.semantic_enabled()
+        && options.search_config.semantic_mode_typed() == cruxe_core::types::SemanticMode::Hybrid;
+    let mut plan_controller = PlanController::select(PlanSelectionInput {
+        intent: intent.intent,
+        lexical_confidence,
+        semantic_runtime_available,
+        override_plan: options.plan_override.as_deref(),
+        config: &options.search_config.adaptive_plan,
+    });
+    let mut effective_plan_budget =
+        plan_budget(plan_controller.executed, limit, &options.search_config);
+
+    if plan_controller.executed == QueryPlan::LexicalFast && semantic_state.semantic_eligible() {
+        semantic_state.mark_skipped("plan_lexical_fast");
+    }
+
+    let executed_before_semantic_guard = plan_controller.executed;
+    let elapsed_before_semantic_ms = query_start.elapsed().as_millis() as u64;
+    plan_controller.ensure_latency_budget(elapsed_before_semantic_ms, effective_plan_budget);
+    if plan_controller.executed != executed_before_semantic_guard {
+        effective_plan_budget =
+            plan_budget(plan_controller.executed, limit, &options.search_config);
+        if plan_controller.executed == QueryPlan::LexicalFast && semantic_state.semantic_eligible()
+        {
+            semantic_state.mark_skipped("plan_lexical_fast");
+        }
+    }
+
+    if plan_controller.executed != QueryPlan::LexicalFast && semantic_state.semantic_eligible() {
         if let Some(conn) = conn {
             if let Some(project_id) =
                 resolve_semantic_project_id(conn, effective_ref.as_str(), &all_results)
@@ -316,7 +363,7 @@ pub fn search_code_with_options(
                     query,
                     effective_ref.as_str(),
                     project_id.as_str(),
-                    semantic_limit,
+                    effective_plan_budget.semantic_limit,
                 ) {
                     Ok(semantic_output) => {
                         semantic_state.external_provider_blocked |=
@@ -330,15 +377,17 @@ pub fn search_code_with_options(
                                 &mut semantic_results,
                                 effective_ref.as_str(),
                             )?;
-                            let effective_semantic_cap = semantic_limit.min(semantic_fanout);
+                            let effective_semantic_cap = effective_plan_budget
+                                .semantic_limit
+                                .min(effective_plan_budget.semantic_fanout);
                             semantic_budget_exhausted =
                                 semantic_results.len() >= effective_semantic_cap;
                             all_results = blend_hybrid_results(
                                 all_results,
                                 semantic_results,
                                 semantic_state.semantic_ratio_used,
-                                lexical_fanout,
-                                semantic_fanout,
+                                effective_plan_budget.lexical_fanout,
+                                effective_plan_budget.semantic_fanout,
                             );
                             for result in &mut all_results {
                                 if result.provenance == "semantic" {
@@ -355,6 +404,16 @@ pub fn search_code_with_options(
                             }
                             semantic_state.semantic_triggered = true;
                             semantic_state.semantic_skipped_reason = None;
+                            if semantic_budget_exhausted
+                                && plan_controller.executed == QueryPlan::SemanticDeep
+                            {
+                                plan_controller.downgrade(DowngradeReason::BudgetExhausted);
+                                effective_plan_budget = plan_budget(
+                                    plan_controller.executed,
+                                    limit,
+                                    &options.search_config,
+                                );
+                            }
                         }
                     }
                     Err(err) => {
@@ -369,13 +428,22 @@ pub fn search_code_with_options(
                         );
                         semantic_state.mark_skipped("semantic_backend_error");
                         semantic_state.semantic_fallback = true;
+                        plan_controller.downgrade(DowngradeReason::SemanticUnavailable);
+                        effective_plan_budget =
+                            plan_budget(plan_controller.executed, limit, &options.search_config);
                     }
                 }
             } else {
                 semantic_state.mark_skipped("project_scope_unresolved");
+                plan_controller.downgrade(DowngradeReason::SemanticUnavailable);
+                effective_plan_budget =
+                    plan_budget(plan_controller.executed, limit, &options.search_config);
             }
         } else {
             semantic_state.mark_skipped("semantic_requires_state_connection");
+            plan_controller.downgrade(DowngradeReason::SemanticUnavailable);
+            effective_plan_budget =
+                plan_budget(plan_controller.executed, limit, &options.search_config);
         }
     }
 
@@ -388,8 +456,16 @@ pub fn search_code_with_options(
 
     let total = all_results.len();
 
-    let rerank_enabled = options.search_config.semantic_mode_typed()
-        != cruxe_core::types::SemanticMode::Off
+    let executed_before_rerank_guard = plan_controller.executed;
+    let elapsed_before_rerank_ms = query_start.elapsed().as_millis() as u64;
+    plan_controller.ensure_latency_budget(elapsed_before_rerank_ms, effective_plan_budget);
+    if plan_controller.executed != executed_before_rerank_guard {
+        effective_plan_budget =
+            plan_budget(plan_controller.executed, limit, &options.search_config);
+    }
+
+    let rerank_enabled = plan_controller.executed != QueryPlan::LexicalFast
+        && options.search_config.semantic_mode_typed() != cruxe_core::types::SemanticMode::Off
         && options.search_config.semantic.rerank.provider != "none";
     if rerank_enabled {
         let rerank_docs: Vec<RerankDocument> = all_results
@@ -422,12 +498,31 @@ pub fn search_code_with_options(
         semantic_state.rerank_provider = rerank_execution.provider;
         semantic_state.rerank_fallback = rerank_execution.fallback;
         semantic_state.rerank_fallback_reason = rerank_execution.fallback_reason;
-    } else if options.search_config.semantic_mode_typed() == cruxe_core::types::SemanticMode::Off {
+    } else if plan_controller.executed == QueryPlan::LexicalFast
+        || options.search_config.semantic_mode_typed() == cruxe_core::types::SemanticMode::Off
+    {
         semantic_state.rerank_provider = "none".to_string();
         semantic_state.rerank_fallback = false;
         semantic_state.rerank_fallback_reason = None;
     } else {
         semantic_state.rerank_provider = "local".to_string();
+    }
+
+    let executed_before_final_guard = plan_controller.executed;
+    let elapsed_ms = query_start.elapsed().as_millis() as u64;
+    plan_controller.ensure_latency_budget(elapsed_ms, effective_plan_budget);
+    if plan_controller.executed != executed_before_final_guard {
+        effective_plan_budget =
+            plan_budget(plan_controller.executed, limit, &options.search_config);
+    }
+    if plan_controller.downgrade_reason == Some(DowngradeReason::TimeoutGuard) {
+        response_warnings.push(format!(
+            "query_plan_timeout_guard: elapsed_ms={} > budget_ms={} for selected={} executed={}",
+            elapsed_ms,
+            effective_plan_budget.latency_budget_ms,
+            plan_controller.selected.as_str(),
+            plan_controller.executed.as_str(),
+        ));
     }
 
     all_results.truncate(limit);
@@ -452,9 +547,9 @@ pub fn search_code_with_options(
         semantic_skipped_reason: semantic_state.semantic_skipped_reason,
         semantic_fallback: semantic_state.semantic_fallback,
         semantic_degraded: semantic_state.semantic_fallback,
-        semantic_limit_used,
-        lexical_fanout_used,
-        semantic_fanout_used,
+        semantic_limit_used: effective_plan_budget.semantic_limit,
+        lexical_fanout_used: effective_plan_budget.lexical_fanout,
+        semantic_fanout_used: effective_plan_budget.semantic_fanout,
         semantic_budget_exhausted,
         external_provider_blocked: semantic_state.external_provider_blocked,
         embedding_model_version: options
@@ -474,6 +569,19 @@ pub fn search_code_with_options(
         channel_agreement: confidence.channel_agreement,
         query_intent_confidence: intent.confidence,
         intent_escalation_hint: intent.escalation_hint.clone(),
+        query_plan_selected: plan_controller.selected.as_str().to_string(),
+        query_plan_executed: plan_controller.executed.as_str().to_string(),
+        query_plan_selection_reason: plan_controller.selection_reason.as_str().to_string(),
+        query_plan_downgraded: plan_controller.downgraded,
+        query_plan_downgrade_reason: plan_controller
+            .downgrade_reason
+            .map(|reason| reason.as_str().to_string()),
+        query_plan_budget_used: QueryPlanBudgetUsed {
+            semantic_limit: effective_plan_budget.semantic_limit,
+            lexical_fanout: effective_plan_budget.lexical_fanout,
+            semantic_fanout: effective_plan_budget.semantic_fanout,
+            latency_budget_ms: effective_plan_budget.latency_budget_ms,
+        },
         warnings: response_warnings,
     };
 
@@ -687,7 +795,11 @@ fn clone_connection_for_parallel(conn: &Connection) -> Option<Connection> {
     cruxe_state::db::open_connection(Path::new(path)).ok()
 }
 
-fn semantic_fanout_limits(limit: usize, search_config: &CoreSearchConfig) -> (usize, usize, usize) {
+#[cfg(test)]
+fn semantic_fanout_limits(
+    limit: usize,
+    search_config: &cruxe_core::config::SearchConfig,
+) -> (usize, usize, usize) {
     let semantic_limit = limit
         .saturating_mul(search_config.semantic.semantic_limit_multiplier)
         .clamp(20, 1000);
@@ -1502,6 +1614,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                plan_override: None,
             },
         )
         .unwrap();
@@ -1606,6 +1719,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: Some("type".to_string()),
+                plan_override: None,
             },
         )
         .unwrap();
@@ -1707,6 +1821,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                plan_override: None,
             },
         )
         .unwrap();
@@ -1840,6 +1955,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                plan_override: None,
             },
         )
         .unwrap();
@@ -1877,6 +1993,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                plan_override: None,
             },
         )
         .unwrap();
@@ -1938,6 +2055,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: None,
                 role: None,
+                plan_override: None,
             },
         )
         .unwrap();
@@ -1979,6 +2097,7 @@ mod tests {
                 semantic_ratio_override: None,
                 confidence_threshold_override: Some(0.91),
                 role: None,
+                plan_override: None,
             },
         )
         .unwrap();
@@ -2010,5 +2129,105 @@ mod tests {
         config.semantic.lexical_fanout_multiplier = 300;
         config.semantic.semantic_fanout_multiplier = 400;
         assert_eq!(semantic_fanout_limits(20, &config), (1000, 2000, 1000));
+    }
+
+    #[test]
+    fn adaptive_plan_metadata_is_present_for_search_responses() {
+        let dir = tempdir().unwrap();
+        let index_set = IndexSet::open(dir.path()).unwrap();
+
+        let response = search_code_with_options(
+            &index_set,
+            None,
+            "where is auth handled",
+            Some("main"),
+            None,
+            10,
+            false,
+            SearchExecutionOptions {
+                search_config: CoreSearchConfig::default(),
+                semantic_ratio_override: None,
+                confidence_threshold_override: None,
+                role: None,
+                plan_override: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!response.metadata.query_plan_selected.is_empty());
+        assert!(!response.metadata.query_plan_executed.is_empty());
+        assert!(!response.metadata.query_plan_selection_reason.is_empty());
+        assert!(response.metadata.query_plan_budget_used.lexical_fanout > 0);
+    }
+
+    #[test]
+    fn adaptive_plan_override_lexical_fast_is_honored() {
+        let dir = tempdir().unwrap();
+        let index_set = IndexSet::open(dir.path()).unwrap();
+        let mut search_config = CoreSearchConfig::default();
+        search_config.semantic.mode = "hybrid".to_string();
+
+        let response = search_code_with_options(
+            &index_set,
+            None,
+            "where is auth handled",
+            Some("main"),
+            None,
+            10,
+            false,
+            SearchExecutionOptions {
+                search_config,
+                semantic_ratio_override: None,
+                confidence_threshold_override: None,
+                role: None,
+                plan_override: Some("lexical_fast".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.metadata.query_plan_selected, "lexical_fast");
+        assert_eq!(response.metadata.query_plan_executed, "lexical_fast");
+        assert_eq!(response.metadata.query_plan_selection_reason, "override");
+        assert_eq!(response.metadata.query_plan_budget_used.semantic_limit, 0);
+        assert_eq!(
+            response.metadata.semantic_skipped_reason.as_deref(),
+            Some("plan_lexical_fast")
+        );
+    }
+
+    #[test]
+    fn adaptive_plan_override_deep_without_runtime_downgrades() {
+        let dir = tempdir().unwrap();
+        let index_set = IndexSet::open(dir.path()).unwrap();
+        let mut search_config = CoreSearchConfig::default();
+        search_config.semantic.mode = "hybrid".to_string();
+
+        let response = search_code_with_options(
+            &index_set,
+            None,
+            "where is auth handled",
+            Some("main"),
+            None,
+            10,
+            false,
+            SearchExecutionOptions {
+                search_config,
+                semantic_ratio_override: None,
+                confidence_threshold_override: None,
+                role: None,
+                plan_override: Some("semantic_deep".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.metadata.query_plan_selected, "semantic_deep");
+        assert_eq!(response.metadata.query_plan_executed, "lexical_fast");
+        assert!(response.metadata.query_plan_downgraded);
+        assert_eq!(response.metadata.query_plan_budget_used.semantic_limit, 0);
+        assert_eq!(response.metadata.query_plan_budget_used.semantic_fanout, 0);
+        assert_eq!(
+            response.metadata.query_plan_downgrade_reason.as_deref(),
+            Some("semantic_unavailable")
+        );
     }
 }

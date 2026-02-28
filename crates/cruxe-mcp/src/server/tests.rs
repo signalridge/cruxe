@@ -3350,6 +3350,133 @@ fn t403_search_code_exposes_semantic_and_confidence_metadata() {
 }
 
 #[test]
+fn t470_search_code_exposes_adaptive_plan_metadata_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate_token",
+                "plan": "lexical_fast"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").expect("metadata should be present");
+
+    assert_eq!(
+        meta.get("query_plan_selected").and_then(|v| v.as_str()),
+        Some("lexical_fast")
+    );
+    assert_eq!(
+        meta.get("query_plan_executed").and_then(|v| v.as_str()),
+        Some("lexical_fast")
+    );
+    assert_eq!(
+        meta.get("query_plan_selection_reason")
+            .and_then(|v| v.as_str()),
+        Some("override")
+    );
+    assert_eq!(
+        meta.get("query_plan_downgraded").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let budget = meta
+        .get("query_plan_budget_used")
+        .and_then(|v| v.as_object())
+        .expect("query_plan_budget_used should be an object");
+    assert!(
+        budget
+            .get("latency_budget_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "latency_budget_ms should be included in query_plan_budget_used"
+    );
+}
+
+#[test]
+fn t471_locate_symbol_omits_adaptive_plan_metadata_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "locate_symbol",
+            "arguments": {
+                "name": "validate_token"
+            }
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace,
+            project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let payload = extract_payload_from_response(&response);
+    let meta = payload.get("metadata").expect("metadata should be present");
+
+    assert!(
+        meta.get("query_plan_selected").is_none(),
+        "locate_symbol metadata should omit adaptive plan fields"
+    );
+    assert!(
+        meta.get("query_plan_selection_reason").is_none(),
+        "locate_symbol metadata should omit adaptive plan fields"
+    );
+    assert!(
+        meta.get("query_plan_executed").is_none(),
+        "locate_symbol metadata should omit adaptive plan fields"
+    );
+    assert!(
+        meta.get("query_plan_budget_used").is_none(),
+        "locate_symbol metadata should omit adaptive plan fields"
+    );
+}
+
+#[test]
 fn t403_search_code_invalid_semantic_ratio_returns_invalid_input() {
     let tmp = tempfile::tempdir().unwrap();
     let index_set = build_fixture_index(tmp.path());
