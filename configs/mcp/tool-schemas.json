@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-28T16:13:33Z",
+  "generated_at": "2026-02-28T18:56:05Z",
   "generator": "scripts/generate_mcp_tool_schemas.sh",
   "source": "tools/list",
   "binary": "cruxe",
@@ -87,6 +87,25 @@
           "limit": {
             "description": "Max results (default: 10)",
             "type": "integer"
+          },
+          "plan": {
+            "description": "Optional adaptive query plan override. Requires search.adaptive_plan.allow_override=true.",
+            "enum": [
+              "lexical_fast",
+              "hybrid_standard",
+              "semantic_deep"
+            ],
+            "type": "string"
+          },
+          "policy_mode": {
+            "description": "Optional retrieval policy override when allowed by runtime policy config.",
+            "enum": [
+              "strict",
+              "balanced",
+              "off",
+              "audit_only"
+            ],
+            "type": "string"
           },
           "query": {
             "description": "Search query (symbol name, path, error string, or natural language)",
@@ -419,6 +438,16 @@
             "default": 4000,
             "description": "Maximum estimated tokens in returned context (default: 4000)",
             "type": "integer"
+          },
+          "policy_mode": {
+            "description": "Optional retrieval policy override when allowed by runtime policy config.",
+            "enum": [
+              "strict",
+              "balanced",
+              "off",
+              "audit_only"
+            ],
+            "type": "string"
           },
           "query": {
             "description": "Search query for relevant code context",

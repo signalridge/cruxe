@@ -22,4 +22,5 @@ Cruxe ranking now composes many additive signals. As new signals are introduced,
 - Affected crates: `cruxe-query`, `cruxe-core`, `cruxe-mcp`.
 - API impact: additive explain metadata fields only.
 - Config impact: stricter validation for ranking-related weights.
-- Product impact: ranking behavior becomes more stable and easier to debug across future signal additions.
+- Product impact: ranking policy now explicitly enforces lexical dominance for exact matches, and
+  score budgets change absolute score magnitudes (`final_score`) relative to pre-contract runs.

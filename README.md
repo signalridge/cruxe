@@ -104,6 +104,7 @@ cruxe sync [--workspace PATH] [--force]                       Incremental sync
 cruxe search <query> [--ref REF] [--lang LANG]                Search code in the index
 cruxe doctor [--path PATH]                                    Check project health
 cruxe serve-mcp [--workspace PATH] [--transport stdio|http] [--port PORT]  Start MCP server
+cruxe eval retrieval --workspace <PATH> --suite <PATH> --baseline <PATH> --policy <PATH> [--dry-run]  Run retrieval quality gate
 cruxe state export <PATH> [--workspace PATH]                  Export state bundle
 cruxe state import <PATH> [--workspace PATH]                  Import state bundle
 cruxe prune-overlays [--workspace PATH] [--older-than DAYS]   Remove stale overlays
@@ -170,6 +171,34 @@ Relevant environment variable overrides:
 - `CRUXE_SEMANTIC_LIMIT_MULTIPLIER`
 - `CRUXE_SEMANTIC_LEXICAL_FANOUT_MULTIPLIER`
 - `CRUXE_SEMANTIC_SEMANTIC_FANOUT_MULTIPLIER`
+
+## Ranking Signal Budget Contract Configuration
+
+Ranking contribution budgets are configurable via `search.ranking_signal_budgets`:
+
+```toml
+[search.ranking_signal_budgets.exact_match]
+min = 0.0
+max = 8.0
+default = 5.0
+
+[search.ranking_signal_budgets.secondary_cap_when_exact]
+min = 0.5
+max = 6.0
+default = 2.0
+```
+
+The loader normalizes invalid budget ranges to canonical safe defaults and emits deterministic
+diagnostic taxonomy codes (`non_finite_range`, `inverted_range`, `default_out_of_range`).
+
+Ranking-policy notes:
+
+- final ranking remains additive (`bm25 + effective signal contributions`)
+- exact lexical matches are intentionally ordered ahead of non-exact matches
+- legacy ranking reason fields carry **effective** (post-clamp / post-precedence) values; raw
+  values are available via `signal_contributions`
+
+See `docs/ranking-budget-tuning.md` for the full tuning workflow and pre/post diff report commands.
 
 ## Verification
 

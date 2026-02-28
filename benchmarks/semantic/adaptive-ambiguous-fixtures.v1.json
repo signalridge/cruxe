@@ -1,0 +1,42 @@
+{
+  "version": "adaptive-ambiguous-fixtures-v1",
+  "downgrade_rate_floor": 1.0,
+  "cases": [
+    {
+      "id": "ambiguous-deep-override-semantic-offline",
+      "intent": "natural_language",
+      "lexical_confidence": 0.20,
+      "semantic_runtime_available": false,
+      "override_plan": "semantic_deep",
+      "simulate_timeout": false,
+      "expected_selected": "semantic_deep",
+      "expected_executed": "lexical_fast",
+      "expected_downgraded": true,
+      "expected_downgrade_reason": "semantic_unavailable"
+    },
+    {
+      "id": "ambiguous-hybrid-override-semantic-offline",
+      "intent": "natural_language",
+      "lexical_confidence": 0.35,
+      "semantic_runtime_available": false,
+      "override_plan": "hybrid_standard",
+      "simulate_timeout": false,
+      "expected_selected": "hybrid_standard",
+      "expected_executed": "lexical_fast",
+      "expected_downgraded": true,
+      "expected_downgrade_reason": "semantic_unavailable"
+    },
+    {
+      "id": "ambiguous-deep-times-out",
+      "intent": "natural_language",
+      "lexical_confidence": 0.20,
+      "semantic_runtime_available": true,
+      "override_plan": null,
+      "simulate_timeout": true,
+      "expected_selected": "semantic_deep",
+      "expected_executed": "hybrid_standard",
+      "expected_downgraded": true,
+      "expected_downgrade_reason": "timeout_guard"
+    }
+  ]
+}

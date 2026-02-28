@@ -48,6 +48,45 @@ jobs:
           CRUXE_ENABLE_FASTEMBED_RUNTIME: "0"
         run: cargo test --workspace
 
+  retrieval-eval-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect retrieval/ranking changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            retrieval:
+              - "crates/cruxe-query/**"
+              - "crates/cruxe-core/**"
+              - "crates/cruxe-cli/**"
+              - "benchmarks/retrieval/**"
+              - "docs/guides/retrieval-eval-gate.md"
+              - "openspec/changes/retrieval-eval-gate/**"
+      - name: Install Rust toolchain
+        if: steps.changes.outputs.retrieval == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo artifacts
+        if: steps.changes.outputs.retrieval == 'true'
+        uses: Swatinem/rust-cache@v2
+      - name: Build cruxe CLI
+        if: steps.changes.outputs.retrieval == 'true'
+        run: cargo build -p cruxe
+      - name: Run retrieval gate (rollout dry-run)
+        if: steps.changes.outputs.retrieval == 'true'
+        env:
+          CRUXE_ENABLE_FASTEMBED_RUNTIME: "0"
+        run: |
+          ./benchmarks/retrieval/run_retrieval_gate.sh --workspace testdata/fixtures/rust-sample --output target/retrieval-eval-report.json --dry-run
+      - name: Upload retrieval gate report
+        if: steps.changes.outputs.retrieval == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-eval-report
+          path: target/retrieval-eval-report.json
+
   test-fixture-harness:
     runs-on: ubuntu-latest
     timeout-minutes: 30

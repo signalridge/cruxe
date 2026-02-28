@@ -1,0 +1,42 @@
+{
+  "version": "retrieval-eval-baseline-v1",
+  "suite_version": "retrieval-eval-suite-v1",
+  "metrics": {
+    "recall_at_k": 0.60,
+    "mrr": 0.50,
+    "ndcg_at_k": 0.52,
+    "zero_result_rate": 0.25,
+    "clustering_ratio": 1.0,
+    "degraded_query_rate": 0.10,
+    "semantic_budget_exhaustion_rate": 0.10,
+    "latency_p50_ms": 400.0,
+    "latency_p95_ms": 800.0,
+    "latency_mean_ms": 500.0
+  },
+  "latency_by_intent": {
+    "symbol": {
+      "sample_count": 2,
+      "p50_ms": 350.0,
+      "p95_ms": 700.0,
+      "mean_ms": 400.0
+    },
+    "path": {
+      "sample_count": 2,
+      "p50_ms": 350.0,
+      "p95_ms": 700.0,
+      "mean_ms": 400.0
+    },
+    "error": {
+      "sample_count": 2,
+      "p50_ms": 380.0,
+      "p95_ms": 760.0,
+      "mean_ms": 430.0
+    },
+    "natural_language": {
+      "sample_count": 2,
+      "p50_ms": 420.0,
+      "p95_ms": 820.0,
+      "mean_ms": 500.0
+    }
+  }
+}

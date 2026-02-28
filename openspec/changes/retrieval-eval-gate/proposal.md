@@ -6,7 +6,7 @@ Cruxe is landing multiple ranking and retrieval changes in parallel (diversity, 
 
 1. Add a deterministic retrieval evaluation harness with intent-segmented benchmark suites (`symbol`, `path`, `error`, `natural_language`).
 2. Define quality + latency gate thresholds (Recall@k, MRR, nDCG, clustering ratio, p95 latency) and fail CI when thresholds regress beyond tolerance.
-3. Add machine-readable regression reports with failure taxonomy (`recall_drop`, `ranking_shift`, `latency_regression`, `ref_scope_mismatch`).
+3. Add machine-readable regression reports with failure taxonomy (`recall_drop`, `ranking_shift`, `latency_regression`, `diversity_collapse`, `semantic_degraded_spike`).
 4. Provide baseline snapshot management and comparison tooling for reproducible before/after analysis.
 
 ## Capabilities

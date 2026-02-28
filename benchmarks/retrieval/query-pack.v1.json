@@ -1,0 +1,54 @@
+{
+  "version": "retrieval-eval-suite-v1",
+  "queries": [
+    {
+      "id": "q-symbol-auth-handler",
+      "query": "AuthHandler",
+      "intent": "symbol",
+      "expected_targets": [{"hint": "handler.rs"}],
+      "negative_targets": [{"hint": "config.rs"}]
+    },
+    {
+      "id": "q-symbol-validate-token",
+      "query": "validate_token",
+      "intent": "symbol",
+      "expected_targets": [{"hint": "auth.rs"}]
+    },
+    {
+      "id": "q-path-handler-file",
+      "query": "src/handler.rs",
+      "intent": "path",
+      "expected_targets": [{"hint": "handler.rs"}]
+    },
+    {
+      "id": "q-path-config-file",
+      "query": "src/config.rs",
+      "intent": "path",
+      "expected_targets": [{"hint": "config.rs"}]
+    },
+    {
+      "id": "q-error-auth-required",
+      "query": "auth header missing",
+      "intent": "error",
+      "expected_targets": [{"hint": "auth.rs"}]
+    },
+    {
+      "id": "q-error-db-timeout",
+      "query": "transaction failed",
+      "intent": "error",
+      "expected_targets": [{"hint": "db.rs"}]
+    },
+    {
+      "id": "q-nl-role-check",
+      "query": "where do we verify roles for users",
+      "intent": "natural_language",
+      "expected_targets": [{"hint": "types.rs"}]
+    },
+    {
+      "id": "q-nl-load-config",
+      "query": "how is application config loaded",
+      "intent": "natural_language",
+      "expected_targets": [{"hint": "config.rs"}]
+    }
+  ]
+}

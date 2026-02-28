@@ -1,0 +1,43 @@
+{
+  "version": "retrieval-gate-policy-v1",
+  "quality": {
+    "min_recall_at_k": 0.55,
+    "min_mrr": 0.45,
+    "min_ndcg_at_k": 0.45,
+    "max_zero_result_rate": 0.30,
+    "max_clustering_ratio": 1.0,
+    "max_degraded_query_rate": 0.60
+  },
+  "latency": {
+    "max_p50_latency_ms": 900.0,
+    "max_p95_latency_ms": 1200.0,
+    "by_intent": {
+      "symbol": {
+        "max_p50_latency_ms": 800.0,
+        "max_p95_latency_ms": 1100.0
+      },
+      "path": {
+        "max_p50_latency_ms": 800.0,
+        "max_p95_latency_ms": 1100.0
+      },
+      "error": {
+        "max_p50_latency_ms": 850.0,
+        "max_p95_latency_ms": 1150.0
+      },
+      "natural_language": {
+        "max_p50_latency_ms": 900.0,
+        "max_p95_latency_ms": 1200.0
+      }
+    }
+  },
+  "tolerance": {
+    "recall_at_k": 0.01,
+    "mrr": 0.01,
+    "ndcg_at_k": 0.01,
+    "zero_result_rate": 0.05,
+    "clustering_ratio": 0.05,
+    "degraded_query_rate": 0.05,
+    "p50_latency_ms": 40.0,
+    "p95_latency_ms": 40.0
+  }
+}

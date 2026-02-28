@@ -1,4 +1,5 @@
 use super::*;
+use cruxe_core::types::PolicyMode;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::warn;
@@ -348,7 +349,11 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
             }
 
             if ranking_explain_level != cruxe_core::types::RankingExplainLevel::Off {
-                let reasons = ranking::locate_ranking_reasons(&results, name);
+                let reasons = ranking::locate_ranking_reasons_with_budget(
+                    &results,
+                    name,
+                    &config.search.ranking_signal_budgets,
+                );
                 metadata.ranking_reasons = ranking_reasons_payload(
                     reasons.into_iter().take(filtered.len()).collect(),
                     ranking_explain_level,
@@ -504,11 +509,58 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         }
         None => None,
     };
+    let plan_override = match arguments.get("plan").and_then(|v| v.as_str()) {
+        Some(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            let valid = matches!(
+                normalized.as_str(),
+                "lexical_fast" | "hybrid_standard" | "semantic_deep"
+            );
+            if !valid {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Parameter `plan` must be one of: lexical_fast, hybrid_standard, semantic_deep.",
+                    Some(json!({ "plan": raw })),
+                    metadata,
+                );
+            }
+            if !config.search.adaptive_plan.allow_override {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Plan override is disabled by configuration (`search.adaptive_plan.allow_override=false`).",
+                    Some(json!({ "plan": raw })),
+                    metadata,
+                );
+            }
+            Some(normalized)
+        }
+        None => None,
+    };
+    let policy_mode_override = match arguments.get("policy_mode").and_then(|v| v.as_str()) {
+        Some(raw) => match raw.parse::<PolicyMode>() {
+            Ok(mode) => Some(mode),
+            Err(_) => {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Parameter `policy_mode` must be one of: strict, balanced, off, audit_only.",
+                    None,
+                    metadata,
+                );
+            }
+        },
+        None => None,
+    };
     let search_options = search::SearchExecutionOptions {
         search_config: config.search.clone(),
         semantic_ratio_override,
         confidence_threshold_override,
         role: role.map(ToString::to_string),
+        plan_override,
+        policy_mode_override,
+        policy_runtime: None,
     };
     match execute_search_with_optional_overlay(
         QueryExecutionContext {
@@ -563,6 +615,20 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             }
 
             metadata.semantic_mode = Some(response.metadata.semantic_mode.clone());
+            metadata.policy_mode = Some(response.metadata.policy_mode.clone());
+            metadata.policy_blocked_count = Some(response.metadata.policy_blocked_count);
+            metadata.policy_redacted_count = Some(response.metadata.policy_redacted_count);
+            if !response.metadata.policy_warnings.is_empty() {
+                metadata.policy_warnings = Some(response.metadata.policy_warnings.clone());
+            }
+            if !response.metadata.policy_audit_counts.is_empty() {
+                metadata.policy_audit_counts =
+                    serde_json::to_value(&response.metadata.policy_audit_counts).ok();
+            }
+            if !response.metadata.policy_redaction_categories.is_empty() {
+                metadata.policy_redaction_categories =
+                    serde_json::to_value(&response.metadata.policy_redaction_categories).ok();
+            }
             metadata.semantic_enabled = Some(response.metadata.semantic_enabled);
             metadata.semantic_ratio_used = Some(response.metadata.semantic_ratio_used);
             metadata.semantic_triggered = Some(response.metadata.semantic_triggered);
@@ -587,6 +653,15 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             metadata.channel_agreement = Some(response.metadata.channel_agreement);
             metadata.query_intent_confidence = Some(response.metadata.query_intent_confidence);
             metadata.intent_escalation_hint = response.metadata.intent_escalation_hint.clone();
+            metadata.query_plan_selected = Some(response.metadata.query_plan_selected.clone());
+            metadata.query_plan_executed = Some(response.metadata.query_plan_executed.clone());
+            metadata.query_plan_selection_reason =
+                Some(response.metadata.query_plan_selection_reason.clone());
+            metadata.query_plan_downgraded = Some(response.metadata.query_plan_downgraded);
+            metadata.query_plan_downgrade_reason =
+                response.metadata.query_plan_downgrade_reason.clone();
+            metadata.query_plan_budget_used =
+                serde_json::to_value(&response.metadata.query_plan_budget_used).ok();
             if !response.metadata.warnings.is_empty() {
                 let mut warnings = metadata.warnings.take().unwrap_or_default();
                 warnings.extend(response.metadata.warnings.clone());

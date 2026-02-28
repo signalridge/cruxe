@@ -120,6 +120,11 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Run evaluation and quality-gate tooling
+    Eval {
+        #[command(subcommand)]
+        command: EvalCommands,
+    },
     /// Export/import portable Cruxe state bundles
     State {
         #[command(subcommand)]
@@ -204,6 +209,68 @@ enum StateCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum EvalCommands {
+    /// Evaluate retrieval quality and compare against baseline/policy gates
+    Retrieval {
+        /// Path to the project root (default: current directory)
+        #[arg(long)]
+        workspace: Option<String>,
+
+        /// Retrieval suite JSON path
+        #[arg(long)]
+        suite: Option<String>,
+
+        /// Baseline snapshot JSON path
+        #[arg(long)]
+        baseline: String,
+
+        /// Gate policy JSON path (thresholds + tolerances)
+        #[arg(long)]
+        policy: String,
+
+        /// Ref/branch scope (default: live)
+        #[arg(long, default_value = "live")]
+        r#ref: String,
+
+        /// Maximum number of hits considered per query
+        #[arg(long, default_value = "10")]
+        limit: usize,
+
+        /// Report output path (JSON)
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Rollout mode: do not fail process on gate failures
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Update baseline snapshot from current run before comparison
+        #[arg(long)]
+        update_baseline: bool,
+
+        /// Optional BEIR corpus path (`corpus.jsonl`)
+        #[arg(long)]
+        beir_corpus: Option<String>,
+
+        /// Optional BEIR queries path (`queries.jsonl`)
+        #[arg(long)]
+        beir_queries: Option<String>,
+
+        /// Optional BEIR qrels path (`qrels.tsv`)
+        #[arg(long)]
+        beir_qrels: Option<String>,
+
+        /// Optional TREC run output path
+        #[arg(long)]
+        trec_run_out: Option<String>,
+
+        /// Optional TREC qrels output path
+        #[arg(long)]
+        trec_qrels_out: Option<String>,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -251,6 +318,50 @@ fn main() -> anyhow::Result<()> {
             let path = resolve_path(workspace)?;
             commands::index::run(&path, force, None, config_file)?;
         }
+        Commands::Eval { command } => match command {
+            EvalCommands::Retrieval {
+                workspace,
+                suite,
+                baseline,
+                policy,
+                r#ref,
+                limit,
+                output,
+                dry_run,
+                update_baseline,
+                beir_corpus,
+                beir_queries,
+                beir_qrels,
+                trec_run_out,
+                trec_qrels_out,
+            } => {
+                let workspace = resolve_path(workspace)?;
+                let suite_path = suite.as_deref().map(std::path::Path::new);
+                let output_path = output.as_deref().map(std::path::Path::new);
+                let beir_corpus_path = beir_corpus.as_deref().map(std::path::Path::new);
+                let beir_queries_path = beir_queries.as_deref().map(std::path::Path::new);
+                let beir_qrels_path = beir_qrels.as_deref().map(std::path::Path::new);
+                let trec_run_out = trec_run_out.as_deref().map(std::path::Path::new);
+                let trec_qrels_out = trec_qrels_out.as_deref().map(std::path::Path::new);
+                commands::eval::run_retrieval(
+                    &workspace,
+                    suite_path,
+                    std::path::Path::new(&baseline),
+                    std::path::Path::new(&policy),
+                    &r#ref,
+                    limit,
+                    output_path,
+                    dry_run,
+                    update_baseline,
+                    beir_corpus_path,
+                    beir_queries_path,
+                    beir_qrels_path,
+                    trec_run_out,
+                    trec_qrels_out,
+                    config_file,
+                )?;
+            }
+        },
         Commands::State { command } => match command {
             StateCommands::Export { path, workspace } => {
                 let workspace = resolve_path(workspace)?;

@@ -1,4 +1,5 @@
 use super::*;
+use cruxe_core::types::PolicyMode;
 
 const MAX_CONTEXT_PACK_BUDGET_TOKENS: usize = 200_000;
 
@@ -92,6 +93,21 @@ pub(super) fn handle_get_code_context(params: QueryToolParams<'_>) -> JsonRpcRes
             );
         }
     };
+    let policy_mode_override = match arguments.get("policy_mode").and_then(|v| v.as_str()) {
+        Some(raw) => match raw.parse::<PolicyMode>() {
+            Ok(mode) => Some(mode),
+            Err(_) => {
+                return tool_error_response(
+                    id,
+                    ProtocolErrorCode::InvalidInput,
+                    "Parameter `policy_mode` must be one of: strict, balanced, off, audit_only.",
+                    None,
+                    metadata,
+                );
+            }
+        },
+        None => None,
+    };
 
     let Some(index_set) = index_set else {
         return tool_compatibility_error(ToolCompatibilityParams {
@@ -137,12 +153,14 @@ pub(super) fn handle_get_code_context(params: QueryToolParams<'_>) -> JsonRpcRes
     match cruxe_query::context::get_code_context(cruxe_query::context::GetCodeContextParams {
         index_set,
         conn,
+        search_config: &config.search,
         workspace,
         query,
         ref_name: Some(&effective_ref),
         language,
         max_tokens,
         strategy,
+        policy_mode_override,
     }) {
         Ok(response) => {
             if response.truncated {

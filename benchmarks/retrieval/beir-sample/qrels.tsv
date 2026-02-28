@@ -1,0 +1,3 @@
+query-id	corpus-id	score
+beir-q1	auth_doc	1
+beir-q2	config_doc	1
