@@ -13,6 +13,7 @@ Deterministic benchmark-kit for `retrieval-eval-gate`.
 Notes:
 - `intent` is a required suite field (`symbol`, `path`, `error`, `natural_language`).
 - output JSON contains both run metrics and gate result (`report` + `gate`), including `taxonomy`.
+- `run_retrieval_gate.sh` reuses an existing `target/debug/cruxe` (or `CRUXE_BIN`) when available; otherwise it falls back to `cargo run`.
 
 ## Local run
 
