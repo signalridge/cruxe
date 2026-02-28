@@ -7,8 +7,11 @@ use cruxe_core::types::PolicyMode;
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct PolicyRuntime {
@@ -66,6 +69,11 @@ type RedactionBuildResult = (
     BTreeMap<String, usize>,
     Vec<String>,
 );
+
+const OPA_EVAL_TIMEOUT: Duration = Duration::from_secs(3);
+static HIGH_ENTROPY_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z0-9+/=_-]{16,}").expect("high entropy token regex must compile")
+});
 
 impl PolicyRuntime {
     pub fn from_search_config(
@@ -351,6 +359,20 @@ fn build_redaction_rules(
 
     let mut rules = Vec::new();
     let mut category_counts = BTreeMap::new();
+    let mut seen_signatures = HashSet::new();
+
+    let mut push_rule = |category: &str, pattern: &str, placeholder: &str, regex: Regex| {
+        let signature = format!("{pattern}\u{001f}{placeholder}");
+        if !seen_signatures.insert(signature) {
+            return;
+        }
+        rules.push(CompiledRedactionRule {
+            category: category.to_string(),
+            regex,
+            placeholder: placeholder.to_string(),
+        });
+        *category_counts.entry(category.to_string()).or_insert(0) += 1;
+    };
 
     for (category, pattern, placeholder) in default_seeded_rules(policy.redaction.email_masking) {
         let regex = Regex::new(pattern).map_err(|err| {
@@ -358,12 +380,7 @@ fn build_redaction_rules(
                 "failed to compile built-in redaction rule `{category}`: {err}"
             ))
         })?;
-        rules.push(CompiledRedactionRule {
-            category: category.to_string(),
-            regex,
-            placeholder: placeholder.to_string(),
-        });
-        *category_counts.entry(category.to_string()).or_insert(0) += 1;
+        push_rule(category, pattern, placeholder, regex);
     }
 
     if policy.detect_secrets.enabled {
@@ -377,12 +394,7 @@ fn build_redaction_rules(
             for (category, pattern, placeholder) in detect_secrets_plugin_rules(&plugin) {
                 match Regex::new(pattern) {
                     Ok(regex) => {
-                        rules.push(CompiledRedactionRule {
-                            category: category.to_string(),
-                            regex,
-                            placeholder: placeholder.to_string(),
-                        });
-                        *category_counts.entry(category.to_string()).or_insert(0) += 1;
+                        push_rule(category, pattern, placeholder, regex);
                     }
                     Err(err) => {
                         if strict {
@@ -401,14 +413,12 @@ fn build_redaction_rules(
         for pattern in &policy.detect_secrets.custom_patterns {
             match Regex::new(pattern) {
                 Ok(regex) => {
-                    rules.push(CompiledRedactionRule {
-                        category: "detect_secrets_custom".to_string(),
+                    push_rule(
+                        "detect_secrets_custom",
+                        pattern,
+                        "[REDACTED:detect_secrets]",
                         regex,
-                        placeholder: "[REDACTED:detect_secrets]".to_string(),
-                    });
-                    *category_counts
-                        .entry("detect_secrets_custom".to_string())
-                        .or_insert(0) += 1;
+                    );
                 }
                 Err(err) => {
                     if strict {
@@ -427,6 +437,12 @@ fn build_redaction_rules(
     for rule in &policy.redaction.custom_rules {
         match compile_custom_rule(rule) {
             Ok(compiled) => {
+                let pattern = compiled.regex.as_str().to_string();
+                let placeholder = compiled.placeholder.clone();
+                let signature = format!("{pattern}\u{001f}{placeholder}");
+                if !seen_signatures.insert(signature) {
+                    continue;
+                }
                 *category_counts
                     .entry(compiled.category.clone())
                     .or_insert(0) += 1;
@@ -586,9 +602,7 @@ fn evaluate_opa_decision(
                 StateError::policy(format!("failed to write OPA input payload: {err}"))
             })?;
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|err| StateError::policy(format!("failed to read OPA output: {err}")))?;
+    let output = wait_for_opa_output(child)?;
     if !output.status.success() {
         return Err(StateError::policy(format!(
             "OPA command failed: {}",
@@ -613,11 +627,10 @@ fn evaluate_opa_decision(
 }
 
 fn redact_high_entropy_tokens(text: &str, min_length: usize, threshold: f64) -> (String, usize) {
-    let token_re = Regex::new(r"[A-Za-z0-9+/=_-]{16,}").expect("token regex");
     let mut out = String::with_capacity(text.len());
     let mut last = 0usize;
     let mut redacted = 0usize;
-    for matched in token_re.find_iter(text) {
+    for matched in HIGH_ENTROPY_TOKEN_RE.find_iter(text) {
         let token = matched.as_str();
         if token.len() < min_length || shannon_entropy(token) < threshold {
             continue;
@@ -632,6 +645,49 @@ fn redact_high_entropy_tokens(text: &str, min_length: usize, threshold: f64) -> 
         (text.to_string(), 0)
     } else {
         (out, redacted)
+    }
+}
+
+fn wait_for_opa_output(mut child: std::process::Child) -> Result<std::process::Output, StateError> {
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut reader) = child.stdout.take() {
+                    reader.read_to_end(&mut stdout).map_err(|err| {
+                        StateError::policy(format!("failed to read OPA output: {err}"))
+                    })?;
+                }
+                if let Some(mut reader) = child.stderr.take() {
+                    reader.read_to_end(&mut stderr).map_err(|err| {
+                        StateError::policy(format!("failed to read OPA stderr: {err}"))
+                    })?;
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                if start.elapsed() >= OPA_EVAL_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(StateError::policy(format!(
+                        "OPA command timed out after {}ms",
+                        OPA_EVAL_TIMEOUT.as_millis()
+                    )));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => {
+                return Err(StateError::policy(format!(
+                    "failed to poll OPA process status: {err}"
+                )));
+            }
+        }
     }
 }
 
@@ -679,7 +735,13 @@ mod tests {
     }
 
     fn aws_fixture_token() -> String {
-        format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP")
+        let suffix: String = (0..16).map(|idx| (b'A' + idx) as char).collect();
+        format!("AKIA{suffix}")
+    }
+
+    fn github_fixture_token() -> String {
+        let suffix: String = (0..24).map(|idx| (b'a' + (idx % 26)) as char).collect();
+        format!("ghp_{suffix}")
     }
 
     #[test]
@@ -732,7 +794,7 @@ mod tests {
 
         let applied = runtime
             .apply(vec![
-                sample_result("src/secrets/token.rs", "ghp_abcdefghijklmnopqrstuvwxyz"),
+                sample_result("src/secrets/token.rs", &github_fixture_token()),
                 sample_result("src/lib.rs", "contact me at security@example.com"),
             ])
             .unwrap();
@@ -844,5 +906,45 @@ mod tests {
                 .unwrap_or_default()
                 .contains("[REDACTED:detect_secrets]")
         );
+    }
+
+    #[test]
+    fn detect_secrets_plugins_do_not_duplicate_builtin_redaction_rules() {
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        config.policy.detect_secrets.enabled = true;
+        config.policy.detect_secrets.plugins = vec!["aws".to_string(), "github".to_string()];
+
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+        assert!(
+            runtime
+                .redaction_categories
+                .contains_key("aws_access_key_id")
+        );
+        assert!(runtime.redaction_categories.contains_key("github_token"));
+        assert!(
+            !runtime
+                .redaction_categories
+                .contains_key("detect_secrets_aws")
+        );
+        assert!(
+            !runtime
+                .redaction_categories
+                .contains_key("detect_secrets_github")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opa_wait_timeout_guards_against_hanging_processes() {
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 10")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn long-running process");
+        let err = wait_for_opa_output(child).unwrap_err();
+        assert!(format!("{err}").contains("timed out"));
     }
 }

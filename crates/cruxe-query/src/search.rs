@@ -146,6 +146,7 @@ pub struct SearchExecutionOptions {
     pub confidence_threshold_override: Option<f64>,
     pub role: Option<String>,
     pub policy_mode_override: Option<PolicyMode>,
+    pub policy_runtime: Option<PolicyRuntime>,
 }
 
 /// Optional debug payload for search_code.
@@ -399,7 +400,13 @@ pub fn search_code_with_options(
     }
 
     let policy_runtime =
-        PolicyRuntime::from_search_config(&options.search_config, options.policy_mode_override)?;
+        options
+            .policy_runtime
+            .clone()
+            .unwrap_or(PolicyRuntime::from_search_config(
+                &options.search_config,
+                options.policy_mode_override,
+            )?);
     let policy_application = policy_runtime.apply(all_results)?;
     let policy_mode = policy_application.mode;
     let policy_blocked_count = policy_application.blocked_count;
@@ -1548,6 +1555,7 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1653,6 +1661,7 @@ mod tests {
                 confidence_threshold_override: None,
                 role: Some("type".to_string()),
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1755,6 +1764,7 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1889,6 +1899,7 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1927,6 +1938,7 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -1989,6 +2001,7 @@ mod tests {
                 confidence_threshold_override: None,
                 role: None,
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();
@@ -2031,6 +2044,7 @@ mod tests {
                 confidence_threshold_override: Some(0.91),
                 role: None,
                 policy_mode_override: None,
+                policy_runtime: None,
             },
         )
         .unwrap();

@@ -61,7 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn sample_results() -> Vec<SearchResult> {
-    let aws_fixture_token = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+    let aws_suffix: String = (0..16).map(|idx| (b'A' + idx) as char).collect();
+    let aws_fixture_token = format!("AKIA{aws_suffix}");
+    let github_suffix: String = (0..24).map(|idx| (b'a' + (idx % 26)) as char).collect();
+    let github_fixture_token = format!("ghp_{github_suffix}");
     vec![
         SearchResult {
             repo: "repo".to_string(),
@@ -100,7 +103,10 @@ fn sample_results() -> Vec<SearchResult> {
             signature: None,
             visibility: Some("private".to_string()),
             score: 0.9,
-            snippet: Some("const API_KEY: &str = \"ghp_abcdefghijklmnopqrstuvwxyz\";".to_string()),
+            snippet: Some(format!(
+                "const API_KEY: &str = \"{}\";",
+                github_fixture_token
+            )),
             chunk_type: None,
             source_layer: None,
             provenance: "lexical".to_string(),

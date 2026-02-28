@@ -102,6 +102,7 @@ pub fn get_code_context(
             confidence_threshold_override: None,
             role: None,
             policy_mode_override,
+            policy_runtime: Some(policy_runtime.clone()),
         },
     )?;
     let total_candidates = search_response.results.len();

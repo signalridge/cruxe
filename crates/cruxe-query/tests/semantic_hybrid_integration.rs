@@ -139,6 +139,7 @@ fn hybrid_mode_returns_semantic_match_for_conceptual_query_without_keyword_overl
             confidence_threshold_override: None,
             role: None,
             policy_mode_override: None,
+            policy_runtime: None,
         },
     )
     .unwrap();

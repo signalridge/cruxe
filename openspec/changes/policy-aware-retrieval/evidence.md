@@ -52,7 +52,7 @@ Extracted from eval gate JSON (`sample_outputs`):
 ```json
 {
   "path": "src/secrets/keys.rs",
-  "snippet": "const API_KEY: &str = \"ghp_abcdefghijklmnopqrstuvwxyz\";"
+  "snippet": "const API_KEY: &str = \"ghp_<fixture_redacted>\";"
 }
 ```
 

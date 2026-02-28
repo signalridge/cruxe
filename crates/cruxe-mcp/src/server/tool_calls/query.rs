@@ -526,6 +526,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         confidence_threshold_override,
         role: role.map(ToString::to_string),
         policy_mode_override,
+        policy_runtime: None,
     };
     match execute_search_with_optional_overlay(
         QueryExecutionContext {
