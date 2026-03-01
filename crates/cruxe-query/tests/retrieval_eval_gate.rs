@@ -135,6 +135,30 @@ fn baseline_compatibility_rejects_suite_version_mismatch() {
 }
 
 #[test]
+fn from_metrics_populates_all_latency_fields_with_p95_fallback() {
+    let baseline = SuiteBaseline::from_metrics("retrieval-eval-suite-v1", 0.9, 0.8, 0.85, 42.0);
+    assert!((baseline.metrics.latency_p50_ms - 42.0).abs() < 1e-9);
+    assert!((baseline.metrics.latency_p95_ms - 42.0).abs() < 1e-9);
+    assert!((baseline.metrics.latency_mean_ms - 42.0).abs() < 1e-9);
+}
+
+#[test]
+fn from_metrics_with_latency_preserves_explicit_distribution_values() {
+    let baseline = SuiteBaseline::from_metrics_with_latency(
+        "retrieval-eval-suite-v1",
+        0.9,
+        0.8,
+        0.85,
+        12.0,
+        42.0,
+        20.0,
+    );
+    assert!((baseline.metrics.latency_p50_ms - 12.0).abs() < 1e-9);
+    assert!((baseline.metrics.latency_p95_ms - 42.0).abs() < 1e-9);
+    assert!((baseline.metrics.latency_mean_ms - 20.0).abs() < 1e-9);
+}
+
+#[test]
 fn compare_against_baseline_flags_intent_latency_regressions() {
     let suite = sample_suite();
     let baseline_report = evaluate_with_runner(&suite, 5, |query| {

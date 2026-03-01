@@ -118,6 +118,10 @@ deny_symbol_kinds = []
 allow_symbol_kinds = []
 
 [search.policy.redaction]
+# Built-in seeded detectors are derived from curated secret families:
+# - gitleaks-compatible key/token families (aws_access_key_id, github_token, slack_token)
+# - private key material (pem_private_key)
+# - cloud credential metadata (gcp_service_account)
 enabled = true
 email_masking = true
 # Generic high-entropy detector guardrails
@@ -125,7 +129,11 @@ high_entropy_min_length = 20
 high_entropy_threshold = 3.5
 
 [search.policy.detect_secrets]
-# Compatibility surface for detect-secrets style plugin families.
+# detect-secrets plugin compatibility mappings:
+# - aws -> aws_access_key_id / detect_secrets_aws
+# - github -> github_token / detect_secrets_github
+# - slack -> slack_token / detect_secrets_slack
+# - private_key -> pem_private_key / detect_secrets_private_key
 enabled = false
 plugins = []
 custom_patterns = []

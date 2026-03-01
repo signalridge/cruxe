@@ -468,6 +468,12 @@ fn build_redaction_rules(
         }
     }
 
+    // Keep heuristic-only categories visible in diagnostics so the default
+    // built-in category set remains auditable even when no snippet triggers.
+    category_counts
+        .entry("high_entropy".to_string())
+        .or_insert(1);
+
     rules.sort_by(|left, right| left.category.cmp(&right.category));
     Ok((rules, category_counts, warnings))
 }
@@ -912,6 +918,26 @@ mod tests {
         assert_eq!(
             applied.results[0].snippet.as_deref(),
             Some(snippet.as_str())
+        );
+    }
+
+    #[test]
+    fn active_redaction_categories_include_high_entropy_heuristic_bucket() {
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+
+        assert_eq!(
+            runtime.redaction_categories.get("high_entropy"),
+            Some(&1usize)
+        );
+
+        let applied = runtime
+            .apply(vec![sample_result("src/lib.rs", "pub fn run() {}")])
+            .unwrap();
+        assert_eq!(
+            applied.active_redaction_categories.get("high_entropy"),
+            Some(&1usize)
         );
     }
 

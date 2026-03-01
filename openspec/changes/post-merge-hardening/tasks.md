@@ -26,3 +26,10 @@
 - [x] 5.4 Improve retrieval eval target matching semantics and BEIR/TREC qrels parser compatibility.
 - [x] 5.5 Add context-pack source-content caching and use ref-safe git object reads to reduce subprocess churn.
 - [x] 5.6 Normalize adaptive-plan semantic-unavailable fallback to lexical-fast for all intents.
+
+## 6. Spec alignment follow-ups (review gap closure)
+
+- [x] 6.1 Keep `high_entropy` visible in default redaction category diagnostics and document built-in provenance in default config comments.
+- [x] 6.2 Preserve lexical precedence during confidence-structural reordering even when ranking explain payload is disabled.
+- [x] 6.3 Accept `section_caps.key_usages`/`section_caps.dependencies` aliases and document canonical mapping in MCP tool schema.
+- [x] 6.4 Ensure `SuiteBaseline::from_metrics` emits non-zero latency distribution defaults and expose explicit latency constructor.

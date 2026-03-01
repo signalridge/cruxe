@@ -47,11 +47,13 @@ pub fn definition() -> ToolDefinition {
                 },
                 "section_caps": {
                     "type": "object",
-                    "description": "Optional per-section target caps before overflow fallback.",
+                    "description": "Optional per-section target caps before overflow fallback. `key_usages` -> `usages`, `dependencies` -> `deps` are accepted aliases.",
                     "properties": {
                         "definitions": {"type": "integer", "minimum": 0},
                         "usages": {"type": "integer", "minimum": 0},
+                        "key_usages": {"type": "integer", "minimum": 0},
                         "deps": {"type": "integer", "minimum": 0},
+                        "dependencies": {"type": "integer", "minimum": 0},
                         "tests": {"type": "integer", "minimum": 0},
                         "config": {"type": "integer", "minimum": 0},
                         "docs": {"type": "integer", "minimum": 0}

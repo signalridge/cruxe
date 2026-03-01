@@ -422,6 +422,26 @@ impl SuiteBaseline {
         ndcg_at_k: f64,
         latency_p95_ms: f64,
     ) -> Self {
+        Self::from_metrics_with_latency(
+            suite_version,
+            recall_at_k,
+            mrr,
+            ndcg_at_k,
+            latency_p95_ms,
+            latency_p95_ms,
+            latency_p95_ms,
+        )
+    }
+
+    pub fn from_metrics_with_latency(
+        suite_version: &str,
+        recall_at_k: f64,
+        mrr: f64,
+        ndcg_at_k: f64,
+        latency_p50_ms: f64,
+        latency_p95_ms: f64,
+        latency_mean_ms: f64,
+    ) -> Self {
         Self {
             version: "retrieval-eval-baseline-v1".to_string(),
             suite_version: suite_version.to_string(),
@@ -433,9 +453,9 @@ impl SuiteBaseline {
                 clustering_ratio: 0.0,
                 degraded_query_rate: 0.0,
                 semantic_budget_exhaustion_rate: 0.0,
-                latency_p50_ms: 0.0,
+                latency_p50_ms,
                 latency_p95_ms,
-                latency_mean_ms: 0.0,
+                latency_mean_ms,
             },
             latency_by_intent: BTreeMap::new(),
         }

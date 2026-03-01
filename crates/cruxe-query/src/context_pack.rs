@@ -143,9 +143,9 @@ impl SectionCaps {
 pub struct SectionCapsPatch {
     #[serde(default)]
     pub definitions: Option<usize>,
-    #[serde(default)]
+    #[serde(default, alias = "key_usages")]
     pub usages: Option<usize>,
-    #[serde(default)]
+    #[serde(default, alias = "dependencies")]
     pub deps: Option<usize>,
     #[serde(default)]
     pub tests: Option<usize>,
@@ -1083,5 +1083,17 @@ mod tests {
         assert_eq!(patched.deps, defaults.deps);
         assert_eq!(patched.tests, defaults.tests);
         assert_eq!(patched.config, defaults.config);
+    }
+
+    #[test]
+    fn section_caps_patch_accepts_long_form_aliases() {
+        let patch: SectionCapsPatch = serde_json::from_value(serde_json::json!({
+            "key_usages": 3,
+            "dependencies": 2
+        }))
+        .expect("aliases should deserialize");
+
+        assert_eq!(patch.usages, Some(3));
+        assert_eq!(patch.deps, Some(2));
     }
 }

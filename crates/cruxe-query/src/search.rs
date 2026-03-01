@@ -614,6 +614,7 @@ pub fn search_code_with_options(
     let confidence_structural = apply_confidence_weighted_structural_boost(
         conn,
         effective_ref.as_str(),
+        query,
         &mut all_results,
         ranking_reasons.as_mut(),
         &mut response_warnings,
@@ -883,6 +884,7 @@ pub fn search_code_vcs_merged_with_options(
     let confidence_structural = apply_confidence_weighted_structural_boost(
         conn,
         ctx.target_ref,
+        query,
         &mut results,
         ranking_reasons.as_mut(),
         &mut merged_warnings,
@@ -987,6 +989,7 @@ struct StructuralContribution {
 fn apply_confidence_weighted_structural_boost(
     conn: Option<&Connection>,
     ref_name: &str,
+    query: &str,
     results: &mut [SearchResult],
     ranking_reasons: Option<&mut Vec<RankingReasons>>,
     warnings: &mut Vec<String>,
@@ -1090,23 +1093,35 @@ fn apply_confidence_weighted_structural_boost(
         ));
     }
 
-    let lexical_precedence_by_result_id = ranking_reasons
+    let lexical_precedence_by_result_id = if let Some(reasons) = ranking_reasons
         .as_deref()
-        .map(|reasons| {
-            reasons
+        .filter(|reasons| !reasons.is_empty())
+    {
+        reasons
+            .iter()
+            .map(|reason| {
+                (
+                    reason.result_id.clone(),
+                    lexical_precedence_tier(reason.exact_match_boost, reason.qualified_name_boost),
+                )
+            })
+            .collect::<HashMap<String, u8>>()
+    } else {
+        let query_lower = query.trim().to_ascii_lowercase();
+        if query_lower.is_empty() {
+            HashMap::new()
+        } else {
+            results
                 .iter()
-                .map(|reason| {
+                .map(|result| {
                     (
-                        reason.result_id.clone(),
-                        lexical_precedence_tier(
-                            reason.exact_match_boost,
-                            reason.qualified_name_boost,
-                        ),
+                        result.result_id.clone(),
+                        lexical_precedence_tier_for_result(result, &query_lower),
                     )
                 })
                 .collect::<HashMap<String, u8>>()
-        })
-        .unwrap_or_default();
+        }
+    };
 
     results.sort_by(|a, b| {
         lexical_precedence_by_result_id
@@ -1163,6 +1178,26 @@ fn lexical_precedence_tier(exact_match_boost: f64, qualified_name_boost: f64) ->
         return 1;
     }
     0
+}
+
+fn lexical_precedence_tier_for_result(result: &SearchResult, query_lower: &str) -> u8 {
+    if query_lower.is_empty() {
+        return 0;
+    }
+
+    let exact_match = result
+        .name
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|name| name.eq_ignore_ascii_case(query_lower));
+    let qualified_name_match = result
+        .qualified_name
+        .as_deref()
+        .is_some_and(|qualified_name| qualified_name.to_ascii_lowercase().contains(query_lower));
+    lexical_precedence_tier(
+        if exact_match { 1.0 } else { 0.0 },
+        if qualified_name_match { 1.0 } else { 0.0 },
+    )
 }
 
 fn rebuild_ranking_reasons(
@@ -2090,6 +2125,7 @@ mod tests {
         let diagnostics = apply_confidence_weighted_structural_boost(
             Some(&conn),
             "main",
+            "stable-high",
             &mut results,
             None,
             &mut warnings,
@@ -2131,6 +2167,7 @@ mod tests {
         apply_confidence_weighted_structural_boost(
             Some(&conn),
             "main",
+            "stable-trusted",
             &mut results,
             None,
             &mut warnings,
@@ -2209,6 +2246,7 @@ mod tests {
         apply_confidence_weighted_structural_boost(
             Some(&conn),
             "main",
+            "stable-exact",
             &mut results,
             Some(&mut reasons),
             &mut warnings,
@@ -2218,6 +2256,44 @@ mod tests {
         assert_eq!(
             results[0].result_id, "res-exact",
             "structural boost must not reorder exact-match candidates below non-exact matches"
+        );
+    }
+
+    #[test]
+    fn structural_boost_keeps_exact_match_precedence_when_reasons_absent() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        for idx in 0..12 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-nonexact",
+                format!("src/nonexact_{idx}.rs").as_str(),
+                "high",
+                1.0,
+            );
+        }
+
+        let mut results = vec![
+            make_symbol_result("res-exact", "stable-exact", 1.0),
+            make_symbol_result("res-nonexact", "stable-nonexact", 1.0),
+        ];
+        let mut warnings = Vec::new();
+
+        apply_confidence_weighted_structural_boost(
+            Some(&conn),
+            "main",
+            "stable-exact",
+            &mut results,
+            None,
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(
+            results[0].result_id, "res-exact",
+            "exact-match lexical precedence should be preserved even when explain payload is disabled"
         );
     }
 

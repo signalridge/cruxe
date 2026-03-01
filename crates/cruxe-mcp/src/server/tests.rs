@@ -2298,7 +2298,9 @@ fn t364_build_context_pack_accepts_partial_section_caps_patch() {
                 "budget_tokens": 500,
                 "mode": "full",
                 "section_caps": {
-                    "definitions": 1
+                    "definitions": 1,
+                    "key_usages": 4,
+                    "dependencies": 3
                 }
             }
         }),
@@ -2343,11 +2345,11 @@ fn t364_build_context_pack_accepts_partial_section_caps_patch() {
     );
     assert_eq!(
         section_caps.get("usages").and_then(|value| value.as_u64()),
-        Some(8)
+        Some(4)
     );
     assert_eq!(
         section_caps.get("deps").and_then(|value| value.as_u64()),
-        Some(5)
+        Some(3)
     );
 }
 
