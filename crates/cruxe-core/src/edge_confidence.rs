@@ -25,12 +25,19 @@ pub struct EdgeConfidenceAssignment {
 }
 
 pub fn canonical_confidence_bucket(label: &str) -> Option<&'static str> {
+    debug_assert_confidence_bucket_constants_lowercase();
     match label.trim().to_ascii_lowercase().as_str() {
         CONFIDENCE_HIGH | "static" => Some(CONFIDENCE_HIGH),
         CONFIDENCE_MEDIUM => Some(CONFIDENCE_MEDIUM),
         CONFIDENCE_LOW | "heuristic" => Some(CONFIDENCE_LOW),
         _ => None,
     }
+}
+
+fn debug_assert_confidence_bucket_constants_lowercase() {
+    debug_assert_eq!(CONFIDENCE_HIGH, CONFIDENCE_HIGH.to_ascii_lowercase());
+    debug_assert_eq!(CONFIDENCE_MEDIUM, CONFIDENCE_MEDIUM.to_ascii_lowercase());
+    debug_assert_eq!(CONFIDENCE_LOW, CONFIDENCE_LOW.to_ascii_lowercase());
 }
 
 pub fn confidence_weight(bucket: &str) -> f64 {
@@ -167,6 +174,13 @@ mod tests {
             canonical_confidence_bucket("heuristic"),
             Some(CONFIDENCE_LOW)
         );
+    }
+
+    #[test]
+    fn confidence_bucket_constants_are_lowercase() {
+        assert_eq!(CONFIDENCE_HIGH, CONFIDENCE_HIGH.to_ascii_lowercase());
+        assert_eq!(CONFIDENCE_MEDIUM, CONFIDENCE_MEDIUM.to_ascii_lowercase());
+        assert_eq!(CONFIDENCE_LOW, CONFIDENCE_LOW.to_ascii_lowercase());
     }
 
     #[test]
