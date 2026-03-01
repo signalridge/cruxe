@@ -5,14 +5,25 @@ use cruxe_core::time::now_iso8601;
 use cruxe_core::types::JobStatus;
 use cruxe_state::branch_state::{self, BranchState};
 use cruxe_state::jobs;
+use cruxe_state::semantic_queue;
 use cruxe_state::tombstones::BranchTombstone;
 use cruxe_vcs::{DiffEntry, FileChangeKind, VcsAdapter, WorktreeManager};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tracing::warn;
+use tantivy::Term;
+use tantivy::collector::TopDocs;
+use tantivy::query::TermQuery;
+use tantivy::schema::{IndexRecordOption, Value};
+use tracing::{info, warn};
 
 use crate::{call_extract, embed_writer, parser, prepare, staging, writer};
+
+const DEFAULT_SEMANTIC_WORKER_DEQUEUE_CAP: usize = 32;
+const DEFAULT_SEMANTIC_WORKER_TIMEOUT_BUDGET_MS: u64 = 15_000;
+const DEFAULT_SEMANTIC_WORKER_BASE_BACKOFF_SECONDS: i64 = 15;
+const DEFAULT_SEMANTIC_WORKER_MAX_RETRY_COUNT: i64 = 3;
 
 /// Per-file action derived from `git diff --name-status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,10 +403,8 @@ where
     let mut symbols_written = 0usize;
     let mut applied_actions = Vec::with_capacity(actions.len());
     let mut pending_call_edges: Vec<(String, Vec<cruxe_core::types::CallEdge>)> = Vec::new();
-    let mut pending_embedding_batches: Vec<(
-        Vec<cruxe_core::types::SymbolRecord>,
-        Vec<cruxe_core::types::SnippetRecord>,
-    )> = Vec::new();
+    let mut pending_symbol_batches: Vec<(String, Vec<cruxe_core::types::SymbolRecord>)> =
+        Vec::new();
     let embedding_enabled = embedding_writer.enabled();
 
     for action in actions {
@@ -445,13 +454,13 @@ where
                         )));
                     }
                 };
-                let language = match crate::scanner::detect_language(&full_path) {
-                    Some(lang) => lang,
-                    None => {
-                        warn!(path, "Skipping changed file with unsupported language");
-                        continue;
-                    }
-                };
+                let language = crate::scanner::detect_language(&full_path).unwrap_or_else(|| {
+                    warn!(
+                        path,
+                        "Changed file language unsupported; indexing via file_fallback snippets"
+                    );
+                    "text".to_string()
+                });
                 let artifacts = prepare::build_source_artifacts_with_parser(
                     prepare::ArtifactBuildInput {
                         content: &content,
@@ -461,6 +470,7 @@ where
                         ref_name,
                         source_layer: Some("overlay"),
                         include_imports: false,
+                        chunking: Some(&semantic.chunking),
                     },
                     &mut parse_changed_file,
                 );
@@ -485,7 +495,7 @@ where
                 }
 
                 cruxe_state::symbols::delete_symbols_for_file(conn, project_id, ref_name, path)?;
-                batch.add_symbols(&index_set.symbols, &artifacts.symbols)?;
+                pending_symbol_batches.push((path.to_string(), artifacts.symbols.clone()));
                 batch.add_snippets(&index_set.snippets, &artifacts.snippets)?;
                 batch.add_file(&index_set.files, &file)?;
                 batch.write_sqlite(conn, &artifacts.symbols, &file, file_mtime_ns(&full_path))?;
@@ -493,8 +503,17 @@ where
                     pending_call_edges.push((path.to_string(), artifacts.call_edges));
                 }
                 let symbol_len = artifacts.symbols.len();
-                if embedding_enabled && !artifacts.snippets.is_empty() {
-                    pending_embedding_batches.push((artifacts.symbols, artifacts.snippets));
+                if embedding_enabled
+                    && !artifacts.snippets.is_empty()
+                    && let Err(err) =
+                        semantic_queue::enqueue_file_update(conn, project_id, ref_name, path)
+                {
+                    // Fail-soft by design: queue bookkeeping must not block index commits.
+                    warn!(
+                        path,
+                        error = %err,
+                        "Failed to enqueue semantic enrichment job; continuing incremental sync"
+                    );
                 }
 
                 processed_files += 1;
@@ -519,17 +538,254 @@ where
         writer::replace_call_edges_for_files(conn, project_id, ref_name, pending_call_edges)?;
     }
 
-    if embedding_enabled && !pending_embedding_batches.is_empty() {
-        embedding_writer.write_embeddings_for_files(
-            conn,
-            pending_embedding_batches
-                .iter()
-                .map(|(symbols, snippets)| (symbols.as_slice(), snippets.as_slice())),
-        )?;
+    let file_centrality =
+        match crate::centrality::compute_file_centrality(conn, project_id, ref_name) {
+            Ok(map) => map,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "Failed to compute file centrality; proceeding with zero centrality defaults"
+                );
+                HashMap::new()
+            }
+        };
+    for (path, symbols) in &pending_symbol_batches {
+        batch.delete_symbol_docs(index_set, project_id, ref_name, path);
+        batch.add_symbols_with_file_centrality(&index_set.symbols, symbols, &file_centrality)?;
     }
 
     batch.commit()?;
+
+    if embedding_enabled
+        && let Err(err) = run_semantic_enrichment_worker_cycle(
+            conn,
+            index_set,
+            &mut embedding_writer,
+            project_id,
+            ref_name,
+            semantic,
+        )
+    {
+        warn!(
+            error = %err,
+            "Semantic enrichment worker cycle failed after lexical commit"
+        );
+    }
+
+    let cleanup_started = Instant::now();
+    match semantic_queue::cleanup_terminal_rows(conn, 48, 24 * 7, 256) {
+        Ok(deleted) => {
+            info!(
+                queue_cleanup_deleted = deleted,
+                queue_cleanup_duration_ms = cleanup_started.elapsed().as_millis() as u64,
+                "semantic queue cleanup completed"
+            );
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                queue_cleanup_duration_ms = cleanup_started.elapsed().as_millis() as u64,
+                "Semantic queue cleanup failed; continuing without blocking incremental sync"
+            );
+        }
+    }
+
     Ok((processed_files, symbols_written, applied_actions))
+}
+
+fn run_semantic_enrichment_worker_cycle(
+    conn: &Connection,
+    index_set: &cruxe_state::tantivy_index::IndexSet,
+    embedding_writer: &mut embed_writer::EmbeddingWriter,
+    project_id: &str,
+    ref_name: &str,
+    semantic: &SemanticConfig,
+) -> Result<usize, StateError> {
+    let per_cycle_cap = semantic
+        .embedding
+        .batch_size
+        .clamp(1, DEFAULT_SEMANTIC_WORKER_DEQUEUE_CAP);
+    let jobs = semantic_queue::dequeue_pending_jobs(conn, project_id, ref_name, per_cycle_cap)?;
+    if jobs.is_empty() {
+        return Ok(0);
+    }
+
+    let mut processed = 0usize;
+    let timeout_budget_ms = DEFAULT_SEMANTIC_WORKER_TIMEOUT_BUDGET_MS;
+    for job in jobs {
+        let started = Instant::now();
+        let result = process_semantic_enrichment_job(conn, index_set, embedding_writer, &job);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        match result {
+            Ok(()) => {
+                let _ = semantic_queue::mark_job_done(conn, job.id)?;
+                if elapsed_ms > timeout_budget_ms {
+                    // Successful writes should not be retried. Timeout is used as a
+                    // cooperative cycle budget to avoid monopolizing the indexing path.
+                    tracing::debug!(
+                        path = %job.path,
+                        generation = job.generation,
+                        elapsed_ms,
+                        timeout_budget_ms,
+                        "semantic enrichment worker budget reached; ending cycle after successful job"
+                    );
+                    processed += 1;
+                    break;
+                }
+            }
+            Err(err) => {
+                let backoff = backoff_seconds_for_retry(job.retry_count);
+                let error_code = classify_semantic_worker_error(&err);
+                let _ = semantic_queue::mark_job_retry_or_failed(
+                    conn,
+                    job.id,
+                    error_code.as_str(),
+                    backoff,
+                    DEFAULT_SEMANTIC_WORKER_MAX_RETRY_COUNT,
+                )?;
+                warn!(
+                    path = %job.path,
+                    generation = job.generation,
+                    error = %err,
+                    retry_count = job.retry_count,
+                    "semantic enrichment job failed; scheduled retry or terminal failure"
+                );
+            }
+        }
+        processed += 1;
+    }
+
+    Ok(processed)
+}
+
+fn process_semantic_enrichment_job(
+    conn: &Connection,
+    index_set: &cruxe_state::tantivy_index::IndexSet,
+    embedding_writer: &mut embed_writer::EmbeddingWriter,
+    job: &semantic_queue::SemanticEnrichmentJob,
+) -> Result<(), StateError> {
+    let symbols = cruxe_state::symbols::list_symbols_in_file(
+        conn,
+        &job.project_id,
+        &job.ref_name,
+        &job.path,
+    )?;
+    let snippets = load_snippets_for_file(index_set, &job.project_id, &job.ref_name, &job.path)?;
+    let symbol_stable_ids: Vec<String> = symbols
+        .iter()
+        .map(|symbol| symbol.symbol_stable_id.clone())
+        .collect();
+
+    // Idempotent retry behavior: clear previous vectors for this file before upsert.
+    embedding_writer.delete_for_file_vectors_with_symbols(conn, &job.path, &symbol_stable_ids)?;
+    if symbols.is_empty() || snippets.is_empty() {
+        return Ok(());
+    }
+
+    let written = embedding_writer.write_file_embeddings(conn, &symbols, &snippets)?;
+    debug_assert!(written <= snippets.len());
+    Ok(())
+}
+
+fn load_snippets_for_file(
+    index_set: &cruxe_state::tantivy_index::IndexSet,
+    project_id: &str,
+    ref_name: &str,
+    path: &str,
+) -> Result<Vec<cruxe_core::types::SnippetRecord>, StateError> {
+    let schema = index_set.snippets.schema();
+    let f = |name: &str| schema.get_field(name).map_err(StateError::tantivy);
+    let f_file_key = f("file_key")?;
+    let f_repo = f("repo")?;
+    let f_ref = f("ref")?;
+    let f_commit = f("commit")?;
+    let f_path = f("path")?;
+    let f_language = f("language")?;
+    let f_chunk_type = f("chunk_type")?;
+    let f_origin = f("origin")?;
+    let f_parent_symbol_stable_id = f("parent_symbol_stable_id")?;
+    let f_imports = f("imports")?;
+    let f_content = f("content")?;
+    let f_line_start = f("line_start")?;
+    let f_line_end = f("line_end")?;
+    let f_chunk_index = f("chunk_index")?;
+    let f_truncated = f("truncated")?;
+
+    let reader = index_set.snippets.reader().map_err(StateError::tantivy)?;
+    reader.reload().map_err(StateError::tantivy)?;
+    let searcher = reader.searcher();
+    let key = cruxe_state::tantivy_index::file_key(project_id, ref_name, path);
+    let query = TermQuery::new(
+        Term::from_field_text(f_file_key, &key),
+        IndexRecordOption::Basic,
+    );
+    let docs = searcher
+        .search(&query, &TopDocs::with_limit(10_000))
+        .map_err(StateError::tantivy)?;
+
+    let mut snippets = Vec::with_capacity(docs.len());
+    for (_, address) in docs {
+        let doc = searcher
+            .doc::<tantivy::TantivyDocument>(address)
+            .map_err(StateError::tantivy)?;
+        let read_text = |field: tantivy::schema::Field| -> Option<String> {
+            doc.get_first(field)
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+                .filter(|value| !value.trim().is_empty())
+        };
+        let read_u64 = |field: tantivy::schema::Field| -> u64 {
+            doc.get_first(field)
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+        };
+
+        snippets.push(cruxe_core::types::SnippetRecord {
+            repo: read_text(f_repo).unwrap_or_else(|| project_id.to_string()),
+            r#ref: read_text(f_ref).unwrap_or_else(|| ref_name.to_string()),
+            commit: read_text(f_commit),
+            path: read_text(f_path).unwrap_or_else(|| path.to_string()),
+            language: read_text(f_language).unwrap_or_default(),
+            chunk_type: read_text(f_chunk_type).unwrap_or_else(|| "symbol_body".to_string()),
+            origin: read_text(f_origin).unwrap_or_else(|| "symbol_origin".to_string()),
+            parent_symbol_stable_id: read_text(f_parent_symbol_stable_id),
+            chunk_index: read_u64(f_chunk_index) as u32,
+            truncated: read_u64(f_truncated) > 0,
+            imports: read_text(f_imports),
+            line_start: read_u64(f_line_start) as u32,
+            line_end: read_u64(f_line_end) as u32,
+            content: read_text(f_content).unwrap_or_default(),
+        });
+    }
+
+    snippets.sort_by(|left, right| {
+        left.line_start
+            .cmp(&right.line_start)
+            .then_with(|| left.chunk_index.cmp(&right.chunk_index))
+            .then_with(|| left.line_end.cmp(&right.line_end))
+    });
+    Ok(snippets)
+}
+
+fn backoff_seconds_for_retry(retry_count: i64) -> i64 {
+    let exponent = retry_count.clamp(0, 6) as u32;
+    DEFAULT_SEMANTIC_WORKER_BASE_BACKOFF_SECONDS
+        .saturating_mul(2_i64.saturating_pow(exponent))
+        .min(15 * 60)
+}
+
+fn classify_semantic_worker_error(err: &StateError) -> String {
+    let normalized = err.to_string().to_ascii_lowercase();
+    if normalized.contains("timeout") {
+        return "semantic_worker_timeout".to_string();
+    }
+    if normalized.contains("missing") && normalized.contains("embedding") {
+        return "semantic_embedding_provider_unavailable".to_string();
+    }
+    if normalized.contains("tantivy") {
+        return "semantic_snippet_load_failed".to_string();
+    }
+    "semantic_embedding_write_failed".to_string()
 }
 
 /// Run incremental overlay sync end-to-end into staging and publish atomically.

@@ -3,9 +3,10 @@ use crate::search::SearchResult;
 use cruxe_core::config::{RankingSignalBudgetConfig, RankingSignalBudgetRange};
 use cruxe_core::types::{
     BasicRankingReasons, RankingPrecedenceAudit, RankingReasons, RankingSignalContribution,
+    SymbolKind, SymbolRole,
 };
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use tracing::warn;
 
@@ -16,7 +17,15 @@ const SIGNAL_PATH_AFFINITY: &str = "path_affinity";
 const SIGNAL_DEFINITION_BOOST: &str = "definition_boost";
 const SIGNAL_KIND_MATCH: &str = "kind_match";
 const SIGNAL_TEST_FILE_PENALTY: &str = "test_file_penalty";
+const SIGNAL_ROLE_WEIGHT: &str = "role_weight";
+const SIGNAL_KIND_ADJUSTMENT: &str = "kind_adjustment";
+const SIGNAL_ADAPTIVE_PRIOR: &str = "adaptive_prior";
+const SIGNAL_PUBLIC_SURFACE_SALIENCE: &str = "public_surface_salience";
 const SCORE_EPSILON: f64 = 1e-9;
+const KIND_ADJUSTMENT_BOUND: f64 = 0.2;
+const ADAPTIVE_PRIOR_BOUND: f64 = 0.25;
+const ADAPTIVE_PRIOR_MIN_SAMPLE: usize = 12;
+const PUBLIC_SURFACE_SALIENCE_BOUND: f64 = 0.3;
 
 #[derive(Debug, Clone, Copy)]
 struct SignalScore {
@@ -46,6 +55,22 @@ struct RawSignalInputs {
     definition_boost: f64,
     kind_match: f64,
     test_file_penalty: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct UniversalPriorComponents {
+    role_weight: f64,
+    kind_adjustment: f64,
+    adaptive_prior: f64,
+    public_surface_salience: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RepositoryPriorStats {
+    sample_count: usize,
+    kind_counts: HashMap<String, usize>,
+    median_frequency: f64,
+    adaptive_enabled: bool,
 }
 
 impl BudgetedScoreBreakdown {
@@ -88,7 +113,6 @@ impl BudgetedScoreBreakdown {
                 signal_contribution(SIGNAL_QUALIFIED_NAME, self.qualified_name),
                 signal_contribution(SIGNAL_PATH_AFFINITY, self.path_affinity),
                 signal_contribution(SIGNAL_DEFINITION_BOOST, self.definition_boost),
-                signal_contribution(SIGNAL_KIND_MATCH, self.kind_match),
                 signal_contribution(SIGNAL_TEST_FILE_PENALTY, self.test_file_penalty),
             ],
             precedence_audit: Some(self.precedence_audit.clone()),
@@ -96,20 +120,36 @@ impl BudgetedScoreBreakdown {
     }
 }
 
-pub fn kind_weight(kind: &str) -> f64 {
+pub fn role_weight(role: SymbolRole) -> f64 {
+    match role {
+        SymbolRole::Type => 2.0,
+        SymbolRole::Callable => 1.6,
+        SymbolRole::Namespace => 1.2,
+        SymbolRole::Value => 0.9,
+        SymbolRole::Alias => 0.8,
+    }
+}
+
+pub fn kind_adjustment(kind: &str) -> f64 {
     let normalized_kind = kind.trim().to_ascii_lowercase();
-    match normalized_kind.as_str() {
-        "class" | "interface" | "trait" => 2.0,
-        "struct" | "enum" => 1.8,
-        "type_alias" | "function" | "method" => 1.5,
-        "constant" => 1.0,
-        "module" => 0.8,
-        "variable" => 0.5,
+    let raw: f64 = match normalized_kind.as_str() {
+        "class" | "interface" | "trait" => 0.20,
+        "struct" | "enum" => 0.15,
+        "function" | "method" => 0.10,
+        "module" => 0.05,
+        "type_alias" => -0.05,
+        "constant" => 0.00,
+        "variable" => -0.10,
         _ => {
             log_unknown_kind_once(&normalized_kind);
             0.0
         }
-    }
+    };
+    raw.clamp(-KIND_ADJUSTMENT_BOUND, KIND_ADJUSTMENT_BOUND)
+}
+
+pub fn kind_weight(kind: &str) -> f64 {
+    role_weight_for_kind(kind) + kind_adjustment(kind)
 }
 
 fn log_unknown_kind_once(kind: &str) {
@@ -173,12 +213,131 @@ pub(crate) fn semantic_signal_adjustment(
     budgets: &RankingSignalBudgetConfig,
 ) -> f64 {
     let kind_match_raw = kind
-        .map(|kind| kind_weight(kind) + query_intent_boost(query, kind))
+        .map(|kind| {
+            let adjustment = (kind_adjustment(kind) + query_intent_boost(query, kind))
+                .clamp(-KIND_ADJUSTMENT_BOUND, KIND_ADJUSTMENT_BOUND);
+            role_weight_for_kind(kind) + adjustment
+        })
         .unwrap_or(0.0);
     let test_file_penalty_raw = test_file_penalty(path);
 
     score_with_budget(kind_match_raw, &budgets.kind_match).effective
         + score_with_budget(test_file_penalty_raw, &budgets.test_file_penalty).effective
+}
+
+fn role_weight_for_kind(kind: &str) -> f64 {
+    SymbolKind::parse_kind(kind)
+        .map(|kind| role_weight(kind.role()))
+        .unwrap_or(0.0)
+}
+
+impl RepositoryPriorStats {
+    fn from_results(results: &[SearchResult]) -> Self {
+        let mut stats = RepositoryPriorStats::default();
+        for result in results {
+            if result.result_type != "symbol" {
+                continue;
+            }
+            let Some(kind) = result.kind.as_deref() else {
+                continue;
+            };
+            let normalized = kind.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                continue;
+            }
+            *stats.kind_counts.entry(normalized).or_insert(0) += 1;
+            stats.sample_count += 1;
+        }
+        if stats.sample_count < ADAPTIVE_PRIOR_MIN_SAMPLE || stats.kind_counts.is_empty() {
+            stats.adaptive_enabled = false;
+            stats.median_frequency = 0.0;
+            return stats;
+        }
+
+        let mut frequencies: Vec<f64> = stats
+            .kind_counts
+            .values()
+            .map(|count| *count as f64 / stats.sample_count as f64)
+            .collect();
+        frequencies.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
+        let mid = frequencies.len() / 2;
+        stats.median_frequency = if frequencies.len().is_multiple_of(2) {
+            (frequencies[mid - 1] + frequencies[mid]) / 2.0
+        } else {
+            frequencies[mid]
+        };
+        stats.adaptive_enabled = stats.median_frequency > SCORE_EPSILON;
+        stats
+    }
+
+    fn rarity_boost(&self, kind: Option<&str>) -> f64 {
+        if !self.adaptive_enabled {
+            return 0.0;
+        }
+        let Some(kind) = kind else {
+            return 0.0;
+        };
+        let normalized = kind.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return 0.0;
+        }
+        let count = self.kind_counts.get(&normalized).copied().unwrap_or(0);
+        if count == 0 || self.sample_count == 0 {
+            return 0.0;
+        }
+        let frequency = count as f64 / self.sample_count as f64;
+        if self.median_frequency <= SCORE_EPSILON {
+            return 0.0;
+        }
+        let rarity_score =
+            ((self.median_frequency - frequency) / self.median_frequency).clamp(-1.0, 1.0);
+        (rarity_score * ADAPTIVE_PRIOR_BOUND).clamp(-ADAPTIVE_PRIOR_BOUND, ADAPTIVE_PRIOR_BOUND)
+    }
+}
+
+fn public_surface_boost(result: &SearchResult) -> f64 {
+    let path_lower = result.path.to_ascii_lowercase();
+    if path_lower.contains("/test/")
+        || path_lower.contains("/tests/")
+        || path_lower.contains(".test.")
+        || path_lower.contains(".spec.")
+        || path_lower.contains("/internal/")
+    {
+        return 0.0;
+    }
+
+    let mut boost = 0.0_f64;
+    let top_level = result
+        .qualified_name
+        .as_deref()
+        .is_some_and(is_top_level_symbol_name);
+    if top_level {
+        boost += 0.10;
+    }
+    if result
+        .visibility
+        .as_deref()
+        .is_some_and(is_public_visibility)
+    {
+        boost += 0.05;
+    }
+    boost += result.file_centrality.clamp(0.0, 1.0) * 0.15;
+    if path_lower.contains("/api/") || path_lower.contains("/public/") {
+        boost += 0.05;
+    }
+    boost.clamp(0.0, PUBLIC_SURFACE_SALIENCE_BOUND)
+}
+
+fn is_top_level_symbol_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty() && !trimmed.contains("::") && !trimmed.contains('.')
+}
+
+fn is_public_visibility(visibility: &str) -> bool {
+    matches!(
+        visibility.trim().to_ascii_lowercase().as_str(),
+        "pub" | "public" | "export"
+    )
 }
 
 /// Apply rule-based reranking boosts to search results.
@@ -216,6 +375,7 @@ fn rerank_inner(
     collect_reasons: bool,
 ) -> Vec<RankingReasons> {
     let query_lower = query.to_lowercase();
+    let prior_stats = RepositoryPriorStats::from_results(results);
     let mut reasons = Vec::with_capacity(results.len());
     let mut exact_match_flags = Vec::with_capacity(results.len());
 
@@ -225,11 +385,25 @@ fn rerank_inner(
         let mut qualified_name_raw = 0.0_f64;
         let mut definition_boost_raw = 0.0_f64;
         let mut path_affinity_raw = 0.0_f64;
-        let kind_match_raw = result
+        let role_weight_raw = result
             .kind
             .as_deref()
-            .map(|kind| kind_weight(kind) + query_intent_boost(query, kind))
+            .map(role_weight_for_kind)
             .unwrap_or(0.0);
+        let kind_adjustment_raw = result
+            .kind
+            .as_deref()
+            .map(|kind| {
+                (kind_adjustment(kind) + query_intent_boost(query, kind))
+                    .clamp(-KIND_ADJUSTMENT_BOUND, KIND_ADJUSTMENT_BOUND)
+            })
+            .unwrap_or(0.0);
+        let adaptive_prior_raw = prior_stats.rarity_boost(result.kind.as_deref());
+        let public_surface_salience_raw = public_surface_boost(result);
+        let kind_match_raw = role_weight_raw
+            + kind_adjustment_raw
+            + adaptive_prior_raw
+            + public_surface_salience_raw;
         let test_file_penalty_raw = test_file_penalty(&result.path);
 
         // Exact symbol name match boost
@@ -271,7 +445,18 @@ fn rerank_inner(
         result.score = breakdown.final_score() as f32;
         exact_match_flags.push(breakdown.exact_match_present());
         if collect_reasons {
-            reasons.push(breakdown.to_reason(idx, result.result_id.clone()));
+            let mut reason = breakdown.to_reason(idx, result.result_id.clone());
+            add_universal_prior_signal_contributions(
+                &mut reason.signal_contributions,
+                UniversalPriorComponents {
+                    role_weight: role_weight_raw,
+                    kind_adjustment: kind_adjustment_raw,
+                    adaptive_prior: adaptive_prior_raw,
+                    public_surface_salience: public_surface_salience_raw,
+                },
+                breakdown.kind_match,
+            );
+            reasons.push(reason);
         }
     }
 
@@ -340,9 +525,18 @@ pub fn locate_ranking_reasons_with_budget(
             } else {
                 0.0
             };
-            let kind_match_raw = kind_weight(&r.kind) + query_intent_boost(query, &r.kind);
+            let role_weight_raw = role_weight_for_kind(&r.kind);
+            let kind_adjustment_raw = (kind_adjustment(&r.kind)
+                + query_intent_boost(query, &r.kind))
+            .clamp(-KIND_ADJUSTMENT_BOUND, KIND_ADJUSTMENT_BOUND);
+            let adaptive_prior_raw = 0.0;
+            let public_surface_salience_raw = 0.0;
+            let kind_match_raw = role_weight_raw
+                + kind_adjustment_raw
+                + adaptive_prior_raw
+                + public_surface_salience_raw;
             let test_file_penalty_raw = test_file_penalty(&r.path);
-            budgeted_breakdown(
+            let breakdown = budgeted_breakdown(
                 RawSignalInputs {
                     bm25: bm25_score,
                     exact_match: exact_match_raw,
@@ -353,8 +547,20 @@ pub fn locate_ranking_reasons_with_budget(
                     test_file_penalty: test_file_penalty_raw,
                 },
                 budgets,
-            )
-            .to_reason(idx, format!("{}:{}:{}", r.path, r.line_start, r.name))
+            );
+            let mut reason =
+                breakdown.to_reason(idx, format!("{}:{}:{}", r.path, r.line_start, r.name));
+            add_universal_prior_signal_contributions(
+                &mut reason.signal_contributions,
+                UniversalPriorComponents {
+                    role_weight: role_weight_raw,
+                    kind_adjustment: kind_adjustment_raw,
+                    adaptive_prior: adaptive_prior_raw,
+                    public_surface_salience: public_surface_salience_raw,
+                },
+                breakdown.kind_match,
+            );
+            reason
         })
         .collect()
 }
@@ -486,6 +692,42 @@ fn signal_contribution(signal: &str, score: SignalScore) -> RankingSignalContrib
     }
 }
 
+fn add_universal_prior_signal_contributions(
+    signal_contributions: &mut Vec<RankingSignalContribution>,
+    components: UniversalPriorComponents,
+    kind_match: SignalScore,
+) {
+    let raw_total = components.role_weight
+        + components.kind_adjustment
+        + components.adaptive_prior
+        + components.public_surface_salience;
+
+    // Keep an aggregate kind-match signal for compatibility while exposing
+    // universal-prior sub-signals as decomposed contributors.
+    signal_contributions.push(RankingSignalContribution {
+        signal: SIGNAL_KIND_MATCH.to_string(),
+        raw_value: raw_total,
+        clamped_value: kind_match.clamped,
+        effective_value: kind_match.effective,
+    });
+
+    for signal in [
+        SIGNAL_ROLE_WEIGHT,
+        SIGNAL_KIND_ADJUSTMENT,
+        SIGNAL_ADAPTIVE_PRIOR,
+        SIGNAL_PUBLIC_SURFACE_SALIENCE,
+    ] {
+        signal_contributions.push(RankingSignalContribution {
+            signal: signal.to_string(),
+            // Informational decomposition: avoid double-counting against the
+            // aggregate kind_match signal in accounting totals.
+            raw_value: 0.0,
+            clamped_value: 0.0,
+            effective_value: 0.0,
+        });
+    }
+}
+
 fn positive_secondary_total(
     qualified_name: SignalScore,
     path: SignalScore,
@@ -543,6 +785,8 @@ mod tests {
             score,
             snippet: None,
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }
@@ -555,10 +799,144 @@ mod tests {
     }
 
     #[test]
+    fn role_weight_drives_deterministic_order_when_lexical_signals_tie() {
+        let mut budgets = RankingSignalBudgetConfig::default();
+        budgets.exact_match.default = 0.0;
+        budgets.qualified_name.default = 0.0;
+        budgets.path_affinity.default = 0.0;
+        budgets.definition_boost.default = 0.0;
+        budgets.kind_match.default = 3.0;
+        budgets.test_file_penalty.default = 0.0;
+        let mut results = vec![
+            search_result("value", "value", "value", "src/value.rs", "variable", 1.0),
+            search_result("type", "type", "type", "src/type.rs", "class", 1.0),
+        ];
+        rerank_with_budget(&mut results, "nomatch", &budgets);
+        assert_eq!(results[0].result_id, "type");
+    }
+
+    #[test]
+    fn kind_adjustment_is_bounded_and_language_agnostic() {
+        let fn_adjustment = kind_adjustment("function");
+        let method_adjustment = kind_adjustment("method");
+        assert!(fn_adjustment.abs() <= KIND_ADJUSTMENT_BOUND + SCORE_EPSILON);
+        assert!(method_adjustment.abs() <= KIND_ADJUSTMENT_BOUND + SCORE_EPSILON);
+        assert_eq!(kind_adjustment("function"), kind_adjustment("function"));
+    }
+
+    #[test]
     fn query_intent_boost_detects_type_and_callable_hints() {
         assert_eq!(query_intent_boost("AuthService", "class"), 1.0);
         assert_eq!(query_intent_boost("validate_token", "function"), 0.5);
         assert_eq!(query_intent_boost("auth", "class"), 0.0);
+    }
+
+    #[test]
+    fn adaptive_prior_boosts_rare_kinds_and_penalizes_common_kinds() {
+        let mut results = Vec::new();
+        for idx in 0..9 {
+            results.push(search_result(
+                &format!("v{idx}"),
+                "value",
+                "value",
+                "src/value.rs",
+                "variable",
+                0.1,
+            ));
+        }
+        for idx in 0..3 {
+            results.push(search_result(
+                &format!("c{idx}"),
+                "classy",
+                "classy",
+                "src/type.rs",
+                "class",
+                0.1,
+            ));
+        }
+        let stats = RepositoryPriorStats::from_results(&results);
+        assert!(stats.adaptive_enabled);
+        let rare = stats.rarity_boost(Some("class"));
+        let common = stats.rarity_boost(Some("variable"));
+        assert!(rare > 0.0);
+        assert!(common <= 0.0);
+        assert!(rare <= ADAPTIVE_PRIOR_BOUND + SCORE_EPSILON);
+        assert!(common >= -ADAPTIVE_PRIOR_BOUND - SCORE_EPSILON);
+    }
+
+    #[test]
+    fn adaptive_prior_disables_with_small_sample_guard() {
+        let results = vec![
+            search_result("a", "a", "a", "src/a.rs", "class", 0.1),
+            search_result("b", "b", "b", "src/b.rs", "variable", 0.1),
+        ];
+        let stats = RepositoryPriorStats::from_results(&results);
+        assert!(!stats.adaptive_enabled);
+        assert_eq!(stats.rarity_boost(Some("class")), 0.0);
+        assert_eq!(stats.rarity_boost(Some("variable")), 0.0);
+    }
+
+    #[test]
+    fn public_surface_salience_boosts_api_symbols_only() {
+        let api = search_result(
+            "api",
+            "AuthService",
+            "AuthService",
+            "src/api/auth_service.rs",
+            "class",
+            0.1,
+        );
+        let mut api = api;
+        api.visibility = Some("pub".to_string());
+        api.file_centrality = 1.0;
+        let internal = search_result(
+            "internal",
+            "helper",
+            "auth::helper",
+            "src/internal/auth_test.rs",
+            "function",
+            0.1,
+        );
+        assert!(public_surface_boost(&api) > 0.0);
+        assert_eq!(public_surface_boost(&internal), 0.0);
+    }
+
+    #[test]
+    fn file_centrality_breaks_lexical_ties_when_structure_differs() {
+        let mut budgets = RankingSignalBudgetConfig::default();
+        budgets.exact_match.default = 0.0;
+        budgets.qualified_name.default = 0.0;
+        budgets.path_affinity.default = 0.0;
+        budgets.definition_boost.default = 0.0;
+        budgets.kind_match.default = 0.0;
+        budgets.test_file_penalty.default = 0.0;
+
+        let mut low_centrality = search_result(
+            "low_centrality",
+            "helper",
+            "module::helper",
+            "src/internal/helper_low.rs",
+            "function",
+            1.0,
+        );
+        low_centrality.visibility = Some("private".to_string());
+        low_centrality.file_centrality = 0.0;
+
+        let mut high_centrality = search_result(
+            "high_centrality",
+            "helper",
+            "module::helper",
+            "src/internal/helper_high.rs",
+            "function",
+            1.0,
+        );
+        high_centrality.visibility = Some("private".to_string());
+        high_centrality.file_centrality = 1.0;
+
+        let mut results = vec![low_centrality, high_centrality];
+        rerank_with_budget(&mut results, "nomatch", &budgets);
+        assert_eq!(results[0].result_id, "high_centrality");
+        assert_eq!(results[1].result_id, "low_centrality");
     }
 
     #[test]

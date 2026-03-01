@@ -35,9 +35,15 @@ pub struct RankingScoringBreakdown {
     pub qualified_name: f64,
     pub path_affinity: f64,
     pub definition_boost: f64,
+    pub role_weight: f64,
+    pub kind_adjustment: f64,
+    pub adaptive_prior: f64,
+    pub public_surface_salience: f64,
     pub kind_match: f64,
     pub test_file_penalty: f64,
     pub confidence_structural_boost: f64,
+    pub file_centrality: f64,
+    pub centrality_boost: f64,
     pub structural_weighted_centrality: f64,
     pub structural_raw_centrality: f64,
     pub structural_guardrail_multiplier: f64,
@@ -58,6 +64,7 @@ pub struct RankingScoringDetails {
     pub definition_boost_reason: String,
     pub kind_match_reason: String,
     pub test_file_penalty_reason: String,
+    pub centrality_reason: String,
     pub confidence_structural_reason: String,
 }
 
@@ -122,9 +129,23 @@ pub fn explain_ranking(
             qualified_name: reason.qualified_name_boost,
             path_affinity: reason.path_affinity,
             definition_boost: reason.definition_boost,
+            role_weight: contribution_value(reason, "role_weight", ContributionValue::Raw),
+            kind_adjustment: contribution_value(reason, "kind_adjustment", ContributionValue::Raw),
+            adaptive_prior: contribution_value(reason, "adaptive_prior", ContributionValue::Raw),
+            public_surface_salience: contribution_value(
+                reason,
+                "public_surface_salience",
+                ContributionValue::Raw,
+            ),
             kind_match: reason.kind_match,
             test_file_penalty: reason.test_file_penalty,
             confidence_structural_boost: reason.confidence_structural_boost,
+            file_centrality: contribution_value(reason, "centrality_boost", ContributionValue::Raw),
+            centrality_boost: contribution_value(
+                reason,
+                "centrality_boost",
+                ContributionValue::Effective,
+            ),
             structural_weighted_centrality: reason.structural_weighted_centrality,
             structural_raw_centrality: reason.structural_raw_centrality,
             structural_guardrail_multiplier: reason.structural_guardrail_multiplier,
@@ -165,6 +186,7 @@ pub fn explain_ranking(
                 "test-file penalty applied",
                 "no test-file penalty",
             ),
+            centrality_reason: centrality_reason(reason),
             confidence_structural_reason: confidence_structural_reason(reason),
         },
     })
@@ -189,6 +211,39 @@ fn confidence_structural_reason(reason: &cruxe_core::types::RankingReasons) -> S
         reason.structural_guardrail_multiplier,
         reason.confidence_structural_boost
     )
+}
+
+#[derive(Clone, Copy)]
+enum ContributionValue {
+    Raw,
+    Effective,
+}
+
+fn contribution_value(
+    reason: &cruxe_core::types::RankingReasons,
+    signal: &str,
+    value: ContributionValue,
+) -> f64 {
+    let Some(contribution) = reason
+        .signal_contributions
+        .iter()
+        .find(|entry| entry.signal == signal)
+    else {
+        return 0.0;
+    };
+    match value {
+        ContributionValue::Raw => contribution.raw_value,
+        ContributionValue::Effective => contribution.effective_value,
+    }
+}
+
+fn centrality_reason(reason: &cruxe_core::types::RankingReasons) -> String {
+    let raw = contribution_value(reason, "centrality_boost", ContributionValue::Raw);
+    let weighted = contribution_value(reason, "centrality_boost", ContributionValue::Effective);
+    if weighted.abs() <= EXPLAIN_SIGNAL_TOLERANCE {
+        return "no file centrality boost".to_string();
+    }
+    format!("file centrality boost (centrality={raw:.3}, contribution={weighted:.3})")
 }
 
 #[cfg(test)]
@@ -232,6 +287,10 @@ mod tests {
             path: "src/lib.rs".to_string(),
             language: "rust".to_string(),
             chunk_type: "symbol_body".to_string(),
+            origin: "symbol_origin".to_string(),
+            parent_symbol_stable_id: Some("stable-1".to_string()),
+            chunk_index: 0,
+            truncated: false,
             imports: None,
             line_start: 3,
             line_end: 8,

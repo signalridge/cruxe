@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 14;
+pub const CURRENT_SCHEMA_VERSION: u32 = 15;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -459,6 +459,34 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
             .map_err(StateError::sqlite)?;
             Ok(())
         },
+        // V15: async semantic enrichment queue contract.
+        |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS semantic_enrichment_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    \"ref\" TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error_code TEXT,
+                    enqueued_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    started_at TEXT,
+                    completed_at TEXT,
+                    next_attempt_at TEXT,
+                    UNIQUE(project_id, \"ref\", path, generation)
+                );
+                CREATE INDEX IF NOT EXISTS idx_semantic_enrichment_queue_pending
+                    ON semantic_enrichment_queue(status, next_attempt_at, enqueued_at);
+                CREATE INDEX IF NOT EXISTS idx_semantic_enrichment_queue_scope_status
+                    ON semantic_enrichment_queue(project_id, \"ref\", status, enqueued_at);
+                CREATE INDEX IF NOT EXISTS idx_semantic_enrichment_queue_key_generation
+                    ON semantic_enrichment_queue(project_id, \"ref\", path, generation DESC);",
+            )
+            .map_err(StateError::sqlite)?;
+            Ok(())
+        },
     ];
 
     for version in (current + 1)..=(CURRENT_SCHEMA_VERSION) {
@@ -651,6 +679,29 @@ CREATE TABLE IF NOT EXISTS known_workspaces (
     index_status TEXT DEFAULT 'unknown'
 );
 
+CREATE TABLE IF NOT EXISTS semantic_enrichment_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    "ref" TEXT NOT NULL,
+    path TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    last_error_code TEXT,
+    enqueued_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT,
+    completed_at TEXT,
+    next_attempt_at TEXT,
+    UNIQUE(project_id, "ref", path, generation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_enrichment_queue_pending
+    ON semantic_enrichment_queue(status, next_attempt_at, enqueued_at);
+CREATE INDEX IF NOT EXISTS idx_semantic_enrichment_queue_scope_status
+    ON semantic_enrichment_queue(project_id, "ref", status, enqueued_at);
+CREATE INDEX IF NOT EXISTS idx_semantic_enrichment_queue_key_generation
+    ON semantic_enrichment_queue(project_id, "ref", path, generation DESC);
+
 "#;
 
 #[cfg(test)]
@@ -685,6 +736,7 @@ mod tests {
         assert!(tables.contains(&"known_workspaces".to_string()));
         assert!(tables.contains(&"semantic_vectors".to_string()));
         assert!(tables.contains(&"semantic_vector_meta".to_string()));
+        assert!(tables.contains(&"semantic_enrichment_queue".to_string()));
     }
 
     #[test]
@@ -997,5 +1049,37 @@ mod tests {
                 0.6
             )
         );
+    }
+
+    #[test]
+    fn test_v15_creates_semantic_queue_indexes() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("legacy-v14.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO schema_migrations (version) VALUES (14);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let indexes: Vec<String> = conn
+            .prepare(
+                "SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'index' AND tbl_name = 'semantic_enrichment_queue'
+                 ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(indexes.contains(&"idx_semantic_enrichment_queue_pending".to_string()));
+        assert!(indexes.contains(&"idx_semantic_enrichment_queue_scope_status".to_string()));
+        assert!(indexes.contains(&"idx_semantic_enrichment_queue_key_generation".to_string()));
     }
 }

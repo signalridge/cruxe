@@ -42,6 +42,7 @@ pub fn import_bundle(
         return Err(StateError::SchemaMigrationRequired {
             current: constants::SCHEMA_VERSION,
             required: metadata.schema_version,
+            details: None,
         });
     }
 

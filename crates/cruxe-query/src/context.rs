@@ -104,6 +104,7 @@ pub fn get_code_context(
             plan_override: None,
             policy_mode_override,
             policy_runtime: Some(policy_runtime.clone()),
+            diversity_enabled: true,
         },
     )?;
     let total_candidates = search_response.results.len();

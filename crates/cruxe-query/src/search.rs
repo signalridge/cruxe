@@ -1,4 +1,6 @@
-use cruxe_core::config::SearchConfig as CoreSearchConfig;
+use cruxe_core::config::{
+    RankingSignalBudgetConfig, RankingSignalBudgetRange, SearchConfig as CoreSearchConfig,
+};
 use cruxe_core::edge_confidence::{
     CONFIDENCE_HIGH, CONFIDENCE_LOW, CONFIDENCE_MEDIUM, confidence_weight,
 };
@@ -43,6 +45,8 @@ use crate::{
 pub(crate) const RRF_K: f64 = 60.0;
 const SEARCH_SCORE_TOLERANCE: f64 = 1e-9;
 const SIGNAL_CONFIDENCE_STRUCTURAL: &str = "confidence_structural_boost";
+const SIGNAL_FILE_CENTRALITY: &str = "centrality_boost";
+const FILE_CENTRALITY_WEIGHT: f64 = 1.0;
 
 /// A search result from search_code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +78,10 @@ pub struct SearchResult {
     pub snippet: Option<String>,
     #[serde(skip_serializing, skip_deserializing, default)]
     pub chunk_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_origin: Option<String>,
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub file_centrality: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_layer: Option<SourceLayer>,
     #[serde(default = "default_result_provenance")]
@@ -132,6 +140,11 @@ pub struct SearchMetadata {
     pub lexical_fanout_used: usize,
     pub semantic_fanout_used: usize,
     pub semantic_budget_exhausted: bool,
+    pub semantic_enrichment_state: String,
+    pub semantic_backlog_size: usize,
+    pub semantic_lag_hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degraded_reason: Option<String>,
     pub external_provider_blocked: bool,
     pub embedding_model_version: String,
     pub rerank_provider: String,
@@ -183,7 +196,7 @@ pub struct ConfidenceStructuralDiagnostics {
     pub by_outcome: HashMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SearchExecutionOptions {
     pub search_config: CoreSearchConfig,
     pub semantic_ratio_override: Option<f64>,
@@ -192,6 +205,22 @@ pub struct SearchExecutionOptions {
     pub plan_override: Option<String>,
     pub policy_mode_override: Option<PolicyMode>,
     pub policy_runtime: Option<PolicyRuntime>,
+    pub diversity_enabled: bool,
+}
+
+impl Default for SearchExecutionOptions {
+    fn default() -> Self {
+        Self {
+            search_config: CoreSearchConfig::default(),
+            semantic_ratio_override: None,
+            confidence_threshold_override: None,
+            role: None,
+            plan_override: None,
+            policy_mode_override: None,
+            policy_runtime: None,
+            diversity_enabled: true,
+        }
+    }
 }
 
 /// Optional debug payload for search_code.
@@ -605,13 +634,14 @@ pub fn search_code_with_options(
         semantic_state.rerank_provider = "local".to_string();
     }
 
-    let confidence_structural = apply_confidence_weighted_structural_boost(
+    let confidence_structural = apply_confidence_weighted_structural_boost_with_budget(
         conn,
         effective_ref.as_str(),
         query,
         &mut all_results,
         ranking_reasons.as_mut(),
         &mut response_warnings,
+        &options.search_config.ranking_signal_budgets,
     )?;
     if let Some(reasons) = ranking_reasons.as_mut() {
         // Keep reason indexing/final scores aligned with any post-rerank filtering/sorting
@@ -638,6 +668,16 @@ pub fn search_code_with_options(
         ));
     }
 
+    apply_origin_aware_snippet_dedup(&mut all_results);
+    if let Some(reasons) = ranking_reasons.as_mut() {
+        rebuild_ranking_reasons(&all_results, reasons, &HashMap::new());
+    }
+    if options.diversity_enabled {
+        apply_file_diversity(&mut all_results, 5, 2, 0.5);
+        if let Some(reasons) = ranking_reasons.as_mut() {
+            rebuild_ranking_reasons(&all_results, reasons, &HashMap::new());
+        }
+    }
     all_results.truncate(limit);
     let ranking_reasons = ranking_reasons.map(|reasons| reasons.into_iter().take(limit).collect());
 
@@ -651,6 +691,21 @@ pub fn search_code_with_options(
         confidence_threshold,
         &options.search_config.semantic,
     );
+    let semantic_enrichment_state = conn
+        .and_then(|connection| {
+            resolve_semantic_project_id(connection, effective_ref.as_str(), &all_results).and_then(
+                |project_id| {
+                    cruxe_state::semantic_queue::current_runtime_state(
+                        connection,
+                        &project_id,
+                        effective_ref.as_str(),
+                    )
+                    .ok()
+                },
+            )
+        })
+        .unwrap_or_default();
+    let semantic_skipped_reason = semantic_state.semantic_skipped_reason.clone();
 
     let metadata = SearchMetadata {
         policy_mode: policy_mode.to_string(),
@@ -664,7 +719,7 @@ pub fn search_code_with_options(
         semantic_ratio_used: semantic_state.semantic_ratio_used,
         semantic_triggered: semantic_state.semantic_triggered,
         semantic_succeeded: semantic_state.semantic_succeeded,
-        semantic_skipped_reason: semantic_state.semantic_skipped_reason,
+        semantic_skipped_reason: semantic_skipped_reason.clone(),
         semantic_fallback: semantic_state.semantic_fallback,
         semantic_degraded: semantic_degraded(
             semantic_state.semantic_fallback,
@@ -674,6 +729,13 @@ pub fn search_code_with_options(
         lexical_fanout_used: effective_plan_budget.lexical_fanout,
         semantic_fanout_used: effective_plan_budget.semantic_fanout,
         semantic_budget_exhausted,
+        semantic_enrichment_state: semantic_enrichment_state.semantic_enrichment_state.clone(),
+        semantic_backlog_size: semantic_enrichment_state.semantic_backlog_size,
+        semantic_lag_hint: semantic_enrichment_state.semantic_lag_hint.clone(),
+        degraded_reason: semantic_enrichment_state
+            .degraded_reason
+            .clone()
+            .or(semantic_skipped_reason),
         external_provider_blocked: semantic_state.external_provider_blocked,
         embedding_model_version: options
             .search_config
@@ -884,14 +946,21 @@ pub fn search_code_vcs_merged_with_options(
         None
     };
     let mut merged_warnings = overlay.metadata.warnings.clone();
-    let confidence_structural = apply_confidence_weighted_structural_boost(
+    let confidence_structural = apply_confidence_weighted_structural_boost_with_budget(
         conn,
         ctx.target_ref,
         query,
         &mut results,
         ranking_reasons.as_mut(),
         &mut merged_warnings,
+        &options.search_config.ranking_signal_budgets,
     )?;
+    if options.diversity_enabled {
+        apply_file_diversity(&mut results, 5, 2, 0.5);
+        if let Some(reasons) = ranking_reasons.as_mut() {
+            rebuild_ranking_reasons(&results, reasons, &HashMap::new());
+        }
+    }
     results.truncate(limit);
     let ranking_reasons = ranking_reasons.map(|reasons| reasons.into_iter().take(limit).collect());
 
@@ -982,6 +1051,8 @@ impl SymbolStructuralStats {
 
 #[derive(Debug, Clone, Default)]
 struct StructuralContribution {
+    file_centrality_raw: f64,
+    file_centrality_boost: f64,
     structural_weighted_centrality: f64,
     structural_raw_centrality: f64,
     structural_guardrail_multiplier: f64,
@@ -989,6 +1060,30 @@ struct StructuralContribution {
     confidence_structural_boost: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BudgetClamp {
+    effective: f64,
+}
+
+fn clamp_signal_to_budget(value: f64, budget: &RankingSignalBudgetRange) -> BudgetClamp {
+    let value = if value.is_finite() { value } else { 0.0 };
+    let min = if budget.min.is_finite() {
+        budget.min
+    } else {
+        0.0
+    };
+    let max = if budget.max.is_finite() {
+        budget.max
+    } else {
+        min.max(0.0)
+    };
+    let (min, max) = if min <= max { (min, max) } else { (0.0, 0.0) };
+    BudgetClamp {
+        effective: value.clamp(min, max),
+    }
+}
+
+#[cfg(test)]
 fn apply_confidence_weighted_structural_boost(
     conn: Option<&Connection>,
     ref_name: &str,
@@ -997,35 +1092,51 @@ fn apply_confidence_weighted_structural_boost(
     ranking_reasons: Option<&mut Vec<RankingReasons>>,
     warnings: &mut Vec<String>,
 ) -> Result<Option<ConfidenceStructuralDiagnostics>, StateError> {
-    let Some(conn) = conn else {
-        return Ok(None);
-    };
+    let default_ranking_budgets = RankingSignalBudgetConfig::default();
+    apply_confidence_weighted_structural_boost_with_budget(
+        conn,
+        ref_name,
+        query,
+        results,
+        ranking_reasons,
+        warnings,
+        &default_ranking_budgets,
+    )
+}
 
+fn apply_confidence_weighted_structural_boost_with_budget(
+    conn: Option<&Connection>,
+    ref_name: &str,
+    query: &str,
+    results: &mut [SearchResult],
+    ranking_reasons: Option<&mut Vec<RankingReasons>>,
+    warnings: &mut Vec<String>,
+    ranking_budgets: &RankingSignalBudgetConfig,
+) -> Result<Option<ConfidenceStructuralDiagnostics>, StateError> {
     let mut stats_by_symbol: HashMap<(String, String), SymbolStructuralStats> = HashMap::new();
-    for result in results.iter() {
-        if result.result_type != "symbol" {
-            continue;
+    if let Some(conn) = conn {
+        for result in results.iter() {
+            if result.result_type != "symbol" {
+                continue;
+            }
+            let Some(symbol_stable_id) = result
+                .symbol_stable_id
+                .as_deref()
+                .or(result.symbol_id.as_deref())
+            else {
+                continue;
+            };
+            if result.repo.trim().is_empty() {
+                continue;
+            }
+            let key = (result.repo.clone(), symbol_stable_id.to_string());
+            if stats_by_symbol.contains_key(&key) {
+                continue;
+            }
+            let stats =
+                load_symbol_structural_stats(conn, &result.repo, ref_name, symbol_stable_id)?;
+            stats_by_symbol.insert(key, stats);
         }
-        let Some(symbol_stable_id) = result
-            .symbol_stable_id
-            .as_deref()
-            .or(result.symbol_id.as_deref())
-        else {
-            continue;
-        };
-        if result.repo.trim().is_empty() {
-            continue;
-        }
-        let key = (result.repo.clone(), symbol_stable_id.to_string());
-        if stats_by_symbol.contains_key(&key) {
-            continue;
-        }
-        let stats = load_symbol_structural_stats(conn, &result.repo, ref_name, symbol_stable_id)?;
-        stats_by_symbol.insert(key, stats);
-    }
-
-    if stats_by_symbol.is_empty() {
-        return Ok(None);
     }
 
     let max_raw = stats_by_symbol
@@ -1039,6 +1150,25 @@ fn apply_confidence_weighted_structural_boost(
 
     let mut contributions: HashMap<String, StructuralContribution> = HashMap::new();
     let mut guardrail_applied = false;
+
+    for result in results.iter_mut() {
+        if result.result_type != "symbol" {
+            continue;
+        }
+        let normalized_centrality = result.file_centrality.clamp(0.0, 1.0);
+        let raw_boost = normalized_centrality * FILE_CENTRALITY_WEIGHT;
+        let boost =
+            clamp_signal_to_budget(raw_boost, &ranking_budgets.file_centrality_boost).effective;
+        result.score += boost as f32;
+        contributions.insert(
+            result.result_id.clone(),
+            StructuralContribution {
+                file_centrality_raw: normalized_centrality,
+                file_centrality_boost: boost,
+                ..StructuralContribution::default()
+            },
+        );
+    }
 
     for result in results.iter_mut() {
         if result.result_type != "symbol" {
@@ -1077,16 +1207,12 @@ fn apply_confidence_weighted_structural_boost(
         };
         let boost = weighted_centrality * STRUCTURAL_CENTRALITY_WEIGHT * guardrail_multiplier;
         result.score += boost as f32;
-        contributions.insert(
-            result.result_id.clone(),
-            StructuralContribution {
-                structural_weighted_centrality: weighted_centrality,
-                structural_raw_centrality: raw_centrality,
-                structural_guardrail_multiplier: guardrail_multiplier,
-                confidence_coverage: coverage,
-                confidence_structural_boost: boost,
-            },
-        );
+        let entry = contributions.entry(result.result_id.clone()).or_default();
+        entry.structural_weighted_centrality = weighted_centrality;
+        entry.structural_raw_centrality = raw_centrality;
+        entry.structural_guardrail_multiplier = guardrail_multiplier;
+        entry.confidence_coverage = coverage;
+        entry.confidence_structural_boost = boost;
     }
 
     if guardrail_applied {
@@ -1094,6 +1220,10 @@ fn apply_confidence_weighted_structural_boost(
             "confidence_structural_guardrail_applied: coverage below {:.2} reduced structural boost for low-confidence candidates",
             CONFIDENCE_COVERAGE_THRESHOLD
         ));
+    }
+
+    if contributions.is_empty() && stats_by_symbol.is_empty() {
+        return Ok(None);
     }
 
     let lexical_precedence_by_result_id = if let Some(reasons) = ranking_reasons
@@ -1170,7 +1300,11 @@ fn apply_confidence_weighted_structural_boost(
             .clamp(0.0, 1.0)
     };
 
-    Ok(Some(diagnostics))
+    if stats_by_symbol.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(diagnostics))
+    }
 }
 
 fn lexical_precedence_tier(exact_match_boost: f64, qualified_name_boost: f64) -> u8 {
@@ -1243,6 +1377,11 @@ fn rebuild_ranking_reasons(
             reason.structural_raw_centrality = contribution.structural_raw_centrality;
             reason.structural_guardrail_multiplier = contribution.structural_guardrail_multiplier;
             reason.confidence_coverage = contribution.confidence_coverage;
+            upsert_file_centrality_signal_contribution(
+                &mut reason.signal_contributions,
+                contribution.file_centrality_raw,
+                contribution.file_centrality_boost,
+            );
             upsert_structural_signal_contribution(
                 &mut reason.signal_contributions,
                 contribution.confidence_structural_boost,
@@ -1274,6 +1413,30 @@ fn upsert_structural_signal_contribution(
         raw_value: boost,
         clamped_value: boost,
         effective_value: boost,
+    });
+}
+
+fn upsert_file_centrality_signal_contribution(
+    signal_contributions: &mut Vec<RankingSignalContribution>,
+    raw_centrality: f64,
+    weighted_boost: f64,
+) {
+    let raw_boost = raw_centrality * FILE_CENTRALITY_WEIGHT;
+    if let Some(existing) = signal_contributions
+        .iter_mut()
+        .find(|entry| entry.signal == SIGNAL_FILE_CENTRALITY)
+    {
+        existing.raw_value = raw_boost;
+        existing.clamped_value = weighted_boost;
+        existing.effective_value = weighted_boost;
+        return;
+    }
+
+    signal_contributions.push(RankingSignalContribution {
+        signal: SIGNAL_FILE_CENTRALITY.to_string(),
+        raw_value: raw_boost,
+        clamped_value: weighted_boost,
+        effective_value: weighted_boost,
     });
 }
 
@@ -1748,6 +1911,14 @@ fn search_index(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
         };
+        let get_f64 = |field_name: &str| -> f64 {
+            schema
+                .get_field(field_name)
+                .ok()
+                .and_then(|f| doc.get_first(f))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+        };
 
         let path = get_text("path").unwrap_or_default();
         let line_start = get_u64("line_start") as u32;
@@ -1800,6 +1971,20 @@ fn search_index(
             symbol_stable_id: symbol_stable_id.as_deref().unwrap_or(""),
         });
 
+        let chunk_type = get_text("chunk_type");
+        let file_centrality = if result_type == "symbol" {
+            get_f64("file_centrality").clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let chunk_origin = get_text("origin").or_else(|| {
+            if matches!(chunk_type.as_deref(), Some("file_fallback")) {
+                Some("file_fallback".to_string())
+            } else {
+                chunk_type.as_ref().map(|_| "symbol_origin".to_string())
+            }
+        });
+
         results.push(SearchResult {
             repo: doc_repo,
             result_id,
@@ -1830,13 +2015,126 @@ fn search_index(
                     c
                 }
             }),
-            chunk_type: get_text("chunk_type"),
+            chunk_type,
+            chunk_origin,
+            file_centrality,
             source_layer: None,
             provenance: default_result_provenance(),
         });
     }
 
     Ok(results)
+}
+
+fn snippet_origin(result: &SearchResult) -> Option<&str> {
+    if result.result_type != "snippet" {
+        return None;
+    }
+    if let Some(origin) = result.chunk_origin.as_deref() {
+        return Some(origin);
+    }
+    match result.chunk_type.as_deref() {
+        Some("file_fallback") => Some("file_fallback"),
+        Some(_) => Some("symbol_origin"),
+        None => None,
+    }
+}
+
+fn snippet_ranges_overlap(left: &SearchResult, right: &SearchResult) -> bool {
+    left.path == right.path
+        && left.result_type == "snippet"
+        && right.result_type == "snippet"
+        && !(left.line_end < right.line_start || right.line_end < left.line_start)
+}
+
+fn apply_origin_aware_snippet_dedup(results: &mut Vec<SearchResult>) {
+    let mut deduped: Vec<SearchResult> = Vec::with_capacity(results.len());
+    for candidate in results.drain(..) {
+        if candidate.result_type != "snippet" {
+            deduped.push(candidate);
+            continue;
+        }
+
+        let candidate_origin = snippet_origin(&candidate);
+        let mut should_skip = false;
+
+        deduped.retain(|existing| {
+            if !snippet_ranges_overlap(existing, &candidate) {
+                return true;
+            }
+            match (snippet_origin(existing), candidate_origin) {
+                (Some("symbol_origin"), Some("file_fallback")) => {
+                    should_skip = true;
+                    true
+                }
+                (Some("file_fallback"), Some("symbol_origin")) => false,
+                _ => true,
+            }
+        });
+
+        if should_skip {
+            continue;
+        }
+        deduped.push(candidate);
+    }
+    *results = deduped;
+}
+
+fn apply_file_diversity(
+    results: &mut Vec<SearchResult>,
+    window_size: usize,
+    max_per_file: usize,
+    min_score_ratio: f32,
+) {
+    if results.len() < 2 || window_size == 0 {
+        return;
+    }
+    let effective_window = window_size.min(results.len()).max(1);
+    let min_score_ratio = min_score_ratio.clamp(0.0, 1.0);
+
+    let mut index = 0usize;
+    while index < results.len() {
+        let current_path = results[index].path.clone();
+        let window_start = index.saturating_sub(effective_window.saturating_sub(1));
+        let same_file_in_window = results[window_start..=index]
+            .iter()
+            .filter(|candidate| candidate.path == current_path)
+            .count();
+        if same_file_in_window <= max_per_file {
+            index += 1;
+            continue;
+        }
+
+        let displaced_score = results[index].score;
+        let minimum_promoted_score = displaced_score * min_score_ratio;
+        let mut promote_index: Option<usize> = None;
+        for (cursor, candidate) in results.iter().enumerate().skip(index + 1) {
+            if candidate.path == current_path {
+                continue;
+            }
+            if candidate.score + f32::EPSILON < minimum_promoted_score {
+                continue;
+            }
+            promote_index = Some(cursor);
+            break;
+        }
+
+        if let Some(cursor) = promote_index {
+            // Stable rotate: preserve original within-file relative order.
+            let promoted = results.remove(cursor);
+            results.insert(index, promoted);
+        } else {
+            debug!(
+                path = %current_path,
+                displaced_score,
+                minimum_promoted_score,
+                max_per_file,
+                "file diversity could not find eligible promotion candidate; preserving original rank order"
+            );
+        }
+
+        index += 1;
+    }
 }
 
 struct SnippetSymbolMetadata<'a> {
@@ -2068,6 +2366,8 @@ mod tests {
             score,
             snippet: None,
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }
@@ -2092,9 +2392,211 @@ mod tests {
             score,
             snippet: None,
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }
+    }
+
+    #[test]
+    fn origin_aware_dedup_prefers_symbol_origin_over_fallback_overlap() {
+        let mut results = vec![
+            SearchResult {
+                repo: "repo".to_string(),
+                result_id: "fallback".to_string(),
+                symbol_id: None,
+                symbol_stable_id: None,
+                result_type: "snippet".to_string(),
+                path: "src/lib.rs".to_string(),
+                line_start: 10,
+                line_end: 40,
+                kind: None,
+                name: None,
+                qualified_name: None,
+                language: "rust".to_string(),
+                signature: None,
+                visibility: None,
+                score: 0.8,
+                snippet: Some("fallback text".to_string()),
+                chunk_type: Some("file_fallback".to_string()),
+                chunk_origin: Some("file_fallback".to_string()),
+                file_centrality: 0.0,
+                source_layer: None,
+                provenance: "lexical".to_string(),
+            },
+            SearchResult {
+                repo: "repo".to_string(),
+                result_id: "symbol".to_string(),
+                symbol_id: Some("sym-1".to_string()),
+                symbol_stable_id: Some("stable-1".to_string()),
+                result_type: "snippet".to_string(),
+                path: "src/lib.rs".to_string(),
+                line_start: 18,
+                line_end: 28,
+                kind: Some("function".to_string()),
+                name: Some("demo".to_string()),
+                qualified_name: Some("demo".to_string()),
+                language: "rust".to_string(),
+                signature: None,
+                visibility: None,
+                score: 0.7,
+                snippet: Some("symbol text".to_string()),
+                chunk_type: Some("function_body".to_string()),
+                chunk_origin: Some("symbol_origin".to_string()),
+                file_centrality: 0.0,
+                source_layer: None,
+                provenance: "lexical".to_string(),
+            },
+        ];
+        apply_origin_aware_snippet_dedup(&mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].result_id, "symbol");
+    }
+
+    #[test]
+    fn apply_file_diversity_mitigates_same_file_clustering() {
+        let mut results = vec![
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h1".to_string(),
+                score: 10.0,
+                ..make_result(10.0)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h2".to_string(),
+                score: 9.5,
+                ..make_result(9.5)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h3".to_string(),
+                score: 9.0,
+                ..make_result(9.0)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h4".to_string(),
+                score: 8.5,
+                ..make_result(8.5)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h5".to_string(),
+                score: 8.0,
+                ..make_result(8.0)
+            },
+            SearchResult {
+                path: "src/service.rs".to_string(),
+                result_id: "s1".to_string(),
+                score: 7.5,
+                ..make_result(7.5)
+            },
+        ];
+
+        apply_file_diversity(&mut results, 5, 2, 0.5);
+
+        let top_five_paths: Vec<&str> = results
+            .iter()
+            .take(5)
+            .map(|item| item.path.as_str())
+            .collect();
+        assert!(
+            top_five_paths.contains(&"src/service.rs"),
+            "expected a different file to be promoted into top-5"
+        );
+    }
+
+    #[test]
+    fn apply_file_diversity_no_change_when_already_diverse() {
+        let mut results = vec![
+            SearchResult {
+                path: "src/a.rs".to_string(),
+                result_id: "a".to_string(),
+                ..make_result(9.0)
+            },
+            SearchResult {
+                path: "src/b.rs".to_string(),
+                result_id: "b".to_string(),
+                ..make_result(8.0)
+            },
+            SearchResult {
+                path: "src/c.rs".to_string(),
+                result_id: "c".to_string(),
+                ..make_result(7.0)
+            },
+        ];
+        let baseline: Vec<String> = results.iter().map(|item| item.result_id.clone()).collect();
+        apply_file_diversity(&mut results, 5, 2, 0.5);
+        let after: Vec<String> = results.iter().map(|item| item.result_id.clone()).collect();
+        assert_eq!(after, baseline);
+    }
+
+    #[test]
+    fn apply_file_diversity_respects_score_floor() {
+        let mut results = vec![
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h1".to_string(),
+                score: 10.0,
+                ..make_result(10.0)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h2".to_string(),
+                score: 9.8,
+                ..make_result(9.8)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h3".to_string(),
+                score: 9.6,
+                ..make_result(9.6)
+            },
+            SearchResult {
+                path: "src/other.rs".to_string(),
+                result_id: "o1".to_string(),
+                score: 2.0,
+                ..make_result(2.0)
+            },
+        ];
+
+        let baseline: Vec<String> = results.iter().map(|item| item.result_id.clone()).collect();
+        apply_file_diversity(&mut results, 5, 2, 0.5);
+        let after: Vec<String> = results.iter().map(|item| item.result_id.clone()).collect();
+        assert_eq!(after, baseline, "low-score candidate must not be promoted");
+    }
+
+    #[test]
+    fn diversity_false_passthrough_keeps_score_order() {
+        let mut results = vec![
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h1".to_string(),
+                score: 10.0,
+                ..make_result(10.0)
+            },
+            SearchResult {
+                path: "src/handler.rs".to_string(),
+                result_id: "h2".to_string(),
+                score: 9.0,
+                ..make_result(9.0)
+            },
+            SearchResult {
+                path: "src/service.rs".to_string(),
+                result_id: "s1".to_string(),
+                score: 8.0,
+                ..make_result(8.0)
+            },
+        ];
+        let baseline: Vec<String> = results.iter().map(|item| item.result_id.clone()).collect();
+        let diversity_enabled = false;
+        if diversity_enabled {
+            apply_file_diversity(&mut results, 5, 2, 0.5);
+        }
+        let after: Vec<String> = results.iter().map(|item| item.result_id.clone()).collect();
+        assert_eq!(after, baseline);
     }
 
     fn insert_symbol_edge_fixture(
@@ -2574,6 +3076,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -2682,6 +3185,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -2786,6 +3290,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -2816,6 +3321,8 @@ mod tests {
             score: 1.0,
             snippet: None,
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }];
@@ -2923,6 +3430,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -2963,6 +3471,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -3027,6 +3536,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -3080,6 +3590,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -3134,6 +3645,7 @@ mod tests {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -3167,6 +3679,7 @@ mod tests {
                 plan_override: Some("lexical_fast".to_string()),
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();
@@ -3204,6 +3717,7 @@ mod tests {
                 plan_override: Some("semantic_deep".to_string()),
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .unwrap();

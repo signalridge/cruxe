@@ -400,12 +400,17 @@ pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, O
                 "remediation": "Re-run the query and select a valid result from the returned list.",
             })),
         ),
-        StateError::SchemaMigrationRequired { current, required } => (
+        StateError::SchemaMigrationRequired {
+            current,
+            required,
+            details,
+        } => (
             ProtocolErrorCode::IndexIncompatible,
             "Index schema is incompatible. Run `cruxe index --force`.".to_string(),
             Some(json!({
                 "current_schema_version": current,
                 "required_schema_version": required,
+                "details": details,
                 "remediation": "cruxe index --force",
             })),
         ),

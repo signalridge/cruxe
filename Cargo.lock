@@ -1178,6 +1178,7 @@ dependencies = [
  "cruxe-indexer",
  "cruxe-state",
  "cruxe-vcs",
+ "fastembed",
  "globset",
  "regex",
  "reqwest",

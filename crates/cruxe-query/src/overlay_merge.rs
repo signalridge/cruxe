@@ -169,6 +169,8 @@ mod tests {
             score,
             snippet: None,
             chunk_type: (result_type == "snippet").then(|| "symbol_body".to_string()),
+            chunk_origin: (result_type == "snippet").then(|| "symbol_origin".to_string()),
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }

@@ -92,6 +92,7 @@ pub fn run_retrieval(
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         );
 

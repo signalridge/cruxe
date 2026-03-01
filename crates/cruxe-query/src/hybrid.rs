@@ -88,6 +88,8 @@ pub fn semantic_query(
                     score: matched.score as f32,
                     snippet: Some(matched.snippet_text),
                     chunk_type: matched.chunk_type,
+                    chunk_origin: Some("symbol_origin".to_string()),
+                    file_centrality: 0.0,
                     source_layer: None,
                     provenance: "semantic".to_string(),
                 }
@@ -252,6 +254,8 @@ mod tests {
             score,
             snippet: None,
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: provenance.to_string(),
         }

@@ -6,7 +6,7 @@ use cruxe_core::edge_confidence::{
 use cruxe_core::error::StateError;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Raw import extracted from source code before symbol resolution.
@@ -31,6 +31,86 @@ pub struct ResolvedImportEdge {
     pub edge_provider: String,
     pub resolution_outcome: String,
     pub confidence_weight: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveOutcome {
+    ResolvedInternal,
+    ExternalReference,
+    Unresolved,
+}
+
+impl ResolveOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ResolvedInternal => RESOLUTION_RESOLVED_INTERNAL,
+            Self::ExternalReference => RESOLUTION_EXTERNAL_REFERENCE,
+            Self::Unresolved => RESOLUTION_UNRESOLVED,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportResolutionStats {
+    pub attempts: usize,
+    pub resolved: usize,
+    pub unresolved: usize,
+    pub by_provider: HashMap<String, usize>,
+}
+
+impl ImportResolutionStats {
+    pub fn unresolved_rate(&self) -> f64 {
+        if self.attempts == 0 {
+            return 0.0;
+        }
+        self.unresolved as f64 / self.attempts as f64
+    }
+
+    pub fn import_resolution_rate(&self) -> f64 {
+        if self.attempts == 0 {
+            return 0.0;
+        }
+        self.resolved as f64 / self.attempts as f64
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportResolution {
+    pub to_symbol_id: Option<String>,
+    pub outcome: ResolveOutcome,
+    pub provider: &'static str,
+}
+
+pub trait ImportResolverProvider {
+    fn provider_name(&self) -> &'static str;
+
+    fn resolve(
+        &self,
+        conn: &Connection,
+        repo: &str,
+        ref_name: &str,
+        raw: &RawImport,
+    ) -> Result<ImportResolution, StateError>;
+}
+
+#[derive(Debug, Default)]
+pub struct GenericHeuristicResolverProvider;
+
+impl ImportResolverProvider for GenericHeuristicResolverProvider {
+    fn provider_name(&self) -> &'static str {
+        "generic_heuristic"
+    }
+
+    fn resolve(
+        &self,
+        conn: &Connection,
+        repo: &str,
+        ref_name: &str,
+        raw: &RawImport,
+    ) -> Result<ImportResolution, StateError> {
+        resolve_target_symbol_stable_id_generic(conn, repo, ref_name, raw, self.provider_name())
+    }
 }
 
 /// Deterministic pseudo symbol ID for file-scoped import edges.
@@ -61,11 +141,48 @@ pub fn resolve_imports(
     repo: &str,
     ref_name: &str,
 ) -> Result<Vec<ResolvedImportEdge>, StateError> {
+    let (edges, stats) = resolve_imports_with_stats(conn, raw_imports, repo, ref_name)?;
+    tracing::info!(
+        attempts = stats.attempts,
+        resolved = stats.resolved,
+        unresolved = stats.unresolved,
+        unresolved_rate = stats.unresolved_rate(),
+        import_resolution_rate = stats.import_resolution_rate(),
+        by_provider = ?stats.by_provider,
+        "import resolution run stats"
+    );
+    Ok(edges)
+}
+
+pub fn resolve_imports_with_stats(
+    conn: &Connection,
+    raw_imports: Vec<RawImport>,
+    repo: &str,
+    ref_name: &str,
+) -> Result<(Vec<ResolvedImportEdge>, ImportResolutionStats), StateError> {
     let mut edges = Vec::new();
     let mut seen = HashSet::new();
+    let mut stats = ImportResolutionStats::default();
+    let generic = GenericHeuristicResolverProvider;
+    let providers: [&dyn ImportResolverProvider; 1] = [&generic];
 
     for raw in raw_imports {
-        let resolution = resolve_target_symbol_stable_id(conn, repo, ref_name, &raw)?;
+        stats.attempts += 1;
+        let resolution = resolve_with_provider_chain(conn, repo, ref_name, &raw, &providers)?;
+        match resolution.outcome {
+            ResolveOutcome::ResolvedInternal if resolution.to_symbol_id.is_some() => {
+                stats.resolved += 1;
+            }
+            ResolveOutcome::Unresolved => {
+                stats.unresolved += 1;
+            }
+            ResolveOutcome::ExternalReference | ResolveOutcome::ResolvedInternal => {}
+        }
+        *stats
+            .by_provider
+            .entry(resolution.provider.to_string())
+            .or_insert(0) += 1;
+
         let unresolved_name = if resolution.to_symbol_id.is_none() {
             Some(if raw.target_name.trim().is_empty() {
                 raw.target_qualified_name.clone()
@@ -78,7 +195,7 @@ pub fn resolve_imports(
         let confidence = assign_edge_confidence(
             Some(EDGE_PROVIDER_IMPORT_RESOLVER),
             Some("imports"),
-            Some(resolution.outcome),
+            Some(resolution.outcome.as_str()),
             resolution.to_symbol_id.as_deref(),
             unresolved_name.as_deref(),
             None,
@@ -113,19 +230,57 @@ pub fn resolve_imports(
         }
     }
 
-    Ok(edges)
+    Ok((edges, stats))
 }
 
-struct ImportResolution {
-    to_symbol_id: Option<String>,
-    outcome: &'static str,
-}
-
-fn resolve_target_symbol_stable_id(
+fn resolve_with_provider_chain(
     conn: &Connection,
     repo: &str,
     ref_name: &str,
     raw: &RawImport,
+    providers: &[&dyn ImportResolverProvider],
+) -> Result<ImportResolution, StateError> {
+    let mut last_error: Option<StateError> = None;
+    let mut last_unresolved: Option<ImportResolution> = None;
+    for provider in providers {
+        match provider.resolve(conn, repo, ref_name, raw) {
+            Ok(resolution) => {
+                if resolution.to_symbol_id.is_some() {
+                    return Ok(resolution);
+                }
+                last_unresolved = Some(resolution);
+            }
+            Err(err) => {
+                // Fail-soft provider chain: try next provider before bubbling up.
+                tracing::warn!(
+                    provider = provider.provider_name(),
+                    error = %err,
+                    "import resolver provider failed; continuing to next provider"
+                );
+                last_error = Some(err);
+            }
+        }
+    }
+    if let Some(unresolved) = last_unresolved {
+        return Ok(unresolved);
+    }
+
+    if let Some(err) = last_error {
+        return Err(err);
+    }
+    Ok(ImportResolution {
+        to_symbol_id: None,
+        outcome: ResolveOutcome::Unresolved,
+        provider: "none",
+    })
+}
+
+fn resolve_target_symbol_stable_id_generic(
+    conn: &Connection,
+    repo: &str,
+    ref_name: &str,
+    raw: &RawImport,
+    provider: &'static str,
 ) -> Result<ImportResolution, StateError> {
     if !raw.target_qualified_name.is_empty() {
         let mut stmt = conn
@@ -143,7 +298,8 @@ fn resolve_target_symbol_stable_id(
         if exact.is_some() {
             return Ok(ImportResolution {
                 to_symbol_id: exact,
-                outcome: RESOLUTION_RESOLVED_INTERNAL,
+                outcome: ResolveOutcome::ResolvedInternal,
+                provider,
             });
         }
     }
@@ -165,7 +321,8 @@ fn resolve_target_symbol_stable_id(
         if by_name.is_some() {
             return Ok(ImportResolution {
                 to_symbol_id: by_name,
-                outcome: RESOLUTION_RESOLVED_INTERNAL,
+                outcome: ResolveOutcome::ResolvedInternal,
+                provider,
             });
         }
     }
@@ -180,7 +337,8 @@ fn resolve_target_symbol_stable_id(
             if !file_exists_in_manifest(conn, repo, ref_name, &resolved_path)? {
                 return Ok(ImportResolution {
                     to_symbol_id: None,
-                    outcome: RESOLUTION_EXTERNAL_REFERENCE,
+                    outcome: ResolveOutcome::ExternalReference,
+                    provider,
                 });
             }
             let mut stmt = conn
@@ -208,24 +366,27 @@ fn resolve_target_symbol_stable_id(
             if from_resolved_path.is_some() {
                 return Ok(ImportResolution {
                     to_symbol_id: from_resolved_path,
-                    outcome: RESOLUTION_RESOLVED_INTERNAL,
+                    outcome: ResolveOutcome::ResolvedInternal,
+                    provider,
                 });
             }
             return Ok(ImportResolution {
                 to_symbol_id: None,
-                outcome: RESOLUTION_UNRESOLVED,
+                outcome: ResolveOutcome::Unresolved,
+                provider,
             });
         }
     }
 
     let outcome = if looks_external_reference(raw.target_qualified_name.as_str()) {
-        RESOLUTION_EXTERNAL_REFERENCE
+        ResolveOutcome::ExternalReference
     } else {
-        RESOLUTION_UNRESOLVED
+        ResolveOutcome::Unresolved
     };
     Ok(ImportResolution {
         to_symbol_id: None,
         outcome,
+        provider,
     })
 }
 
@@ -416,6 +577,73 @@ mod tests {
         symbols::insert_symbol(conn, &record).unwrap();
     }
 
+    struct AlwaysUnresolvedProvider;
+    impl ImportResolverProvider for AlwaysUnresolvedProvider {
+        fn provider_name(&self) -> &'static str {
+            "always_unresolved"
+        }
+
+        fn resolve(
+            &self,
+            _conn: &Connection,
+            _repo: &str,
+            _ref_name: &str,
+            _raw: &RawImport,
+        ) -> Result<ImportResolution, StateError> {
+            Ok(ImportResolution {
+                to_symbol_id: None,
+                outcome: ResolveOutcome::Unresolved,
+                provider: self.provider_name(),
+            })
+        }
+    }
+
+    struct NameMatchProvider;
+    impl ImportResolverProvider for NameMatchProvider {
+        fn provider_name(&self) -> &'static str {
+            "name_match"
+        }
+
+        fn resolve(
+            &self,
+            _conn: &Connection,
+            _repo: &str,
+            _ref_name: &str,
+            raw: &RawImport,
+        ) -> Result<ImportResolution, StateError> {
+            if raw.target_name == "Claims" {
+                Ok(ImportResolution {
+                    to_symbol_id: Some("stable_claims".to_string()),
+                    outcome: ResolveOutcome::ResolvedInternal,
+                    provider: self.provider_name(),
+                })
+            } else {
+                Ok(ImportResolution {
+                    to_symbol_id: None,
+                    outcome: ResolveOutcome::Unresolved,
+                    provider: self.provider_name(),
+                })
+            }
+        }
+    }
+
+    struct ErrorProvider;
+    impl ImportResolverProvider for ErrorProvider {
+        fn provider_name(&self) -> &'static str {
+            "error_provider"
+        }
+
+        fn resolve(
+            &self,
+            _conn: &Connection,
+            _repo: &str,
+            _ref_name: &str,
+            _raw: &RawImport,
+        ) -> Result<ImportResolution, StateError> {
+            Err(StateError::external("provider_failed"))
+        }
+    }
+
     #[test]
     fn resolve_imports_prefers_exact_qualified_name() {
         let conn = setup_test_db();
@@ -436,6 +664,70 @@ mod tests {
         assert_eq!(edges[0].edge_provider, "import_resolver");
         assert_eq!(edges[0].resolution_outcome, "resolved_internal");
         assert!((edges[0].confidence_weight - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn provider_chain_uses_precedence_and_fail_soft_behavior() {
+        let conn = setup_test_db();
+        let raw = RawImport {
+            source_qualified_name: source_symbol_id_for_path("src/lib.rs"),
+            target_qualified_name: "auth::Claims".to_string(),
+            target_name: "Claims".to_string(),
+            import_line: 1,
+        };
+        let p1 = AlwaysUnresolvedProvider;
+        let p2 = NameMatchProvider;
+        let providers: [&dyn ImportResolverProvider; 2] = [&p1, &p2];
+        let resolved =
+            resolve_with_provider_chain(&conn, "my-repo", "main", &raw, &providers).unwrap();
+        assert_eq!(resolved.provider, "name_match");
+        assert_eq!(resolved.to_symbol_id.as_deref(), Some("stable_claims"));
+
+        let p_err = ErrorProvider;
+        let p_name = NameMatchProvider;
+        let providers: [&dyn ImportResolverProvider; 2] = [&p_err, &p_name];
+        let resolved =
+            resolve_with_provider_chain(&conn, "my-repo", "main", &raw, &providers).unwrap();
+        assert_eq!(resolved.provider, "name_match");
+        assert_eq!(resolved.outcome, ResolveOutcome::ResolvedInternal);
+    }
+
+    #[test]
+    fn resolve_imports_with_stats_emits_resolution_rates() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "Claims", "auth::Claims", "stable_claims");
+        let imports = vec![
+            RawImport {
+                source_qualified_name: source_symbol_id_for_path("src/lib.rs"),
+                target_qualified_name: "auth::Claims".to_string(),
+                target_name: "Claims".to_string(),
+                import_line: 3,
+            },
+            RawImport {
+                source_qualified_name: source_symbol_id_for_path("src/lib.rs"),
+                target_qualified_name: "missing::Thing".to_string(),
+                target_name: "Thing".to_string(),
+                import_line: 4,
+            },
+        ];
+        let (_edges, stats) =
+            resolve_imports_with_stats(&conn, imports, "my-repo", "main").unwrap();
+        assert_eq!(stats.attempts, 2);
+        assert_eq!(stats.resolved, 1);
+        assert_eq!(
+            stats.unresolved, 0,
+            "external references should not inflate unresolved import metrics"
+        );
+        assert!((stats.import_resolution_rate() - 0.5).abs() < f64::EPSILON);
+        assert!((stats.unresolved_rate() - 0.0).abs() < f64::EPSILON);
+        assert_eq!(
+            stats
+                .by_provider
+                .get("generic_heuristic")
+                .copied()
+                .unwrap_or(0),
+            2
+        );
     }
 
     #[test]

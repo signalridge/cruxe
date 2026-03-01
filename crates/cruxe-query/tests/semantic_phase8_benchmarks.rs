@@ -326,6 +326,10 @@ fn seed_corpus(
             path: path.clone(),
             language: language.clone(),
             chunk_type: "function_body".to_string(),
+            origin: "symbol_origin".to_string(),
+            parent_symbol_stable_id: Some(symbol_stable_id.clone()),
+            chunk_index: 0,
+            truncated: false,
             imports: None,
             line_start: 1,
             line_end: 3,
@@ -470,6 +474,7 @@ fn run_natural_language_eval(
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .map_err(|err| format!("search failed for {}: {err}", case.id))?;
@@ -542,6 +547,7 @@ fn run_symbol_precision_eval(
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: true,
             },
         )
         .map_err(|err| format!("symbol search failed for {}: {err}", case.query))?;

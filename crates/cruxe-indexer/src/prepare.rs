@@ -1,4 +1,5 @@
 use crate::{call_extract, import_extract, languages, parser, snippet_extract, symbol_extract};
+use cruxe_core::config::SemanticChunkingConfig;
 use cruxe_core::time::now_iso8601;
 use cruxe_core::types::{CallEdge, FileRecord, SnippetRecord, SymbolRecord};
 
@@ -20,6 +21,7 @@ pub struct ArtifactBuildInput<'a> {
     pub ref_name: &'a str,
     pub source_layer: Option<&'a str>,
     pub include_imports: bool,
+    pub chunking: Option<&'a SemanticChunkingConfig>,
 }
 
 /// Build parser-derived artifacts for one file.
@@ -43,6 +45,7 @@ pub fn build_source_artifacts(
         ref_name,
         source_layer,
         include_imports,
+        chunking: None,
     };
     build_source_artifacts_with_parser(input, |source, lang| {
         parser::parse_file(source, lang).map_err(|err| err.to_string())
@@ -65,6 +68,7 @@ where
         ref_name,
         source_layer,
         include_imports,
+        chunking,
     } = input;
 
     let (parsed_tree, extracted, raw_imports, parse_error) =
@@ -97,12 +101,15 @@ where
         source_path,
         source_layer,
     );
-    let snippets = snippet_extract::build_snippet_records(
+    let snippets = snippet_extract::build_snippet_records_with_options(
         &extracted,
         project_id,
         ref_name,
         source_path,
         source_layer,
+        Some(language),
+        Some(content),
+        chunking,
     );
     let call_edges = parsed_tree.as_ref().map_or_else(Vec::new, |tree| {
         call_extract::extract_call_edges_for_file(

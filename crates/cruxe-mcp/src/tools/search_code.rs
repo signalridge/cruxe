@@ -74,6 +74,10 @@ pub fn definition() -> ToolDefinition {
                     "type": "string",
                     "description": "Optional retrieval policy override when allowed by runtime policy config.",
                     "enum": ["strict", "balanced", "off", "audit_only"]
+                },
+                "diversity": {
+                    "type": "boolean",
+                    "description": "Enable file-spread diversity reranking (default: true). Set false for pure score ordering."
                 }
             },
             "required": ["query"]

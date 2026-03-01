@@ -24,9 +24,21 @@ pub fn run(
     let db_path = data_dir.join(constants::STATE_DB_FILE);
 
     let index_set = IndexSet::open_existing(&data_dir).map_err(|e| match e {
-        cruxe_core::error::StateError::SchemaMigrationRequired { .. }
-        | cruxe_core::error::StateError::CorruptManifest(_) => {
-            anyhow::anyhow!("Index schema is incompatible. Run `cruxe index --force`.")
+        cruxe_core::error::StateError::SchemaMigrationRequired { details, .. } => {
+            if let Some(details) = details {
+                anyhow::anyhow!(
+                    "Index schema is incompatible: {}. Run `cruxe index --force`.",
+                    details
+                )
+            } else {
+                anyhow::anyhow!("Index schema is incompatible. Run `cruxe index --force`.")
+            }
+        }
+        cruxe_core::error::StateError::CorruptManifest(details) => {
+            anyhow::anyhow!(
+                "Index metadata is incompatible: {}. Run `cruxe index --force`.",
+                details
+            )
         }
         _ => anyhow::anyhow!("Failed to open indices: {}. Run `cruxe index` first.", e),
     })?;

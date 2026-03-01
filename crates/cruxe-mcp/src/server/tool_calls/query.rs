@@ -402,6 +402,10 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
     let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
     let language = arguments.get("language").and_then(|v| v.as_str());
     let role = arguments.get("role").and_then(|v| v.as_str());
+    let diversity_enabled = arguments
+        .get("diversity")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let limit = arguments
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -561,6 +565,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
         plan_override,
         policy_mode_override,
         policy_runtime: None,
+        diversity_enabled,
     };
     match execute_search_with_optional_overlay(
         QueryExecutionContext {
@@ -639,6 +644,11 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
             metadata.lexical_fanout_used = Some(response.metadata.lexical_fanout_used);
             metadata.semantic_fanout_used = Some(response.metadata.semantic_fanout_used);
             metadata.semantic_budget_exhausted = Some(response.metadata.semantic_budget_exhausted);
+            metadata.semantic_enrichment_state =
+                Some(response.metadata.semantic_enrichment_state.clone());
+            metadata.semantic_backlog_size = Some(response.metadata.semantic_backlog_size);
+            metadata.semantic_lag_hint = Some(response.metadata.semantic_lag_hint.clone());
+            metadata.degraded_reason = response.metadata.degraded_reason.clone();
             metadata.external_provider_blocked = Some(response.metadata.external_provider_blocked);
             metadata.embedding_model_version =
                 Some(response.metadata.embedding_model_version.clone());

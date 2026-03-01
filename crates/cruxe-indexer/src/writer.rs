@@ -5,6 +5,7 @@ use cruxe_core::types::{CallEdge, FileRecord, SnippetRecord, SymbolRecord};
 use cruxe_state::tantivy_index::{self, IndexSet};
 use cruxe_state::{edges, manifest, symbols};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tantivy::{IndexWriter, Term, doc};
 use tracing::{debug, info};
@@ -94,6 +95,15 @@ impl BatchWriter {
         }
     }
 
+    /// Delete stale symbol documents for a file before rewriting symbol-only fields.
+    pub fn delete_symbol_docs(&self, index_set: &IndexSet, repo: &str, r#ref: &str, path: &str) {
+        let key = tantivy_index::file_key(repo, r#ref, path);
+        if let Ok(f) = index_set.symbols.schema().get_field("file_key") {
+            self.symbol_writer
+                .delete_term(Term::from_field_text(f, &key));
+        }
+    }
+
     /// Delete ALL documents from all indices (used for `--force` full re-index).
     pub fn delete_all(&self) -> Result<(), StateError> {
         self.symbol_writer
@@ -132,6 +142,16 @@ impl BatchWriter {
         index: &tantivy::Index,
         symbols: &[SymbolRecord],
     ) -> Result<(), StateError> {
+        self.add_symbols_with_file_centrality(index, symbols, &HashMap::new())
+    }
+
+    /// Add symbol documents to the batch with optional per-file centrality mapping.
+    pub fn add_symbols_with_file_centrality(
+        &self,
+        index: &tantivy::Index,
+        symbols: &[SymbolRecord],
+        file_centrality_by_path: &HashMap<String, f64>,
+    ) -> Result<(), StateError> {
         let schema = index.schema();
         let f = |name: &str| schema.get_field(name).map_err(StateError::tantivy);
         let fk = f("file_key")?;
@@ -151,9 +171,15 @@ impl BatchWriter {
         let f_content = f("content")?;
         let f_line_start = f("line_start")?;
         let f_line_end = f("line_end")?;
+        let f_file_centrality = f("file_centrality")?;
 
         for sym in symbols {
             let key = tantivy_index::file_key(&sym.repo, &sym.r#ref, &sym.path);
+            let file_centrality = file_centrality_by_path
+                .get(&sym.path)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
             let doc = doc!(
                 fk => key.as_str(),
                 f_repo => sym.repo.as_str(),
@@ -171,7 +197,8 @@ impl BatchWriter {
                 f_signature => sym.signature.as_deref().unwrap_or(""),
                 f_content => sym.content.as_deref().unwrap_or(""),
                 f_line_start => sym.line_start as u64,
-                f_line_end => sym.line_end as u64
+                f_line_end => sym.line_end as u64,
+                f_file_centrality => file_centrality
             );
             self.symbol_writer
                 .add_document(doc)
@@ -195,13 +222,26 @@ impl BatchWriter {
         let f_path = f("path")?;
         let f_language = f("language")?;
         let f_chunk_type = f("chunk_type")?;
+        let f_origin = f("origin")?;
+        let f_parent_symbol_stable_id = f("parent_symbol_stable_id")?;
         let f_imports = f("imports")?;
         let f_content = f("content")?;
         let f_line_start = f("line_start")?;
         let f_line_end = f("line_end")?;
+        let f_chunk_index = f("chunk_index")?;
+        let f_truncated = f("truncated")?;
 
         for snip in snippets {
             let key = tantivy_index::file_key(&snip.repo, &snip.r#ref, &snip.path);
+            let origin = if snip.origin.trim().is_empty() {
+                if snip.chunk_type == "file_fallback" {
+                    "file_fallback"
+                } else {
+                    "symbol_origin"
+                }
+            } else {
+                snip.origin.as_str()
+            };
             let doc = doc!(
                 fk => key.as_str(),
                 f_repo => snip.repo.as_str(),
@@ -210,10 +250,14 @@ impl BatchWriter {
                 f_path => snip.path.as_str(),
                 f_language => snip.language.as_str(),
                 f_chunk_type => snip.chunk_type.as_str(),
+                f_origin => origin,
+                f_parent_symbol_stable_id => snip.parent_symbol_stable_id.as_deref().unwrap_or(""),
                 f_imports => snip.imports.as_deref().unwrap_or(""),
                 f_content => snip.content.as_str(),
                 f_line_start => snip.line_start as u64,
-                f_line_end => snip.line_end as u64
+                f_line_end => snip.line_end as u64,
+                f_chunk_index => snip.chunk_index as u64,
+                f_truncated => u64::from(snip.truncated)
             );
             self.snippet_writer
                 .add_document(doc)
@@ -480,6 +524,7 @@ fn write_symbols_to_tantivy(
     let f_content = f("content")?;
     let f_line_start = f("line_start")?;
     let f_line_end = f("line_end")?;
+    let f_file_centrality = schema.get_field("file_centrality").ok();
     let f_file_key = schema.get_field("file_key").ok();
 
     let mut writer = index.writer(50_000_000).map_err(StateError::tantivy)?;
@@ -503,6 +548,9 @@ fn write_symbols_to_tantivy(
             f_line_start => sym.line_start as u64,
             f_line_end => sym.line_end as u64
         );
+        if let Some(field) = f_file_centrality {
+            doc.add_f64(field, 0.0);
+        }
         if let Some(fk) = f_file_key {
             let key = tantivy_index::file_key(&sym.repo, &sym.r#ref, &sym.path);
             doc.add_text(fk, &key);
@@ -526,15 +574,27 @@ fn write_snippets_to_tantivy(
     let f_path = f("path")?;
     let f_language = f("language")?;
     let f_chunk_type = f("chunk_type")?;
+    let f_origin = f("origin")?;
+    let f_parent_symbol_stable_id = f("parent_symbol_stable_id")?;
     let f_imports = f("imports")?;
     let f_content = f("content")?;
     let f_line_start = f("line_start")?;
     let f_line_end = f("line_end")?;
+    let f_chunk_index = f("chunk_index")?;
+    let f_truncated = f("truncated")?;
     let f_file_key = schema.get_field("file_key").ok();
 
     let mut writer = index.writer(50_000_000).map_err(StateError::tantivy)?;
-
     for snip in snippets {
+        let origin = if snip.origin.trim().is_empty() {
+            if snip.chunk_type == "file_fallback" {
+                "file_fallback"
+            } else {
+                "symbol_origin"
+            }
+        } else {
+            snip.origin.as_str()
+        };
         let mut doc = doc!(
             f_repo => snip.repo.as_str(),
             f_ref => snip.r#ref.as_str(),
@@ -542,11 +602,15 @@ fn write_snippets_to_tantivy(
             f_path => snip.path.as_str(),
             f_language => snip.language.as_str(),
             f_chunk_type => snip.chunk_type.as_str(),
+            f_origin => origin,
+            f_parent_symbol_stable_id => snip.parent_symbol_stable_id.as_deref().unwrap_or(""),
             f_imports => snip.imports.as_deref().unwrap_or(""),
             f_content => snip.content.as_str(),
             f_line_start => snip.line_start as u64,
             f_line_end => snip.line_end as u64
         );
+        doc.add_u64(f_chunk_index, snip.chunk_index as u64);
+        doc.add_u64(f_truncated, u64::from(snip.truncated));
         if let Some(fk) = f_file_key {
             let key = tantivy_index::file_key(&snip.repo, &snip.r#ref, &snip.path);
             doc.add_text(fk, &key);

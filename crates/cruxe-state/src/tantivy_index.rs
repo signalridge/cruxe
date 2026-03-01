@@ -1,4 +1,3 @@
-use cruxe_core::constants;
 use cruxe_core::error::StateError;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -15,6 +14,8 @@ use crate::tokenizers;
 pub const SYMBOLS_INDEX: &str = "symbols";
 pub const SNIPPETS_INDEX: &str = "snippets";
 pub const FILES_INDEX: &str = "files";
+/// Tantivy index schema version for lexical index compatibility checks.
+pub const TANTIVY_SCHEMA_VERSION: u32 = 2;
 
 const REQUIRED_SYMBOL_FIELDS: &[&str] = &[
     "file_key",
@@ -30,6 +31,7 @@ const REQUIRED_SYMBOL_FIELDS: &[&str] = &[
     "qualified_name",
     "line_start",
     "line_end",
+    "file_centrality",
 ];
 
 const REQUIRED_SNIPPET_FIELDS: &[&str] = &[
@@ -39,6 +41,10 @@ const REQUIRED_SNIPPET_FIELDS: &[&str] = &[
     "path",
     "language",
     "chunk_type",
+    "origin",
+    "parent_symbol_stable_id",
+    "chunk_index",
+    "truncated",
     "content",
     "line_start",
     "line_end",
@@ -60,7 +66,7 @@ pub fn open_symbols_index(base_dir: &Path) -> Result<Index, StateError> {
     std::fs::create_dir_all(&dir).map_err(StateError::Io)?;
 
     let schema = build_symbols_schema();
-    let index = open_or_create_index(&dir, schema, REQUIRED_SYMBOL_FIELDS)?;
+    let index = open_or_create_index(&dir, schema, REQUIRED_SYMBOL_FIELDS, SYMBOLS_INDEX)?;
     tokenizers::register_tokenizers(index.tokenizers());
     info!(?dir, "Symbols index opened");
     Ok(index)
@@ -72,7 +78,7 @@ pub fn open_snippets_index(base_dir: &Path) -> Result<Index, StateError> {
     std::fs::create_dir_all(&dir).map_err(StateError::Io)?;
 
     let schema = build_snippets_schema();
-    let index = open_or_create_index(&dir, schema, REQUIRED_SNIPPET_FIELDS)?;
+    let index = open_or_create_index(&dir, schema, REQUIRED_SNIPPET_FIELDS, SNIPPETS_INDEX)?;
     tokenizers::register_tokenizers(index.tokenizers());
     info!(?dir, "Snippets index opened");
     Ok(index)
@@ -84,7 +90,7 @@ pub fn open_files_index(base_dir: &Path) -> Result<Index, StateError> {
     std::fs::create_dir_all(&dir).map_err(StateError::Io)?;
 
     let schema = build_files_schema();
-    let index = open_or_create_index(&dir, schema, REQUIRED_FILE_FIELDS)?;
+    let index = open_or_create_index(&dir, schema, REQUIRED_FILE_FIELDS, FILES_INDEX)?;
     tokenizers::register_tokenizers(index.tokenizers());
     info!(?dir, "Files index opened");
     Ok(index)
@@ -94,6 +100,7 @@ fn open_or_create_index(
     dir: &Path,
     schema: Schema,
     required_fields: &[&str],
+    index_name: &str,
 ) -> Result<Index, StateError> {
     let index = if dir_is_empty(dir)? {
         Index::create_in_dir(dir, schema).map_err(StateError::tantivy)?
@@ -103,7 +110,7 @@ fn open_or_create_index(
         })?
     };
 
-    validate_required_fields(&index, required_fields)?;
+    validate_required_fields(&index, required_fields, index_name)?;
     Ok(index)
 }
 
@@ -127,12 +134,16 @@ fn open_existing_index(
             e
         ))
     })?;
-    validate_required_fields(&index, required_fields)?;
+    validate_required_fields(&index, required_fields, index_name)?;
     tokenizers::register_tokenizers(index.tokenizers());
     Ok(index)
 }
 
-fn validate_required_fields(index: &Index, required_fields: &[&str]) -> Result<(), StateError> {
+fn validate_required_fields(
+    index: &Index,
+    required_fields: &[&str],
+    index_name: &str,
+) -> Result<(), StateError> {
     let schema = index.schema();
     let missing: Vec<&str> = required_fields
         .iter()
@@ -140,16 +151,98 @@ fn validate_required_fields(index: &Index, required_fields: &[&str]) -> Result<(
         .filter(|name| schema.get_field(name).is_err())
         .collect();
     if !missing.is_empty() {
+        let inferred_current = infer_tantivy_schema_version(&schema, index_name);
+        let missing_list = missing.join(", ");
+        let details = format!(
+            "{index_name} index missing required fields [{missing_list}]; run `cruxe index --force` to rebuild Tantivy indices"
+        );
         tracing::warn!(
+            index = index_name,
             missing_fields = ?missing,
+            tantivy_schema_version = TANTIVY_SCHEMA_VERSION,
+            inferred_current_version = inferred_current,
             "index schema is incompatible with current required fields; reindex required"
         );
         return Err(StateError::SchemaMigrationRequired {
-            current: 0,
-            required: constants::SCHEMA_VERSION,
+            current: inferred_current,
+            required: TANTIVY_SCHEMA_VERSION,
+            details: Some(details),
         });
     }
     Ok(())
+}
+
+fn has_fields(schema: &Schema, names: &[&str]) -> bool {
+    names.iter().all(|name| schema.get_field(name).is_ok())
+}
+
+fn infer_tantivy_schema_version(schema: &Schema, index_name: &str) -> u32 {
+    match index_name {
+        SYMBOLS_INDEX => {
+            let baseline_v1 = [
+                "file_key",
+                "repo",
+                "ref",
+                "symbol_exact",
+                "symbol_id",
+                "path",
+            ];
+            if !has_fields(schema, &baseline_v1) {
+                return 0;
+            }
+            if has_fields(schema, &["file_centrality"]) {
+                TANTIVY_SCHEMA_VERSION
+            } else {
+                1
+            }
+        }
+        SNIPPETS_INDEX => {
+            let baseline_v1 = [
+                "file_key",
+                "repo",
+                "ref",
+                "path",
+                "language",
+                "chunk_type",
+                "content",
+                "line_start",
+                "line_end",
+            ];
+            if !has_fields(schema, &baseline_v1) {
+                return 0;
+            }
+            if has_fields(
+                schema,
+                &[
+                    "origin",
+                    "parent_symbol_stable_id",
+                    "chunk_index",
+                    "truncated",
+                ],
+            ) {
+                TANTIVY_SCHEMA_VERSION
+            } else {
+                1
+            }
+        }
+        FILES_INDEX => {
+            let baseline = [
+                "file_key",
+                "repo",
+                "ref",
+                "path",
+                "filename",
+                "language",
+                "updated_at",
+            ];
+            if has_fields(schema, &baseline) {
+                TANTIVY_SCHEMA_VERSION
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
 }
 
 fn dir_is_empty(path: &Path) -> Result<bool, StateError> {
@@ -216,6 +309,7 @@ fn build_symbols_schema() -> Schema {
     // Numeric stored fields
     builder.add_u64_field("line_start", STORED);
     builder.add_u64_field("line_end", STORED);
+    builder.add_f64_field("file_centrality", FAST | STORED);
 
     builder.build()
 }
@@ -231,6 +325,8 @@ fn build_snippets_schema() -> Schema {
     builder.add_text_field("ref", STRING | STORED);
     builder.add_text_field("commit", STORED);
     builder.add_text_field("chunk_type", STRING | STORED);
+    builder.add_text_field("origin", STRING | STORED);
+    builder.add_text_field("parent_symbol_stable_id", STRING | STORED);
     builder.add_text_field("language", STRING | STORED);
 
     let code_path_options = TextOptions::default()
@@ -256,6 +352,8 @@ fn build_snippets_schema() -> Schema {
 
     builder.add_u64_field("line_start", STORED);
     builder.add_u64_field("line_end", STORED);
+    builder.add_u64_field("chunk_index", STORED);
+    builder.add_u64_field("truncated", STORED);
 
     builder.build()
 }
@@ -472,5 +570,35 @@ mod tests {
         assert!(overlay.join("symbols").exists());
         assert!(overlay.join("snippets").exists());
         assert!(overlay.join("files").exists());
+    }
+
+    #[test]
+    fn infer_tantivy_schema_version_distinguishes_legacy_and_current_layouts() {
+        let current_symbols = build_symbols_schema();
+        assert_eq!(
+            infer_tantivy_schema_version(&current_symbols, SYMBOLS_INDEX),
+            TANTIVY_SCHEMA_VERSION
+        );
+
+        let mut legacy_symbols_builder = Schema::builder();
+        legacy_symbols_builder.add_text_field("file_key", STRING);
+        legacy_symbols_builder.add_text_field("repo", STRING);
+        legacy_symbols_builder.add_text_field("ref", STRING);
+        legacy_symbols_builder.add_text_field("symbol_exact", STRING);
+        legacy_symbols_builder.add_text_field("symbol_id", STRING);
+        legacy_symbols_builder.add_text_field("path", STRING);
+        let legacy_symbols = legacy_symbols_builder.build();
+        assert_eq!(
+            infer_tantivy_schema_version(&legacy_symbols, SYMBOLS_INDEX),
+            1
+        );
+
+        let mut corrupt_symbols_builder = Schema::builder();
+        corrupt_symbols_builder.add_text_field("repo", STRING);
+        let corrupt_symbols = corrupt_symbols_builder.build();
+        assert_eq!(
+            infer_tantivy_schema_version(&corrupt_symbols, SYMBOLS_INDEX),
+            0
+        );
     }
 }

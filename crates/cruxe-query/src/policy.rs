@@ -771,6 +771,8 @@ mod tests {
             score: 1.0,
             snippet: Some(snippet.to_string()),
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }

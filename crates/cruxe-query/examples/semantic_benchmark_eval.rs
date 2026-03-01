@@ -5,6 +5,7 @@ use cruxe_query::search::{SearchExecutionOptions, SearchResult, search_code_with
 use cruxe_state::{db, project, schema, tantivy_index::IndexSet};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -16,6 +17,7 @@ struct CliArgs {
     query_pack: PathBuf,
     ref_name: String,
     limit: usize,
+    diversity_enabled: bool,
     output: Option<PathBuf>,
 }
 
@@ -41,15 +43,22 @@ struct QueryResultMetric {
     intent: String,
     latency_ms: f64,
     reciprocal_rank: f64,
+    ndcg_at_10: f64,
     hit_rank: Option<usize>,
     zero_results: bool,
+    unique_files_at_k: usize,
+    max_file_share_at_k: f64,
     semantic_degraded: bool,
     semantic_budget_exhausted: bool,
+    rerank_provider: String,
+    rerank_fallback: bool,
+    rerank_fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct EvaluationReport {
     mode: String,
+    diversity_enabled: bool,
     query_pack_version: String,
     total_queries: usize,
     natural_language_queries: usize,
@@ -57,11 +66,17 @@ struct EvaluationReport {
     latency_p95_ms: f64,
     latency_mean_ms: f64,
     mrr: f64,
+    ndcg_at_10: f64,
     symbol_precision_at_1: f64,
     zero_result_rate: f64,
+    unique_files_at_k_mean: f64,
+    max_file_share_at_k_mean: f64,
     degraded_query_rate: f64,
     semantic_budget_exhaustion_rate: f64,
     external_provider_blocked_count: usize,
+    rerank_fallback_rate: f64,
+    rerank_provider_counts: BTreeMap<String, usize>,
+    rerank_fallback_reason_counts: BTreeMap<String, usize>,
     tier1_acceptance_profile: String,
     per_query: Vec<QueryResultMetric>,
 }
@@ -108,13 +123,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut latencies = Vec::with_capacity(query_pack.queries.len());
     let mut metrics = Vec::with_capacity(query_pack.queries.len());
     let mut mrr_sum = 0.0_f64;
+    let mut ndcg_sum = 0.0_f64;
     let mut mrr_count: usize = 0;
     let mut symbol_hits: usize = 0;
     let mut symbol_count: usize = 0;
     let mut zero_results: usize = 0;
+    let mut unique_files_sum = 0.0_f64;
+    let mut max_file_share_sum = 0.0_f64;
     let mut degraded_queries: usize = 0;
     let mut budget_exhausted_queries: usize = 0;
     let mut external_provider_blocked_count: usize = 0;
+    let mut rerank_fallback_queries: usize = 0;
+    let mut rerank_provider_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut rerank_fallback_reason_counts: BTreeMap<String, usize> = BTreeMap::new();
 
     for query_case in &query_pack.queries {
         let start = Instant::now();
@@ -134,6 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 plan_override: None,
                 policy_mode_override: None,
                 policy_runtime: None,
+                diversity_enabled: args.diversity_enabled,
             },
         )?;
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -148,8 +170,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         if response.metadata.semantic_budget_exhausted {
             budget_exhausted_queries += 1;
         }
+        if response.metadata.rerank_fallback {
+            rerank_fallback_queries += 1;
+        }
+        *rerank_provider_counts
+            .entry(response.metadata.rerank_provider.clone())
+            .or_insert(0) += 1;
+        if let Some(reason) = response.metadata.rerank_fallback_reason.as_ref() {
+            *rerank_fallback_reason_counts
+                .entry(reason.clone())
+                .or_insert(0) += 1;
+        }
 
         let (rr, rank) = reciprocal_rank(&response.results, &query_case.expected_hint);
+        let ndcg = ndcg_at_10(rank);
+        ndcg_sum += ndcg;
         let is_symbol = query_case.intent.eq_ignore_ascii_case("symbol");
         if is_symbol {
             symbol_count += 1;
@@ -160,6 +195,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             mrr_count += 1;
             mrr_sum += rr;
         }
+        let (unique_files_at_k, max_file_share_at_k) =
+            diversity_snapshot(&response.results, args.limit);
+        unique_files_sum += unique_files_at_k as f64;
+        max_file_share_sum += max_file_share_at_k;
 
         let zero = response.results.is_empty();
         if zero {
@@ -171,10 +210,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             intent: query_case.intent.clone(),
             latency_ms,
             reciprocal_rank: rr,
+            ndcg_at_10: ndcg,
             hit_rank: rank,
             zero_results: zero,
+            unique_files_at_k,
+            max_file_share_at_k,
             semantic_degraded: response.metadata.semantic_degraded,
             semantic_budget_exhausted: response.metadata.semantic_budget_exhausted,
+            rerank_provider: response.metadata.rerank_provider.clone(),
+            rerank_fallback: response.metadata.rerank_fallback,
+            rerank_fallback_reason: response.metadata.rerank_fallback_reason.clone(),
         });
     }
 
@@ -190,6 +235,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         mrr_sum / mrr_count as f64
     };
+    let ndcg_at_10 = if metrics.is_empty() {
+        0.0
+    } else {
+        ndcg_sum / metrics.len() as f64
+    };
     let symbol_precision_at_1 = if symbol_count == 0 {
         1.0
     } else {
@@ -199,6 +249,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         0.0
     } else {
         zero_results as f64 / metrics.len() as f64
+    };
+    let unique_files_at_k_mean = if metrics.is_empty() {
+        0.0
+    } else {
+        unique_files_sum / metrics.len() as f64
+    };
+    let max_file_share_at_k_mean = if metrics.is_empty() {
+        0.0
+    } else {
+        max_file_share_sum / metrics.len() as f64
     };
     let degraded_query_rate = if metrics.is_empty() {
         0.0
@@ -210,9 +270,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         budget_exhausted_queries as f64 / metrics.len() as f64
     };
+    let rerank_fallback_rate = if metrics.is_empty() {
+        0.0
+    } else {
+        rerank_fallback_queries as f64 / metrics.len() as f64
+    };
 
     let report = EvaluationReport {
         mode: config.search.semantic.mode.clone(),
+        diversity_enabled: args.diversity_enabled,
         query_pack_version: query_pack.version,
         total_queries: metrics.len(),
         natural_language_queries: mrr_count,
@@ -220,11 +286,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         latency_p95_ms,
         latency_mean_ms,
         mrr,
+        ndcg_at_10,
         symbol_precision_at_1,
         zero_result_rate,
+        unique_files_at_k_mean,
+        max_file_share_at_k_mean,
         degraded_query_rate,
         semantic_budget_exhaustion_rate,
         external_provider_blocked_count,
+        rerank_fallback_rate,
+        rerank_provider_counts,
+        rerank_fallback_reason_counts,
         tier1_acceptance_profile:
             "Tier-1 acceptance target: p95 latency <= 500ms, report zero_result_rate + MRR evidence."
                 .to_string(),
@@ -249,6 +321,32 @@ fn reciprocal_rank(results: &[SearchResult], expected_hint: &str) -> (f64, Optio
         }
     }
     (0.0, None)
+}
+
+fn ndcg_at_10(rank: Option<usize>) -> f64 {
+    let Some(rank) = rank else {
+        return 0.0;
+    };
+    if rank > 10 {
+        return 0.0;
+    }
+    1.0 / ((rank as f64 + 1.0).log2())
+}
+
+fn diversity_snapshot(results: &[SearchResult], k: usize) -> (usize, f64) {
+    let top_k = k.max(1);
+    let mut by_file: HashMap<&str, usize> = HashMap::new();
+    let mut total = 0usize;
+    for result in results.iter().take(top_k) {
+        total += 1;
+        *by_file.entry(result.path.as_str()).or_insert(0) += 1;
+    }
+    if total == 0 {
+        return (0, 0.0);
+    }
+    let unique_files = by_file.len();
+    let max_count = by_file.values().copied().max().unwrap_or(0);
+    (unique_files, max_count as f64 / total as f64)
 }
 
 fn result_matches_hint(result: &SearchResult, expected: &str) -> bool {
@@ -284,6 +382,7 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
     let mut query_pack: Option<PathBuf> = None;
     let mut ref_name = "main".to_string();
     let mut limit: usize = 20;
+    let mut diversity_enabled = true;
     let mut output: Option<PathBuf> = None;
 
     let mut idx = 0usize;
@@ -312,6 +411,11 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
                 limit = parsed.parse::<usize>()?;
                 idx += 2;
             }
+            "--diversity" => {
+                let parsed = require_value(flag, value)?;
+                diversity_enabled = parse_bool_arg(&parsed)?;
+                idx += 2;
+            }
             "--output" => {
                 output = Some(PathBuf::from(require_value(flag, value)?));
                 idx += 2;
@@ -336,8 +440,18 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
         query_pack,
         ref_name,
         limit,
+        diversity_enabled,
         output,
     })
+}
+
+fn parse_bool_arg(raw: &str) -> Result<bool, Box<dyn Error>> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("invalid boolean value: {raw}").into()),
+    }
 }
 
 fn require_value(flag: &str, value: Option<String>) -> Result<String, Box<dyn Error>> {
@@ -351,6 +465,6 @@ fn print_usage() {
     eprintln!(
         "Usage:
   cargo run -p cruxe-query --example semantic_benchmark_eval -- \\
-    --workspace <path> --config <path> --query-pack <path> [--ref <ref>] [--limit <n>] [--output <path>]"
+    --workspace <path> --config <path> --query-pack <path> [--ref <ref>] [--limit <n>] [--diversity <true|false>] [--output <path>]"
     );
 }

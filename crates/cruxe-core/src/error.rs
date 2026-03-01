@@ -155,7 +155,11 @@ pub enum StateError {
     ProjectAlreadyExists { repo_root: String },
 
     #[error("schema migration required: current={current}, required={required}")]
-    SchemaMigrationRequired { current: u32, required: u32 },
+    SchemaMigrationRequired {
+        current: u32,
+        required: u32,
+        details: Option<String>,
+    },
 
     #[error("corrupt manifest: {0}")]
     CorruptManifest(String),

@@ -153,6 +153,8 @@ pub struct RankingSignalBudgetConfig {
     pub kind_match: RankingSignalBudgetRange,
     #[serde(default = "default_budget_test_file_penalty")]
     pub test_file_penalty: RankingSignalBudgetRange,
+    #[serde(default = "default_budget_file_centrality_boost")]
+    pub file_centrality_boost: RankingSignalBudgetRange,
     #[serde(default = "default_budget_secondary_cap_when_exact")]
     pub secondary_cap_when_exact: RankingSignalBudgetRange,
 }
@@ -193,6 +195,8 @@ pub struct SemanticConfig {
     pub embedding: SemanticEmbeddingConfig,
     #[serde(default)]
     pub rerank: SemanticRerankConfig,
+    #[serde(default)]
+    pub chunking: SemanticChunkingConfig,
     #[serde(default)]
     pub overrides: SemanticOverridesConfig,
 }
@@ -324,8 +328,28 @@ pub struct SemanticRerankConfig {
     pub provider: String,
     #[serde(default = "default_semantic_rerank_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default = "default_semantic_rerank_cross_encoder_model")]
+    pub cross_encoder_model: String,
+    #[serde(default = "default_semantic_rerank_cross_encoder_max_length")]
+    pub cross_encoder_max_length: usize,
+    #[serde(default = "default_semantic_rerank_candidate_cap")]
+    pub candidate_cap: usize,
+    #[serde(default = "default_semantic_rerank_timeout_budget_ms")]
+    pub timeout_budget_ms: u64,
     #[serde(default)]
     pub endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticChunkingConfig {
+    #[serde(default = "default_semantic_chunking_max_chunk_lines")]
+    pub max_chunk_lines: usize,
+    #[serde(default = "default_semantic_chunking_chunk_size_lines")]
+    pub chunk_size_lines: usize,
+    #[serde(default = "default_semantic_chunking_chunk_overlap_lines")]
+    pub chunk_overlap_lines: usize,
+    #[serde(default = "default_semantic_chunking_max_chunk_tokens")]
+    pub max_chunk_tokens: usize,
 }
 
 fn default_max_file_size() -> u64 {
@@ -416,6 +440,13 @@ fn default_budget_test_file_penalty() -> RankingSignalBudgetRange {
         min: -2.0,
         max: 0.0,
         default: -0.5,
+    }
+}
+fn default_budget_file_centrality_boost() -> RankingSignalBudgetRange {
+    RankingSignalBudgetRange {
+        min: 0.0,
+        max: 0.5,
+        default: 0.25,
     }
 }
 fn default_budget_secondary_cap_when_exact() -> RankingSignalBudgetRange {
@@ -590,6 +621,30 @@ fn default_semantic_rerank_provider() -> String {
 fn default_semantic_rerank_timeout_ms() -> u64 {
     5000
 }
+fn default_semantic_rerank_cross_encoder_model() -> String {
+    "rozgo/bge-reranker-v2-m3".into()
+}
+fn default_semantic_rerank_cross_encoder_max_length() -> usize {
+    512
+}
+fn default_semantic_rerank_candidate_cap() -> usize {
+    50
+}
+fn default_semantic_rerank_timeout_budget_ms() -> u64 {
+    700
+}
+fn default_semantic_chunking_max_chunk_lines() -> usize {
+    50
+}
+fn default_semantic_chunking_chunk_size_lines() -> usize {
+    40
+}
+fn default_semantic_chunking_chunk_overlap_lines() -> usize {
+    10
+}
+fn default_semantic_chunking_max_chunk_tokens() -> usize {
+    512
+}
 fn default_policy_mode() -> String {
     "balanced".into()
 }
@@ -670,6 +725,7 @@ impl Default for RankingSignalBudgetConfig {
             definition_boost: default_budget_definition_boost(),
             kind_match: default_budget_kind_match(),
             test_file_penalty: default_budget_test_file_penalty(),
+            file_centrality_boost: default_budget_file_centrality_boost(),
             secondary_cap_when_exact: default_budget_secondary_cap_when_exact(),
         }
     }
@@ -758,6 +814,7 @@ impl Default for SemanticConfig {
             allow_code_payload_to_external: false,
             embedding: SemanticEmbeddingConfig::default(),
             rerank: SemanticRerankConfig::default(),
+            chunking: SemanticChunkingConfig::default(),
             overrides: SemanticOverridesConfig::default(),
         }
     }
@@ -782,7 +839,22 @@ impl Default for SemanticRerankConfig {
         Self {
             provider: default_semantic_rerank_provider(),
             timeout_ms: default_semantic_rerank_timeout_ms(),
+            cross_encoder_model: default_semantic_rerank_cross_encoder_model(),
+            cross_encoder_max_length: default_semantic_rerank_cross_encoder_max_length(),
+            candidate_cap: default_semantic_rerank_candidate_cap(),
+            timeout_budget_ms: default_semantic_rerank_timeout_budget_ms(),
             endpoint: None,
+        }
+    }
+}
+
+impl Default for SemanticChunkingConfig {
+    fn default() -> Self {
+        Self {
+            max_chunk_lines: default_semantic_chunking_max_chunk_lines(),
+            chunk_size_lines: default_semantic_chunking_chunk_size_lines(),
+            chunk_overlap_lines: default_semantic_chunking_chunk_overlap_lines(),
+            max_chunk_tokens: default_semantic_chunking_max_chunk_tokens(),
         }
     }
 }
@@ -1100,6 +1172,84 @@ impl Config {
         if config.search.semantic.rerank.timeout_ms == 0 {
             config.search.semantic.rerank.timeout_ms = default_semantic_rerank_timeout_ms();
         }
+        if config
+            .search
+            .semantic
+            .rerank
+            .cross_encoder_model
+            .trim()
+            .is_empty()
+        {
+            config.search.semantic.rerank.cross_encoder_model =
+                default_semantic_rerank_cross_encoder_model();
+        }
+        config.search.semantic.rerank.cross_encoder_max_length = clamp_min_usize_with_warning(
+            config.search.semantic.rerank.cross_encoder_max_length,
+            64,
+            default_semantic_rerank_cross_encoder_max_length(),
+            "search.semantic.rerank.cross_encoder_max_length",
+        );
+        config.search.semantic.rerank.candidate_cap = clamp_min_usize_with_warning(
+            config.search.semantic.rerank.candidate_cap,
+            1,
+            default_semantic_rerank_candidate_cap(),
+            "search.semantic.rerank.candidate_cap",
+        );
+        if config.search.semantic.rerank.timeout_budget_ms == 0 {
+            config.search.semantic.rerank.timeout_budget_ms =
+                default_semantic_rerank_timeout_budget_ms();
+        }
+        config.search.semantic.chunking.max_chunk_lines = clamp_min_usize_with_warning(
+            config.search.semantic.chunking.max_chunk_lines,
+            1,
+            default_semantic_chunking_max_chunk_lines(),
+            "search.semantic.chunking.max_chunk_lines",
+        );
+        config.search.semantic.chunking.chunk_size_lines = clamp_min_usize_with_warning(
+            config.search.semantic.chunking.chunk_size_lines,
+            1,
+            default_semantic_chunking_chunk_size_lines(),
+            "search.semantic.chunking.chunk_size_lines",
+        );
+        if config.search.semantic.chunking.chunk_size_lines
+            > config.search.semantic.chunking.max_chunk_lines
+        {
+            tracing::warn!(
+                "search.semantic.chunking.chunk_size_lines is greater than max_chunk_lines; clamping to max_chunk_lines"
+            );
+            config.search.semantic.chunking.chunk_size_lines =
+                config.search.semantic.chunking.max_chunk_lines;
+        }
+        if config.search.semantic.chunking.chunk_overlap_lines
+            >= config.search.semantic.chunking.chunk_size_lines
+        {
+            tracing::warn!(
+                "search.semantic.chunking.chunk_overlap_lines must be smaller than chunk_size_lines; clamping"
+            );
+            config.search.semantic.chunking.chunk_overlap_lines = config
+                .search
+                .semantic
+                .chunking
+                .chunk_size_lines
+                .saturating_sub(1);
+        }
+        let overlap_soft_cap = config.search.semantic.chunking.chunk_size_lines / 2;
+        if overlap_soft_cap > 0
+            && config.search.semantic.chunking.chunk_overlap_lines > overlap_soft_cap
+        {
+            tracing::warn!(
+                overlap = config.search.semantic.chunking.chunk_overlap_lines,
+                overlap_soft_cap,
+                "search.semantic.chunking.chunk_overlap_lines is too high; clamping to avoid excessive chunk explosion"
+            );
+            config.search.semantic.chunking.chunk_overlap_lines = overlap_soft_cap;
+        }
+        config.search.semantic.chunking.max_chunk_tokens = clamp_min_usize_with_warning(
+            config.search.semantic.chunking.max_chunk_tokens,
+            64,
+            default_semantic_chunking_max_chunk_tokens(),
+            "search.semantic.chunking.max_chunk_tokens",
+        );
         config.search.semantic.rerank.endpoint = config
             .search
             .semantic
@@ -1390,6 +1540,12 @@ fn apply_env_overrides(config: &mut Config) {
         "CRUXE_SEARCH_RANKING_BUDGET_TEST_FILE_PENALTY_DEFAULT",
         "search.ranking_signal_budgets.test_file_penalty.default",
         |budgets, parsed| budgets.test_file_penalty.default = parsed,
+    );
+    apply_env_ranking_budget_default(
+        config,
+        "CRUXE_SEARCH_RANKING_BUDGET_FILE_CENTRALITY_BOOST_DEFAULT",
+        "search.ranking_signal_budgets.file_centrality_boost.default",
+        |budgets, parsed| budgets.file_centrality_boost.default = parsed,
     );
     apply_env_ranking_budget_default(
         config,
@@ -1929,6 +2085,7 @@ fn normalize_rerank_provider(raw: &str) -> String {
         "none" => "none".to_string(),
         "cohere" => "cohere".to_string(),
         "voyage" => "voyage".to_string(),
+        "cross-encoder" | "cross_encoder" | "crossencoder" => "cross-encoder".to_string(),
         _ => default_semantic_rerank_provider(),
     }
 }
@@ -2170,6 +2327,11 @@ impl RankingSignalBudgetConfig {
                 default_budget_test_file_penalty(),
                 "search.ranking_signal_budgets.test_file_penalty",
             ),
+            file_centrality_boost: normalize_budget_range(
+                self.file_centrality_boost.clone(),
+                default_budget_file_centrality_boost(),
+                "search.ranking_signal_budgets.file_centrality_boost",
+            ),
             secondary_cap_when_exact: normalize_budget_range(
                 self.secondary_cap_when_exact.clone(),
                 default_budget_secondary_cap_when_exact(),
@@ -2349,7 +2511,13 @@ fn expand_tilde(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static ENV_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_TEST_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn normalize_freshness_policy_values() {
@@ -2467,6 +2635,7 @@ mod tests {
             definition_boost: default_budget_definition_boost(),
             kind_match: default_budget_kind_match(),
             test_file_penalty: default_budget_test_file_penalty(),
+            file_centrality_boost: default_budget_file_centrality_boost(),
             secondary_cap_when_exact: default_budget_secondary_cap_when_exact(),
         };
         let normalized = raw.normalized();
@@ -2529,6 +2698,44 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn env_override_updates_file_centrality_budget_default() {
+        let _guard = env_test_lock()
+            .lock()
+            .expect("env test lock should not be poisoned");
+        let key = "CRUXE_SEARCH_RANKING_BUDGET_FILE_CENTRALITY_BOOST_DEFAULT";
+        let previous = std::env::var(key).ok();
+
+        // SAFETY: test is serialized by env_test_lock(), so no concurrent env mutation.
+        unsafe {
+            std::env::set_var(key, "0.4");
+        }
+        let mut config = Config::default();
+        apply_env_overrides(&mut config);
+        assert!(
+            (config
+                .search
+                .ranking_signal_budgets
+                .file_centrality_boost
+                .default
+                - 0.4)
+                .abs()
+                < 1e-9
+        );
+
+        if let Some(value) = previous {
+            // SAFETY: test is serialized by env_test_lock(), so no concurrent env mutation.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        } else {
+            // SAFETY: test is serialized by env_test_lock(), so no concurrent env mutation.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
     }
 
     #[test]
@@ -2816,6 +3023,27 @@ mod tests {
     }
 
     #[test]
+    fn load_with_file_clamps_chunk_overlap_soft_cap() {
+        let temp = tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [search.semantic.chunking]
+            max_chunk_lines = 50
+            chunk_size_lines = 40
+            chunk_overlap_lines = 39
+            max_chunk_tokens = 512
+            "#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_with_file(None, Some(&config_path)).unwrap();
+        assert_eq!(loaded.search.semantic.chunking.chunk_size_lines, 40);
+        assert_eq!(loaded.search.semantic.chunking.chunk_overlap_lines, 20);
+    }
+
+    #[test]
     fn semantic_ratio_override_precedence_is_request_then_intent_then_default() {
         let mut cfg = SearchConfig::default();
         cfg.semantic.ratio = 0.3;
@@ -2867,6 +3095,7 @@ mod tests {
         assert_eq!(budgets.definition_boost.default, 1.0);
         assert_eq!(budgets.kind_match.default, 2.0);
         assert_eq!(budgets.test_file_penalty.default, -0.5);
+        assert_eq!(budgets.file_centrality_boost.default, 0.25);
         assert_eq!(budgets.secondary_cap_when_exact.default, 2.0);
     }
 

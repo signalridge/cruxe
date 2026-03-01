@@ -826,12 +826,22 @@ fn classify_index_open_error(err: &StateError) -> (SchemaStatus, String) {
             SchemaStatus::NotIndexed,
             "No index found. Run `cruxe index`.".to_string(),
         ),
-        StateError::SchemaMigrationRequired { current, required } => (
+        StateError::SchemaMigrationRequired {
+            current,
+            required,
+            details,
+        } => (
             SchemaStatus::ReindexRequired,
-            format!(
-                "Index schema is incompatible (current={}, required={}).",
-                current, required
-            ),
+            match details {
+                Some(details) if !details.trim().is_empty() => format!(
+                    "Index schema is incompatible (current={}, required={}): {}",
+                    current, required, details
+                ),
+                _ => format!(
+                    "Index schema is incompatible (current={}, required={}). Run `cruxe index --force`.",
+                    current, required
+                ),
+            },
         ),
         StateError::CorruptManifest(details) => (
             SchemaStatus::CorruptManifest,

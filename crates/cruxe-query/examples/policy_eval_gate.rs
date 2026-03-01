@@ -85,6 +85,8 @@ fn sample_results() -> Vec<SearchResult> {
             score: 1.0,
             snippet: Some("fn authenticate() -> Result<()> { Ok(()) }".to_string()),
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         },
@@ -109,6 +111,8 @@ fn sample_results() -> Vec<SearchResult> {
                 github_fixture_token
             )),
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         },
@@ -133,6 +137,8 @@ fn sample_results() -> Vec<SearchResult> {
                 aws_fixture_token
             )),
             chunk_type: None,
+            chunk_origin: None,
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         },

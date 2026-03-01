@@ -929,6 +929,8 @@ mod tests {
             score,
             snippet: Some("fn demo() { use std::fmt::Debug; }".to_string()),
             chunk_type: Some("function_body".to_string()),
+            chunk_origin: Some("symbol_origin".to_string()),
+            file_centrality: 0.0,
             source_layer: None,
             provenance: "lexical".to_string(),
         }

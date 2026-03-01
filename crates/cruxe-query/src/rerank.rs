@@ -1,20 +1,28 @@
 use cruxe_core::config::SemanticConfig;
 use cruxe_core::error::StateError;
 use cruxe_core::types::RerankResult;
+use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const COHERE_RERANK_ENDPOINT: &str = "https://api.cohere.com/v2/rerank";
 const VOYAGE_RERANK_ENDPOINT: &str = "https://api.voyageai.com/v1/rerank";
 const MAX_RERANK_CLIENT_CACHE_ENTRIES: usize = 8;
 
 static RERANK_HTTP_CLIENT_CACHE: OnceLock<Mutex<HashMap<u64, Client>>> = OnceLock::new();
+type SharedCrossEncoderRuntime = Arc<Mutex<TextRerank>>;
+type CrossEncoderRuntimeCache = HashMap<String, Option<SharedCrossEncoderRuntime>>;
+static CROSS_ENCODER_RUNTIME_CACHE: OnceLock<Mutex<CrossEncoderRuntimeCache>> = OnceLock::new();
 #[cfg(test)]
 static TEST_RERANK_API_KEY_OVERRIDE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+#[cfg(test)]
+static TEST_FORCE_CROSS_ENCODER_INFERENCE_FAIL: OnceLock<Mutex<bool>> = OnceLock::new();
+#[cfg(test)]
+static TEST_FORCE_CROSS_ENCODER_MODEL_LOAD_FAIL: OnceLock<Mutex<bool>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct RerankDocument {
@@ -51,6 +59,40 @@ pub(crate) trait Rerank: Send + Sync {
         docs: &[RerankDocument],
         top_n: usize,
     ) -> Result<Vec<RerankResult>, StateError>;
+}
+
+struct LocalCrossEncoderReranker {
+    model_name: String,
+    max_length: usize,
+    timeout_budget_ms: u64,
+}
+
+impl LocalCrossEncoderReranker {
+    fn from_semantic(semantic: &SemanticConfig) -> Self {
+        Self {
+            model_name: semantic.rerank.cross_encoder_model.clone(),
+            max_length: semantic.rerank.cross_encoder_max_length,
+            timeout_budget_ms: semantic.rerank.timeout_budget_ms,
+        }
+    }
+}
+
+impl Rerank for LocalCrossEncoderReranker {
+    fn rerank(
+        &self,
+        query: &str,
+        docs: &[RerankDocument],
+        top_n: usize,
+    ) -> Result<Vec<RerankResult>, StateError> {
+        cross_encoder_execution(
+            query,
+            docs,
+            top_n,
+            &self.model_name,
+            self.max_length,
+            self.timeout_budget_ms,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -222,6 +264,79 @@ fn test_rerank_api_key_override() -> &'static Mutex<Option<String>> {
     TEST_RERANK_API_KEY_OVERRIDE.get_or_init(|| Mutex::new(None))
 }
 
+#[cfg(test)]
+fn test_force_cross_encoder_inference_fail() -> &'static Mutex<bool> {
+    TEST_FORCE_CROSS_ENCODER_INFERENCE_FAIL.get_or_init(|| Mutex::new(false))
+}
+
+#[cfg(test)]
+fn test_force_cross_encoder_model_load_fail() -> &'static Mutex<bool> {
+    TEST_FORCE_CROSS_ENCODER_MODEL_LOAD_FAIL.get_or_init(|| Mutex::new(false))
+}
+
+fn cross_encoder_runtime_cache() -> &'static Mutex<CrossEncoderRuntimeCache> {
+    CROSS_ENCODER_RUNTIME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn resolve_cross_encoder_model(raw: &str) -> Result<RerankerModel, StateError> {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return Err(StateError::external(
+            "cross_encoder_model_load_failed:empty_model_name",
+        ));
+    }
+    normalized.parse::<RerankerModel>().map_err(|err| {
+        StateError::external(format!(
+            "cross_encoder_model_load_failed:invalid_model:{err}"
+        ))
+    })
+}
+
+fn get_cross_encoder_runtime(
+    model_name: &str,
+    max_length: usize,
+) -> Result<SharedCrossEncoderRuntime, StateError> {
+    #[cfg(test)]
+    {
+        if let Ok(force_fail) = test_force_cross_encoder_model_load_fail().lock()
+            && *force_fail
+        {
+            return Err(StateError::external(
+                "cross_encoder_model_load_failed:forced_test_failure",
+            ));
+        }
+    }
+
+    if let Ok(cache) = cross_encoder_runtime_cache().lock()
+        && let Some(Some(runtime)) = cache.get(model_name)
+    {
+        return Ok(runtime.clone());
+    }
+
+    let model = resolve_cross_encoder_model(model_name)?;
+    let options = RerankInitOptions::new(model)
+        .with_max_length(max_length.max(64))
+        .with_show_download_progress(false);
+    match TextRerank::try_new(options) {
+        Ok(runtime) => {
+            let shared = Arc::new(Mutex::new(runtime));
+            if let Ok(mut cache) = cross_encoder_runtime_cache().lock() {
+                cache.insert(model_name.to_string(), Some(shared.clone()));
+            }
+            Ok(shared)
+        }
+        Err(err) => {
+            if let Ok(mut cache) = cross_encoder_runtime_cache().lock() {
+                cache.insert(model_name.to_string(), None);
+            }
+            Err(StateError::external(format!(
+                "cross_encoder_model_load_failed:{}",
+                err
+            )))
+        }
+    }
+}
+
 fn shared_rerank_http_client(timeout: Duration) -> Result<Client, StateError> {
     let timeout_ms = timeout.as_millis() as u64;
     cruxe_core::cache::get_or_insert_cached(
@@ -244,7 +359,10 @@ pub fn rerank_documents(
     top_n: usize,
 ) -> RerankExecution {
     let requested_provider = normalize_provider(&semantic.rerank.provider);
-    let normalized_top_n = top_n.max(1);
+    let candidate_cap = semantic.rerank.candidate_cap.max(1);
+    let rerank_doc_limit = candidate_cap.min(docs.len());
+    let normalized_top_n = top_n.max(1).min(rerank_doc_limit.max(1));
+    let rerank_docs = top_docs_by_base_score(docs, rerank_doc_limit);
 
     if docs.is_empty() {
         return RerankExecution {
@@ -257,13 +375,43 @@ pub fn rerank_documents(
     }
 
     if matches!(requested_provider.as_str(), "none" | "local") {
-        return local_execution(query, docs, semantic, normalized_top_n, false, None, false);
+        return local_execution(
+            query,
+            &rerank_docs,
+            semantic,
+            normalized_top_n,
+            false,
+            None,
+            false,
+        );
+    }
+
+    if requested_provider == "cross-encoder" {
+        let cross_encoder = LocalCrossEncoderReranker::from_semantic(semantic);
+        return match cross_encoder.rerank(query, &rerank_docs, normalized_top_n) {
+            Ok(reranked) => RerankExecution {
+                reranked,
+                provider: "cross-encoder".to_string(),
+                fallback: false,
+                fallback_reason: None,
+                external_provider_blocked: false,
+            },
+            Err(err) => local_execution(
+                query,
+                &rerank_docs,
+                semantic,
+                normalized_top_n,
+                true,
+                Some(classify_cross_encoder_fallback_reason(&err)),
+                false,
+            ),
+        };
     }
 
     if !semantic.allow_external_provider_calls() {
         return local_execution(
             query,
-            docs,
+            &rerank_docs,
             semantic,
             normalized_top_n,
             true,
@@ -273,7 +421,7 @@ pub fn rerank_documents(
     }
 
     let external = ExternalRerankProvider::from_config(&requested_provider, semantic);
-    match external.rerank(query, docs, normalized_top_n) {
+    match external.rerank(query, &rerank_docs, normalized_top_n) {
         Ok(reranked) => RerankExecution {
             reranked,
             provider: requested_provider,
@@ -285,7 +433,7 @@ pub fn rerank_documents(
             let reason = classify_external_fallback_reason(&requested_provider, &err);
             local_execution(
                 query,
-                docs,
+                &rerank_docs,
                 semantic,
                 normalized_top_n,
                 true,
@@ -294,6 +442,22 @@ pub fn rerank_documents(
             )
         }
     }
+}
+
+fn top_docs_by_base_score(docs: &[RerankDocument], cap: usize) -> Vec<RerankDocument> {
+    if cap >= docs.len() {
+        return docs.to_vec();
+    }
+    let mut limited = docs.to_vec();
+    limited.sort_by(|left, right| {
+        right
+            .base_score
+            .partial_cmp(&left.base_score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.result_id.cmp(&right.result_id))
+    });
+    limited.truncate(cap.max(1));
+    limited
 }
 
 fn local_execution(
@@ -317,6 +481,70 @@ fn local_execution(
         fallback_reason,
         external_provider_blocked,
     }
+}
+
+fn cross_encoder_execution(
+    query: &str,
+    docs: &[RerankDocument],
+    top_n: usize,
+    model_name: &str,
+    max_length: usize,
+    timeout_budget_ms: u64,
+) -> Result<Vec<RerankResult>, StateError> {
+    if docs.is_empty() || top_n == 0 {
+        return Ok(Vec::new());
+    }
+
+    #[cfg(test)]
+    {
+        if let Ok(force_fail) = test_force_cross_encoder_inference_fail().lock()
+            && *force_fail
+        {
+            return Err(StateError::external(
+                "cross_encoder_inference_failed:forced_test_failure",
+            ));
+        }
+    }
+
+    let runtime = get_cross_encoder_runtime(model_name, max_length)?;
+
+    let docs_text: Vec<&str> = docs.iter().map(|doc| doc.text.as_str()).collect();
+    let started = Instant::now();
+    let raw = runtime
+        .lock()
+        .map_err(|_| StateError::external("cross_encoder_lock_poisoned"))?
+        .rerank(query, docs_text, false, None)
+        .map_err(|err| StateError::external(format!("cross_encoder_inference_failed:{err}")))?;
+
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if elapsed_ms > timeout_budget_ms {
+        tracing::warn!(
+            elapsed_ms,
+            timeout_budget_ms,
+            docs = docs.len(),
+            "cross-encoder exceeded timeout budget after successful inference; returning computed scores without fallback"
+        );
+    }
+
+    let mut reranked: Vec<RerankResult> = raw
+        .into_iter()
+        .filter_map(|item| {
+            docs.get(item.index).map(|doc| RerankResult {
+                doc: doc.result_id.clone(),
+                score: item.score as f64,
+                provider: "cross-encoder".to_string(),
+            })
+        })
+        .collect();
+    reranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.doc.cmp(&right.doc))
+    });
+    reranked.truncate(top_n.min(docs.len()));
+    Ok(reranked)
 }
 
 fn deterministic_base_scores(docs: &[RerankDocument], top_n: usize) -> Vec<RerankResult> {
@@ -344,6 +572,7 @@ fn normalize_provider(provider: &str) -> String {
     match provider.trim().to_ascii_lowercase().as_str() {
         "cohere" => "cohere".to_string(),
         "voyage" => "voyage".to_string(),
+        "cross-encoder" | "cross_encoder" | "crossencoder" => "cross-encoder".to_string(),
         "none" | "local" => "none".to_string(),
         _ => "none".to_string(),
     }
@@ -364,6 +593,20 @@ fn classify_external_fallback_reason(provider: &str, err: &StateError) -> String
         return format!("{}_empty_response", provider);
     }
     format!("{}_error", provider)
+}
+
+fn classify_cross_encoder_fallback_reason(err: &StateError) -> String {
+    let normalized = err.to_string().to_ascii_lowercase();
+    if normalized.contains("timeout_budget_exceeded") {
+        return "cross_encoder_timeout".to_string();
+    }
+    if normalized.contains("model_load_failed") {
+        return "cross_encoder_model_load_failed".to_string();
+    }
+    if normalized.contains("inference_failed") {
+        return "cross_encoder_inference_failed".to_string();
+    }
+    "cross_encoder_error".to_string()
 }
 
 fn tokenize(text: &str) -> HashSet<String> {
@@ -530,6 +773,18 @@ mod tests {
         semantic
     }
 
+    fn reset_cross_encoder_test_state() {
+        if let Ok(mut cache) = cross_encoder_runtime_cache().lock() {
+            cache.clear();
+        }
+        if let Ok(mut force_fail) = test_force_cross_encoder_model_load_fail().lock() {
+            *force_fail = false;
+        }
+        if let Ok(mut force_fail) = test_force_cross_encoder_inference_fail().lock() {
+            *force_fail = false;
+        }
+    }
+
     #[test]
     fn local_provider_dispatches_when_external_is_disabled() {
         let docs = vec![
@@ -659,6 +914,114 @@ mod tests {
         let voyage_reranked = parse_voyage_response(voyage, &docs);
         assert_eq!(voyage_reranked[0].doc, "doc-1");
         assert_eq!(voyage_reranked[0].provider, "voyage");
+    }
+
+    #[test]
+    fn normalize_provider_accepts_cross_encoder_aliases() {
+        assert_eq!(normalize_provider("cross-encoder"), "cross-encoder");
+        assert_eq!(normalize_provider("cross_encoder"), "cross-encoder");
+        assert_eq!(normalize_provider("CrossEncoder"), "cross-encoder");
+    }
+
+    #[test]
+    fn cross_encoder_fallback_reason_classifier_maps_known_errors() {
+        let timeout = StateError::external("cross_encoder_timeout_budget_exceeded");
+        assert_eq!(
+            classify_cross_encoder_fallback_reason(&timeout),
+            "cross_encoder_timeout"
+        );
+        let init = StateError::external("cross_encoder_model_load_failed:test");
+        assert_eq!(
+            classify_cross_encoder_fallback_reason(&init),
+            "cross_encoder_model_load_failed"
+        );
+        let infer = StateError::external("cross_encoder_inference_failed:test");
+        assert_eq!(
+            classify_cross_encoder_fallback_reason(&infer),
+            "cross_encoder_inference_failed"
+        );
+    }
+
+    #[test]
+    fn cross_encoder_model_load_failure_falls_back_to_local() {
+        reset_cross_encoder_test_state();
+        if let Ok(mut force_fail) = test_force_cross_encoder_model_load_fail().lock() {
+            *force_fail = true;
+        }
+        let docs = vec![
+            make_doc("a", "auth login handler", 1.0),
+            make_doc("b", "billing handler", 0.5),
+        ];
+        let semantic = semantic_with_provider("cross-encoder", true, true, None);
+
+        let execution = rerank_documents("auth", &docs, &semantic, 10);
+
+        assert_eq!(execution.provider, "local");
+        assert!(execution.fallback);
+        assert_eq!(
+            execution.fallback_reason.as_deref(),
+            Some("cross_encoder_model_load_failed")
+        );
+        reset_cross_encoder_test_state();
+    }
+
+    #[test]
+    fn cross_encoder_inference_failure_falls_back_to_local() {
+        reset_cross_encoder_test_state();
+        if let Ok(mut force_fail) = test_force_cross_encoder_inference_fail().lock() {
+            *force_fail = true;
+        }
+        let docs = vec![
+            make_doc("a", "auth login handler", 1.0),
+            make_doc("b", "billing handler", 0.5),
+        ];
+        let semantic = semantic_with_provider("cross-encoder", true, true, None);
+
+        let execution = rerank_documents("auth", &docs, &semantic, 10);
+
+        assert_eq!(execution.provider, "local");
+        assert!(execution.fallback);
+        assert_eq!(
+            execution.fallback_reason.as_deref(),
+            Some("cross_encoder_inference_failed")
+        );
+        reset_cross_encoder_test_state();
+    }
+
+    #[test]
+    fn rerank_candidate_cap_limits_rerank_input_and_output() {
+        let docs = vec![
+            make_doc("a", "alpha", 0.1),
+            make_doc("b", "beta", 0.9),
+            make_doc("c", "gamma", 0.8),
+        ];
+        let mut semantic = semantic_with_provider("none", false, false, None);
+        semantic.rerank.candidate_cap = 2;
+
+        let execution = rerank_documents("", &docs, &semantic, 10);
+        assert_eq!(execution.reranked.len(), 2);
+        assert_eq!(execution.reranked[0].doc, "b");
+        assert_eq!(execution.reranked[1].doc, "c");
+    }
+
+    #[test]
+    #[ignore = "requires optional cross-encoder model availability"]
+    fn integration_cross_encoder_success_or_skip_when_model_unavailable() {
+        reset_cross_encoder_test_state();
+        let docs = vec![
+            make_doc("a", "database connection pooling in rust", 0.4),
+            make_doc("b", "http request parser", 0.3),
+        ];
+        let semantic = semantic_with_provider("cross-encoder", true, true, None);
+        let execution = rerank_documents("database connection", &docs, &semantic, 2);
+        if execution.fallback
+            && execution.fallback_reason.as_deref() == Some("cross_encoder_model_load_failed")
+        {
+            return;
+        }
+        assert_eq!(execution.provider, "cross-encoder");
+        assert!(!execution.fallback);
+        assert_eq!(execution.reranked.len(), 2);
     }
 
     #[test]

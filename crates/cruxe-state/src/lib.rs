@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod overlay_paths;
 pub mod project;
 pub mod schema;
+pub mod semantic_queue;
 pub mod symbols;
 pub mod tantivy_index;
 pub mod tokenizers;
