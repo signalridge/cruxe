@@ -25,3 +25,4 @@
 - [x] 5.3 Tighten policy redaction coverage (PEM full block) and symbol-kind allowlist behavior for missing kind.
 - [x] 5.4 Improve retrieval eval target matching semantics and BEIR/TREC qrels parser compatibility.
 - [x] 5.5 Add context-pack source-content caching and use ref-safe git object reads to reduce subprocess churn.
+- [x] 5.6 Normalize adaptive-plan semantic-unavailable fallback to lexical-fast for all intents.

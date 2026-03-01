@@ -28,6 +28,7 @@ The six retrieval/ranking changes were merged successfully, but follow-up harden
 - `ranking-signal-budget-contract`: runtime ranking path is hardened against non-finite budget values and deterministic NaN ordering fallback.
 - `policy-aware-retrieval`: OPA command execution constraints, stdin lifecycle, and symbol-kind allowlist behavior are tightened.
 - `context-pack-builder`: context source loading adds per-call caching to reduce repeated git subprocess overhead.
+- `adaptive-query-plan`: semantic-unavailable fallback now deterministically uses lexical-fast for all intents.
 
 ## Impact
 

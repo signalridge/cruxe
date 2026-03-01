@@ -346,7 +346,7 @@ fn budgeted_breakdown(
 ) -> BudgetedScoreBreakdown {
     let bm25 = score_without_clamp(raw.bm25);
     let exact_match = score_with_budget(raw.exact_match, &budgets.exact_match);
-    let qualified_name = score_with_budget(raw.qualified_name, &budgets.qualified_name);
+    let mut qualified_name = score_with_budget(raw.qualified_name, &budgets.qualified_name);
     let mut path_affinity = score_with_budget(raw.path_affinity, &budgets.path_affinity);
     let mut definition_boost = score_with_budget(raw.definition_boost, &budgets.definition_boost);
     let mut kind_match = score_with_budget(raw.kind_match, &budgets.kind_match);
@@ -354,7 +354,8 @@ fn budgeted_breakdown(
 
     let exact_match_present = exact_match.effective > SCORE_EPSILON;
     let mut lexical_dominance_applied = false;
-    let mut secondary_cap = positive_secondary_total(path_affinity, definition_boost, kind_match);
+    let mut secondary_cap =
+        positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match);
 
     if exact_match_present {
         secondary_cap = score_with_budget(
@@ -363,9 +364,11 @@ fn budgeted_breakdown(
         )
         .clamped
         .max(0.0);
-        let raw_secondary = positive_secondary_total(path_affinity, definition_boost, kind_match);
+        let raw_secondary =
+            positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match);
         if raw_secondary > secondary_cap && raw_secondary > SCORE_EPSILON {
             let scale = secondary_cap / raw_secondary;
+            qualified_name.effective = scale_positive(qualified_name.clamped, scale);
             path_affinity.effective = scale_positive(path_affinity.clamped, scale);
             definition_boost.effective = scale_positive(definition_boost.clamped, scale);
             kind_match.effective = scale_positive(kind_match.clamped, scale);
@@ -374,7 +377,7 @@ fn budgeted_breakdown(
     }
 
     let secondary_effective_total =
-        positive_secondary_total(path_affinity, definition_boost, kind_match);
+        positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match);
     let precedence_audit = RankingPrecedenceAudit {
         lexical_dominance_applied,
         exact_match_present,
@@ -442,8 +445,16 @@ fn signal_contribution(signal: &str, score: SignalScore) -> RankingSignalContrib
     }
 }
 
-fn positive_secondary_total(path: SignalScore, definition: SignalScore, kind: SignalScore) -> f64 {
-    path.effective.max(0.0) + definition.effective.max(0.0) + kind.effective.max(0.0)
+fn positive_secondary_total(
+    qualified_name: SignalScore,
+    path: SignalScore,
+    definition: SignalScore,
+    kind: SignalScore,
+) -> f64 {
+    qualified_name.effective.max(0.0)
+        + path.effective.max(0.0)
+        + definition.effective.max(0.0)
+        + kind.effective.max(0.0)
 }
 
 fn scale_positive(value: f64, scale: f64) -> f64 {

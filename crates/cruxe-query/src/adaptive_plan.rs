@@ -182,13 +182,12 @@ fn select_without_override(
 ) -> (QueryPlan, SelectionReason) {
     if !semantic_runtime_available {
         return match intent {
-            QueryIntent::Symbol | QueryIntent::Path | QueryIntent::Error => {
+            QueryIntent::Symbol
+            | QueryIntent::Path
+            | QueryIntent::Error
+            | QueryIntent::NaturalLanguage => {
                 (QueryPlan::LexicalFast, SelectionReason::SemanticUnavailable)
             }
-            QueryIntent::NaturalLanguage => (
-                QueryPlan::HybridStandard,
-                SelectionReason::SemanticUnavailable,
-            ),
         };
     }
 
@@ -374,7 +373,7 @@ mod tests {
             override_plan: None,
             config: &cfg(),
         });
-        assert_eq!(selection.selected, QueryPlan::HybridStandard);
+        assert_eq!(selection.selected, QueryPlan::LexicalFast);
         assert_eq!(
             selection.selection_reason,
             SelectionReason::SemanticUnavailable
