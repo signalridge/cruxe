@@ -1,11 +1,11 @@
 # tag-based-symbol-extraction Specification
 
 ## Purpose
-Define tree-sitter-tags based symbol extraction with a generic cross-language
+Define tree-sitter query-based symbol extraction with a generic cross-language
 mapper, precise import resolution semantics, and module-scope edge capture.
 ## Requirements
 ### Requirement: Unified tag-based symbol extraction
-The system SHALL extract symbols from source files using `tree-sitter-tags` `TagsContext::generate_tags()` with grammar-provided `tags.scm` queries as the primary extraction mechanism, replacing per-language recursive AST walkers.
+The system SHALL extract symbols from source files by executing grammar-provided `tags.scm` queries (plus project query extras) directly on the pre-parsed tree with `tree-sitter::QueryCursor`, replacing per-language recursive AST walkers.
 
 #### Scenario: Extract symbols from a Rust file
 - **WHEN** a Rust source file containing a `pub struct`, a `pub fn`, and an `impl` block with methods is indexed
@@ -170,19 +170,19 @@ The generic mapper provides:
 - **AND WHEN** a Python symbol has parent scope `Server` and name `handle`
 - **THEN** `qualified_name` SHALL be `Server.handle` (Python separator `.`)
 
-### Requirement: Tag registry with thread-local storage
-The system SHALL maintain `TagsConfiguration` instances per language and `TagsContext` in thread-local storage, accessible via a `with_tags(|configs, ctx| ...)` closure API.
+### Requirement: Query cache with thread-local storage
+The system SHALL maintain compiled `tree-sitter::Query` instances per language in thread-local storage, reused across extraction calls on the same thread.
 
 #### Scenario: Concurrent thread safety
 - **WHEN** multiple threads invoke the tag extraction pipeline concurrently
-- **THEN** each thread SHALL use its own thread-local `TagsConfiguration` and `TagsContext` instances without data races
+- **THEN** each thread SHALL use its own thread-local compiled query cache entries without data races
 
 #### Scenario: Lazy initialization
-- **WHEN** the tag registry is first accessed on a thread
-- **THEN** `TagsConfiguration` objects for all supported languages SHALL be initialized from grammar `TAGS_QUERY` constants plus any custom query additions
+- **WHEN** a language query is first requested on a thread
+- **THEN** the combined query (grammar `TAGS_QUERY` + project custom additions) SHALL be compiled once and cached for later reuse on that thread
 
 ### Requirement: Custom query additions per language
-The tag registry SHALL support appending custom tree-sitter query patterns to a language's built-in `TAGS_QUERY` to cover constructs not captured by upstream queries.
+The language query builder SHALL support appending custom tree-sitter query patterns to a language's built-in `TAGS_QUERY` to cover constructs not captured by upstream queries.
 
 #### Scenario: Rust custom queries for const and static items
 - **WHEN** a Rust file containing `const` and `static` declarations is indexed

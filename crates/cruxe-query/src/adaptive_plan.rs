@@ -42,7 +42,7 @@ impl SelectionReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Override => "override",
-            Self::SemanticUnavailable => "semantic_unavailable_rule",
+            Self::SemanticUnavailable => "semantic_unavailable",
             Self::HighLexicalConfidence => "high_confidence_lexical_rule",
             Self::LowLexicalConfidenceExploratory => "low_confidence_exploratory_rule",
             Self::DefaultHybrid => "default_hybrid_rule",
@@ -384,6 +384,22 @@ mod tests {
     fn selector_applies_high_confidence_symbol_rule() {
         let selection = PlanController::select(PlanSelectionInput {
             intent: QueryIntent::Symbol,
+            lexical_confidence: 0.9,
+            semantic_runtime_available: true,
+            override_plan: None,
+            config: &cfg(),
+        });
+        assert_eq!(selection.selected, QueryPlan::LexicalFast);
+        assert_eq!(
+            selection.selection_reason,
+            SelectionReason::HighLexicalConfidence
+        );
+    }
+
+    #[test]
+    fn selector_applies_high_confidence_error_rule() {
+        let selection = PlanController::select(PlanSelectionInput {
+            intent: QueryIntent::Error,
             lexical_confidence: 0.9,
             semantic_runtime_available: true,
             override_plan: None,

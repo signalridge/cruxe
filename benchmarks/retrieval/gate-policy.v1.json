@@ -6,7 +6,8 @@
     "min_ndcg_at_k": 0.45,
     "max_zero_result_rate": 0.30,
     "max_clustering_ratio": 1.0,
-    "max_degraded_query_rate": 0.60
+    "max_degraded_query_rate": 0.60,
+    "enforce_degraded_query_rate": true
   },
   "latency": {
     "max_p50_latency_ms": 900.0,

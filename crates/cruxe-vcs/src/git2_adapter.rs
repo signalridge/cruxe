@@ -22,7 +22,19 @@ impl Git2VcsAdapter {
     }
 
     fn short_ref_name(ref_name: &str) -> &str {
-        ref_name.strip_prefix("refs/heads/").unwrap_or(ref_name)
+        ref_name
+            .strip_prefix("refs/heads/")
+            .or_else(|| ref_name.strip_prefix("refs/tags/"))
+            .or_else(|| {
+                ref_name
+                    .strip_prefix("refs/remotes/")
+                    .and_then(|remote_ref| {
+                        remote_ref
+                            .split_once('/')
+                            .map(|(_remote, branch_name)| branch_name)
+                    })
+            })
+            .unwrap_or(ref_name)
     }
 }
 
@@ -346,5 +358,30 @@ mod tests {
             worktree_path.join("feature.rs").exists(),
             "worktree should be checked out at requested ref"
         );
+    }
+
+    #[test]
+    fn short_ref_name_normalizes_heads_and_remote_refs() {
+        assert_eq!(
+            Git2VcsAdapter::short_ref_name("refs/heads/feat/auth"),
+            "feat/auth"
+        );
+        assert_eq!(
+            Git2VcsAdapter::short_ref_name("refs/tags/v1.2.3"),
+            "v1.2.3"
+        );
+        assert_eq!(
+            Git2VcsAdapter::short_ref_name("refs/remotes/origin/main"),
+            "main"
+        );
+        assert_eq!(
+            Git2VcsAdapter::short_ref_name("refs/remotes/upstream/feat/rebase"),
+            "feat/rebase"
+        );
+        assert_eq!(
+            Git2VcsAdapter::short_ref_name("refs/remotes/gitlab/release/v1"),
+            "release/v1"
+        );
+        assert_eq!(Git2VcsAdapter::short_ref_name("main"), "main");
     }
 }

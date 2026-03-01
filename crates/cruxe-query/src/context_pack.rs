@@ -315,7 +315,7 @@ pub fn build_context_pack(
 
     let effective_ref = ref_name.unwrap_or("live").to_string();
     let caps = section_caps.unwrap_or_else(|| SectionCaps::defaults(mode));
-    let probes = probe_queries(query, mode);
+    let probes = probe_queries(query, mode, language);
     let max_candidates = max_candidates.max(1);
     let per_probe_limit = max_candidates.div_ceil(probes.len()).max(1);
     let mut source_cache: BTreeMap<(String, String), Option<String>> = BTreeMap::new();
@@ -436,7 +436,7 @@ fn assemble_pack(
     let mut dropped_by_budget = BTreeMap::<String, usize>::new();
 
     for (section, candidate) in primary_queue.into_iter().chain(overflow_queue.into_iter()) {
-        if token_budget_used + candidate.estimated_tokens > budget_tokens {
+        if token_budget_used.saturating_add(candidate.estimated_tokens) > budget_tokens {
             dropped_candidates += 1;
             *dropped_by_budget
                 .entry(section.as_str().to_string())
@@ -470,7 +470,7 @@ fn assemble_pack(
             language: Some(candidate.result.language).filter(|value| !value.is_empty()),
             snippet: candidate.snippet,
         };
-        token_budget_used += item.estimated_tokens;
+        token_budget_used = token_budget_used.saturating_add(item.estimated_tokens);
         sections.section_mut(section).push(item);
     }
 
@@ -652,14 +652,31 @@ fn dedup_key(result: &SearchResult) -> String {
     )
 }
 
-fn probe_queries(query: &str, mode: ContextPackMode) -> Vec<(String, String)> {
+fn probe_queries(
+    query: &str,
+    mode: ContextPackMode,
+    language: Option<&str>,
+) -> Vec<(String, String)> {
     match mode {
         ContextPackMode::Full => vec![
             ("primary".to_string(), query.to_string()),
             ("tests_probe".to_string(), format!("{query} test")),
-            ("deps_probe".to_string(), format!("{query} import")),
+            (
+                "deps_probe".to_string(),
+                format!("{query} {}", dependency_probe_keyword(language)),
+            ),
         ],
         ContextPackMode::EditMinimal => vec![("primary".to_string(), query.to_string())],
+    }
+}
+
+fn dependency_probe_keyword(language: Option<&str>) -> &'static str {
+    match language {
+        Some("rust") => "use",
+        Some("go") => "package",
+        Some("python") => "import",
+        Some("typescript") => "import",
+        _ => "import",
     }
 }
 
@@ -1095,5 +1112,23 @@ mod tests {
 
         assert_eq!(patch.usages, Some(3));
         assert_eq!(patch.deps, Some(2));
+    }
+
+    #[test]
+    fn probe_queries_full_mode_uses_language_specific_dependency_keyword() {
+        let rust = probe_queries("token validation", ContextPackMode::Full, Some("rust"));
+        let go = probe_queries("token validation", ContextPackMode::Full, Some("go"));
+        let python = probe_queries("token validation", ContextPackMode::Full, Some("python"));
+
+        assert_eq!(rust[2].0, "deps_probe");
+        assert_eq!(rust[2].1, "token validation use");
+        assert_eq!(go[2].1, "token validation package");
+        assert_eq!(python[2].1, "token validation import");
+    }
+
+    #[test]
+    fn probe_queries_edit_minimal_only_emits_primary() {
+        let probes = probe_queries("auth", ContextPackMode::EditMinimal, Some("rust"));
+        assert_eq!(probes, vec![("primary".to_string(), "auth".to_string())]);
     }
 }

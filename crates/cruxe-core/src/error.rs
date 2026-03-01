@@ -20,7 +20,7 @@ pub enum WorkspaceError {
 
 /// Canonical protocol-level error codes shared by MCP/HTTP transports.
 ///
-/// Source of truth: `specs/meta/protocol-error-codes.md`.
+/// Source of truth: `openspec/meta/protocol-error-codes.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProtocolErrorCode {
     InvalidInput,

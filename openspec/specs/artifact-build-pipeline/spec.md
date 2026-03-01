@@ -16,7 +16,7 @@ The system SHALL provide a `build_source_artifacts()` function in `cruxe-indexer
 - **THEN** `build_source_artifacts` SHALL return a `SourceArtifacts` with empty symbols and snippets, and populate the `parse_error` field
 
 #### Scenario: Partial parse quality signal handling
-- **WHEN** language parsing succeeds but `tree-sitter-tags` reports recoverable parse errors during tag generation
+- **WHEN** language parsing succeeds but the parsed tree still contains syntax errors (`tree.root_node().has_error()`)
 - **THEN** `build_source_artifacts` SHALL continue extraction and populate `parse_error` with a partial-extraction warning message
 
 ### Requirement: Injectable parser for testing

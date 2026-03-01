@@ -4,10 +4,9 @@ pub mod python;
 pub mod rust;
 pub mod typescript;
 
-// tree-sitter-tags pipeline (replaces per-language symbol extraction).
+// Shared query-driven symbol extraction pipeline.
 pub mod generic_mapper;
 pub mod tag_extract;
-pub mod tag_registry;
 pub(crate) mod text;
 
 use cruxe_core::types::SymbolKind;
@@ -37,14 +36,14 @@ pub struct ExtractedCallSite {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SymbolExtractionDiagnostics {
-    pub had_tag_parse_error: bool,
+    pub had_parse_error: bool,
 }
 
-/// Extract symbols using tree-sitter-tags + language enricher.
+/// Extract symbols using the pre-parsed tree + tree-sitter query pipeline.
 ///
-/// The pre-parsed `tree` is used for enrichment (parent walking, visibility
-/// extraction, kind disambiguation) while `tree-sitter-tags` supplies canonical
-/// definition tags.
+/// The pre-parsed `tree` is reused for both:
+/// - query capture matching (`@definition.*` + `@name`)
+/// - enrichment (parent walking, visibility extraction, kind disambiguation)
 pub fn extract_symbols(
     tree: &tree_sitter::Tree,
     source: &str,
@@ -63,7 +62,7 @@ pub fn extract_symbols_with_diagnostics(
     (
         symbols,
         SymbolExtractionDiagnostics {
-            had_tag_parse_error: diagnostics.had_parse_error,
+            had_parse_error: diagnostics.had_parse_error,
         },
     )
 }

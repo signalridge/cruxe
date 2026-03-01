@@ -35,6 +35,37 @@ cruxe eval retrieval \
   --output target/retrieval-eval-report.json
 ```
 
+## Adding new fixtures
+
+When adding cases to `benchmarks/retrieval/query-pack.v1.json`:
+
+1. Include required fields:
+   - `query`
+   - `intent`
+   - `expected_targets` (non-empty)
+2. Keep IDs stable and descriptive (for example `symbol-auth-handler`).
+3. Prefer one intent per fixture; avoid mixed-intent queries.
+4. Add at least one negative-control fixture for each new intent family.
+5. Re-run gate in dry-run mode and inspect taxonomy deltas.
+
+Recommended validation loop:
+
+```bash
+cruxe eval retrieval \
+  --workspace testdata/fixtures/rust-sample \
+  --suite benchmarks/retrieval/query-pack.v1.json \
+  --baseline benchmarks/retrieval/baseline.v1.json \
+  --policy benchmarks/retrieval/gate-policy.v1.json \
+  --dry-run \
+  --output target/retrieval-eval-report.json
+```
+
+Coverage check quick-pass:
+
+- ensure each intent appears in the suite at least once
+- ensure each intent has at least one high-confidence expected target
+- ensure failure taxonomy does not regress to all-`recall_drop` (usually signals fixture imbalance)
+
 ## BEIR interoperability
 
 Use BEIR-format files (`corpus.jsonl`, `queries.jsonl`, `qrels.tsv`) directly:

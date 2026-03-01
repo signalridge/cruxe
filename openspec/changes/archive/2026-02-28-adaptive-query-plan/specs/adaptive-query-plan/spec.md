@@ -1,5 +1,9 @@
-## ADDED Requirements
+# adaptive-query-plan Specification
 
+## Purpose
+Define deterministic adaptive plan selection and downgrade behavior so query execution balances quality, latency, and runtime availability with observable reason codes.
+
+## Requirements
 ### Requirement: Query execution MUST select a deterministic retrieval plan
 Runtime MUST select one canonical plan for each query using deterministic selector logic.
 
@@ -33,7 +37,7 @@ Selector rule order:
 
 #### Scenario: Semantic unavailable forces bounded fallback
 - **WHEN** intent is natural-language, lexical confidence is low, but semantic runtime is unavailable
-- **THEN** selector MUST choose `hybrid_standard` (not `semantic_deep`)
+- **THEN** selector MUST choose `lexical_fast` (not `semantic_deep`)
 - **AND** metadata MUST include deterministic downgrade/selection reason code
 
 ### Requirement: Plan execution MUST honor bounded budgets and fail-soft downgrade

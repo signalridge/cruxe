@@ -1,6 +1,6 @@
 mod commands;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -28,6 +28,12 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum McpTransport {
+    Stdio,
+    Http,
 }
 
 #[derive(Subcommand)]
@@ -160,8 +166,8 @@ enum Commands {
         no_prewarm: bool,
 
         /// Transport mode: "stdio" (default) or "http"
-        #[arg(long, default_value = "stdio")]
-        transport: String,
+        #[arg(long, value_enum, default_value_t = McpTransport::Stdio)]
+        transport: McpTransport,
 
         /// HTTP server port (only used with --transport http)
         #[arg(long, default_value = "9100")]
@@ -390,6 +396,7 @@ fn main() -> anyhow::Result<()> {
             max_auto_workspaces,
         } => {
             let path = resolve_path(workspace)?;
+            validate_serve_mcp_args(auto_workspace, &allowed_roots)?;
             // HIGH-4: Canonicalize --allowed-root paths at startup; reject nonexistent
             let mut canonical_roots = Vec::new();
             for root in &allowed_roots {
@@ -406,8 +413,8 @@ fn main() -> anyhow::Result<()> {
                 allowed_roots: cruxe_core::types::AllowedRoots::new(canonical_roots),
                 max_auto_workspaces,
             };
-            match transport.as_str() {
-                "http" => {
+            match transport {
+                McpTransport::Http => {
                     commands::serve_mcp::run_http(
                         &path,
                         config_file,
@@ -417,7 +424,7 @@ fn main() -> anyhow::Result<()> {
                         port,
                     )?;
                 }
-                _ => {
+                McpTransport::Stdio => {
                     commands::serve_mcp::run(&path, config_file, no_prewarm, ws_config)?;
                 }
             }
@@ -427,9 +434,65 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_serve_mcp_args(auto_workspace: bool, allowed_roots: &[String]) -> anyhow::Result<()> {
+    if auto_workspace && allowed_roots.is_empty() {
+        anyhow::bail!("--auto-workspace requires at least one --allowed-root");
+    }
+    Ok(())
+}
+
 fn resolve_path(path: Option<String>) -> anyhow::Result<std::path::PathBuf> {
     match path {
         Some(p) => Ok(std::path::PathBuf::from(p)),
         None => Ok(std::env::current_dir()?),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_mcp_rejects_invalid_transport_value() {
+        let parsed = Cli::try_parse_from(["cruxe", "serve-mcp", "--transport", "httpp"]);
+        assert!(parsed.is_err(), "invalid transport should be rejected");
+    }
+
+    #[test]
+    fn serve_mcp_accepts_http_transport_value() {
+        let parsed = Cli::try_parse_from(["cruxe", "serve-mcp", "--transport", "http"])
+            .expect("http transport should parse");
+
+        match parsed.command {
+            Commands::ServeMcp { transport, .. } => assert_eq!(transport, McpTransport::Http),
+            _ => panic!("expected serve-mcp command"),
+        }
+    }
+
+    #[test]
+    fn serve_mcp_rejects_empty_transport_value() {
+        let parsed = Cli::try_parse_from(["cruxe", "serve-mcp", "--transport", ""]);
+        assert!(parsed.is_err(), "empty transport should be rejected");
+    }
+
+    #[test]
+    fn serve_mcp_rejects_uppercase_transport_value() {
+        let parsed = Cli::try_parse_from(["cruxe", "serve-mcp", "--transport", "HTTP"]);
+        assert!(parsed.is_err(), "uppercase transport should be rejected");
+    }
+
+    #[test]
+    fn serve_mcp_validate_requires_allowed_root_when_auto_workspace_enabled() {
+        let err = validate_serve_mcp_args(true, &[]).expect_err("validation should fail");
+        assert!(
+            err.to_string()
+                .contains("--auto-workspace requires at least one --allowed-root"),
+            "unexpected validation message: {err}"
+        );
+    }
+
+    #[test]
+    fn serve_mcp_validate_allows_disabled_auto_workspace_without_roots() {
+        validate_serve_mcp_args(false, &[]).expect("validation should pass");
     }
 }

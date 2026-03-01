@@ -78,10 +78,10 @@ where
                     } else {
                         Vec::new()
                     };
-                    let parse_error = diagnostics.had_tag_parse_error.then(|| {
-                        "tree-sitter-tags reported parse errors; extracted symbols may be partial"
-                            .to_string()
-                    });
+                    let parse_error = diagnostics.had_parse_error.then(|| {
+                    "tree-sitter parser reported syntax errors; extracted symbols may be partial"
+                        .to_string()
+                });
                     (Some(tree), extracted, raw_imports, parse_error)
                 }
                 Err(err) => (None, Vec::new(), Vec::new(), Some(err)),

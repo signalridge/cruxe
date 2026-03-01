@@ -2,7 +2,6 @@
 
 ## Purpose
 Define bounded per-signal ranking budgets and lexical-dominance precedence guards so ranking remains explainable, configurable, and stable under noisy secondary signals.
-
 ## Requirements
 ### Requirement: Ranking signals MUST use bounded contribution budgets
 Each ranking signal MUST be evaluated with explicit contribution bounds.
@@ -35,4 +34,19 @@ Invalid or unsafe budget config values MUST be normalized to canonical safe rang
 - **WHEN** configuration provides non-numeric or inverted range values
 - **THEN** runtime MUST use canonical safe defaults
 - **AND** MUST emit deterministic normalization diagnostics
+
+### Requirement: Ranking budget scoring MUST guard against non-finite runtime values
+Reranking score computation MUST coerce non-finite raw/budget values to deterministic safe fallbacks before clamping and sorting.
+
+#### Scenario: Non-finite budget default does not poison score
+- **WHEN** a signal budget default/min/max contains non-finite values at runtime
+- **THEN** reranking MUST emit a finite score for every result
+- **AND** sorting MUST remain deterministic
+
+### Requirement: Non-finite scores MUST sort after finite scores
+When any candidate has a non-finite score, deterministic ordering MUST place those candidates after finite-score candidates.
+
+#### Scenario: NaN score does not outrank finite score
+- **WHEN** one candidate has a finite score and another has `NaN`
+- **THEN** finite candidate MUST sort ahead of the non-finite candidate
 

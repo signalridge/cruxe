@@ -4,7 +4,7 @@ Code search and navigation engine for AI coding assistants.
 
 ## Features
 
-- **Multi-language symbol extraction** -- Rust, TypeScript, Python, and Go via tree-sitter-tags generic mapper
+- **Multi-language symbol extraction** -- Rust, TypeScript, Python, and Go via tree-sitter query-based generic mapper
 - **Cross-language SymbolRole classification** -- Type, Callable, Value, Namespace, Alias for coarse filtering and ranking
 - **Full-text code search** with intent classification (symbol, path, error, natural language)
 - **Symbol location** with definition-first ranking
@@ -81,7 +81,7 @@ Cruxe is a Rust workspace with 7 crates:
 |-------|---------------|
 | `cruxe-core` | Shared types (SymbolKind, SymbolRole), constants, config, error types |
 | `cruxe-state` | SQLite (rusqlite) + Tantivy storage layer |
-| `cruxe-indexer` | tree-sitter-tags symbol extraction via generic tag mapper, call-site analysis |
+| `cruxe-indexer` | tree-sitter query-based symbol extraction via generic tag mapper, call-site analysis |
 | `cruxe-query` | Search, locate, intent classification, ranking, reranking |
 | `cruxe-mcp` | MCP JSON-RPC server (stdio transport) |
 | `cruxe-cli` | clap-based CLI entry point |
@@ -91,9 +91,9 @@ Storage is fully embedded -- Tantivy for full-text search, SQLite (WAL mode) for
 
 ## Specification Source of Truth
 
-- Canonical product/design specs live under `specs/`.
-- `openspec/` contains workflow artifacts and experimental change drafts.
-- When behavior changes, update `specs/` first and only mirror into `openspec/` when required by workflow.
+- All design specs, change records, and project meta-docs live under `openspec/`.
+- `openspec/specs/` holds capability specifications; `openspec/changes/` holds change proposals and archives; `openspec/meta/` holds cross-cutting project documents.
+- Legacy `.specify/` has been removed; legacy `specs/` is retained temporarily for migration parity audits and should be treated as non-authoritative.
 
 ## CLI Commands
 

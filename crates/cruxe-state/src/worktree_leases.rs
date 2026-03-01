@@ -23,10 +23,13 @@ pub struct WorktreeLease {
 
 pub fn create_lease(conn: &Connection, lease: &WorktreeLease) -> Result<(), StateError> {
     let status = canonical_status(&lease.status);
+    let created_at = lease.created_at.as_str();
+    let last_used_at = lease.last_used_at.as_str();
+    let updated_at = last_used_at;
     conn.execute(
         "INSERT INTO worktree_leases
          (repo, \"ref\", worktree_path, owner_pid, refcount, status, created_at, last_used_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(repo, \"ref\") DO UPDATE SET
             worktree_path = excluded.worktree_path,
             owner_pid = excluded.owner_pid,
@@ -34,7 +37,7 @@ pub fn create_lease(conn: &Connection, lease: &WorktreeLease) -> Result<(), Stat
             status = excluded.status,
             created_at = excluded.created_at,
             last_used_at = excluded.last_used_at,
-            updated_at = excluded.last_used_at",
+            updated_at = excluded.updated_at",
         params![
             lease.repo,
             lease.r#ref,
@@ -42,8 +45,9 @@ pub fn create_lease(conn: &Connection, lease: &WorktreeLease) -> Result<(), Stat
             lease.owner_pid,
             lease.refcount,
             status,
-            lease.created_at,
-            lease.last_used_at
+            created_at,
+            last_used_at,
+            updated_at
         ],
     )
     .map_err(StateError::sqlite)?;

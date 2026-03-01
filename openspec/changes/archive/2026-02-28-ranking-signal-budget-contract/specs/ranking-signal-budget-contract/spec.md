@@ -1,5 +1,9 @@
-## ADDED Requirements
+# ranking-signal-budget-contract Specification
 
+## Purpose
+Define bounded per-signal ranking budgets and lexical-dominance precedence guards so ranking remains explainable, configurable, and stable under noisy secondary signals.
+
+## Requirements
 ### Requirement: Ranking signals MUST use bounded contribution budgets
 Each ranking signal MUST be evaluated with explicit contribution bounds.
 
@@ -31,3 +35,4 @@ Invalid or unsafe budget config values MUST be normalized to canonical safe rang
 - **WHEN** configuration provides non-numeric or inverted range values
 - **THEN** runtime MUST use canonical safe defaults
 - **AND** MUST emit deterministic normalization diagnostics
+

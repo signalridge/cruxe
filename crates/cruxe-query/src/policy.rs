@@ -299,7 +299,7 @@ impl PolicyRuntime {
         {
             return Ok(Some("blocked:symbol_kind_allow_miss".to_string()));
         }
-        if is_symbol_result && let Some(kind) = result.kind.as_deref() {
+        if let Some(kind) = result.kind.as_deref() {
             let kind = kind.to_ascii_lowercase();
             if self.deny_symbol_kinds.contains(kind.as_str()) {
                 return Ok(Some("blocked:symbol_kind_deny".to_string()));
@@ -1013,6 +1013,20 @@ mod tests {
     }
 
     #[test]
+    fn deny_symbol_kinds_blocks_snippets_with_symbol_kind_metadata() {
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        config.policy.kind.deny_symbol_kinds = vec!["function".to_string()];
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+
+        let applied = runtime
+            .apply(vec![sample_result("src/lib.rs", "pub fn run() {}")])
+            .unwrap();
+        assert_eq!(applied.blocked_count, 1);
+        assert!(applied.results.is_empty());
+    }
+
+    #[test]
     fn strict_mode_rejects_non_opa_command_binary() {
         let mut config = CoreSearchConfig::default();
         config.policy.mode = "strict".to_string();
@@ -1037,6 +1051,68 @@ mod tests {
         let snippet = applied.results[0].snippet.as_deref().unwrap_or_default();
         assert!(snippet.contains("[REDACTED:private_key]"));
         assert!(!snippet.contains("QUJDREVGR0hJSktMTU5PUA=="));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn balanced_mode_opa_timeout_fails_open_with_warning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let opa_path = dir.path().join("opa");
+        std::fs::write(&opa_path, "#!/bin/sh\nsleep 5\n").expect("write fake opa script");
+        std::fs::set_permissions(&opa_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake opa script");
+        let policy_path = dir.path().join("policy.rego");
+        std::fs::write(&policy_path, "package cruxe\nallow = true\n").expect("write policy file");
+
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        config.policy.opa.enabled = true;
+        config.policy.opa.command = opa_path.to_string_lossy().to_string();
+        config.policy.opa.policy_path = Some(policy_path.to_string_lossy().to_string());
+
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+        let applied = runtime
+            .apply(vec![sample_result("src/lib.rs", "pub fn run() {}")])
+            .unwrap();
+        assert_eq!(applied.results.len(), 1, "balanced mode should fail open");
+        assert!(
+            applied
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("opa evaluation failed")),
+            "expected OPA timeout warning in balanced mode"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_mode_opa_timeout_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let opa_path = dir.path().join("opa");
+        std::fs::write(&opa_path, "#!/bin/sh\nsleep 5\n").expect("write fake opa script");
+        std::fs::set_permissions(&opa_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake opa script");
+        let policy_path = dir.path().join("policy.rego");
+        std::fs::write(&policy_path, "package cruxe\nallow = true\n").expect("write policy file");
+
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "strict".to_string();
+        config.policy.opa.enabled = true;
+        config.policy.opa.command = opa_path.to_string_lossy().to_string();
+        config.policy.opa.policy_path = Some(policy_path.to_string_lossy().to_string());
+
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+        let err = runtime
+            .apply(vec![sample_result("src/lib.rs", "pub fn run() {}")])
+            .expect_err("strict mode must fail closed on OPA timeout");
+        assert!(
+            format!("{err}").contains("strict mode"),
+            "expected strict mode failure message: {err}"
+        );
     }
 
     #[cfg(unix)]

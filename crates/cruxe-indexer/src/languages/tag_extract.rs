@@ -1,19 +1,28 @@
 use super::ExtractedSymbol;
 use super::generic_mapper;
-use super::tag_registry;
+use crate::language_grammars;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+use streaming_iterator::StreamingIterator;
 use tracing::debug;
-use tree_sitter_tags::Tag;
+use tree_sitter::{Query, QueryCapture, QueryCursor, QueryMatch};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TagExtractionDiagnostics {
     pub had_parse_error: bool,
 }
 
-/// Extract symbols from source using tree-sitter-tags + language enricher.
+thread_local! {
+    static QUERY_CACHE: RefCell<HashMap<&'static str, Query>> = RefCell::new(HashMap::new());
+}
+
+/// Extract symbols from source using the pre-parsed tree and tree-sitter query execution.
 ///
-/// 1. Generate tags (tree-sitter-tags parses internally).
-/// 2. Use caller-provided tree for enrichment (parent walking, visibility, kind disambiguation).
-/// 3. Map each definition tag to ExtractedSymbol via the enricher.
+/// This pipeline runs on the caller-provided tree (single parse):
+/// 1. Execute combined `TAGS_QUERY + extras` with `QueryCursor`.
+/// 2. Resolve `@definition.*` + `@name` captures into symbols.
+/// 3. Apply language-aware enrichment (parent scope, kind disambiguation).
 pub fn extract_symbols_via_tags(
     tree: &tree_sitter::Tree,
     source: &str,
@@ -27,86 +36,186 @@ pub fn extract_symbols_via_tags_with_diagnostics(
     source: &str,
     language: &str,
 ) -> (Vec<ExtractedSymbol>, TagExtractionDiagnostics) {
-    let source_bytes = source.as_bytes();
-
-    // Step 1: Collect tags via thread-local configs + context.
-    let (tags, had_parse_error): (Vec<(Tag, String)>, bool) =
-        tag_registry::with_tags(|configs, ctx| {
-            let Some(config) = configs.get(language) else {
-                return (Vec::new(), false);
-            };
-            let Ok((iter, has_error)) = ctx.generate_tags(config, source_bytes, None) else {
-                return (Vec::new(), true);
-            };
-            (
-                iter.filter_map(|r| r.ok())
-                    .filter(|t| t.is_definition)
-                    .map(|t| {
-                        let kind_name = config.syntax_type_name(t.syntax_type_id).to_string();
-                        (t, kind_name)
-                    })
-                    .collect(),
-                has_error,
-            )
-        });
+    let had_parse_error = tree.root_node().has_error();
     if had_parse_error {
         debug!(
             language,
-            "tree-sitter-tags reported parse errors; extracted symbols may be partial"
+            "tree-sitter parser reported syntax errors; extracted symbols may be partial"
         );
     }
 
-    // Step 3: Map definition tags to ExtractedSymbol.
-    let symbols = tags
-        .iter()
-        .filter_map(|(tag, kind_name)| map_tag_to_symbol(tag, kind_name, source, tree, language))
-        .collect();
+    let Some(language_id) = canonical_tag_language(language) else {
+        return (Vec::new(), TagExtractionDiagnostics { had_parse_error });
+    };
+
+    let symbols = match with_compiled_query(language_id, |query| {
+        collect_definition_symbols(query, tree, source, language_id)
+    }) {
+        Ok(symbols) => symbols,
+        Err(err) => {
+            debug!(
+                language = language_id,
+                error = %err,
+                "failed to build or execute symbol query"
+            );
+            return (
+                Vec::new(),
+                TagExtractionDiagnostics {
+                    had_parse_error: true,
+                },
+            );
+        }
+    };
 
     (symbols, TagExtractionDiagnostics { had_parse_error })
 }
 
-fn map_tag_to_symbol(
-    tag: &Tag,
+fn canonical_tag_language(language: &str) -> Option<&'static str> {
+    match language {
+        "rust" => Some("rust"),
+        "typescript" => Some("typescript"),
+        "python" => Some("python"),
+        "go" => Some("go"),
+        _ => None,
+    }
+}
+
+fn with_compiled_query<R, F>(language: &'static str, f: F) -> Result<R, String>
+where
+    F: FnOnce(&Query) -> R,
+{
+    QUERY_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !cache.contains_key(language) {
+            let ts_language = language_grammars::parser_language(language)
+                .ok_or_else(|| format!("unsupported language: {language}"))?;
+            let query_source = language_grammars::combined_tags_query(language)
+                .ok_or_else(|| format!("missing query for language: {language}"))?;
+            let query = Query::new(&ts_language, &query_source)
+                .map_err(|err| format!("query compile failed for {language}: {err}"))?;
+            cache.insert(language, query);
+        }
+        let query = cache
+            .get(language)
+            .ok_or_else(|| format!("query cache missing language: {language}"))?;
+        Ok(f(query))
+    })
+}
+
+fn collect_definition_symbols(
+    query: &Query,
+    tree: &tree_sitter::Tree,
+    source: &str,
+    language: &str,
+) -> Vec<ExtractedSymbol> {
+    let capture_names = query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut seen = HashSet::<(usize, usize, usize, usize, cruxe_core::types::SymbolKind)>::new();
+    let mut symbols = Vec::new();
+    let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
+
+    while let Some(query_match) = matches.next() {
+        let Some((name_capture, definition_capture)) =
+            select_definition_captures(query_match, capture_names)
+        else {
+            continue;
+        };
+
+        let Some(definition_capture_name) = capture_names
+            .get(definition_capture.index as usize)
+            .copied()
+        else {
+            continue;
+        };
+        let Some(tag_kind) = definition_capture_name.strip_prefix("definition.") else {
+            continue;
+        };
+
+        let Some(symbol) =
+            map_capture_to_symbol(name_capture, definition_capture, tag_kind, source, language)
+        else {
+            continue;
+        };
+
+        let dedupe_key = (
+            name_capture.node.start_byte(),
+            name_capture.node.end_byte(),
+            definition_capture.node.start_byte(),
+            definition_capture.node.end_byte(),
+            symbol.kind,
+        );
+        if !seen.insert(dedupe_key) {
+            continue;
+        }
+
+        symbols.push(symbol);
+    }
+
+    symbols.sort_by(|a, b| {
+        a.line_start
+            .cmp(&b.line_start)
+            .then_with(|| a.line_end.cmp(&b.line_end))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    symbols
+}
+
+fn select_definition_captures<'cursor, 'tree: 'cursor>(
+    query_match: &'cursor QueryMatch<'cursor, 'tree>,
+    capture_names: &[&str],
+) -> Option<(QueryCapture<'tree>, QueryCapture<'tree>)> {
+    let mut name_capture = None;
+    let mut definition_capture = None;
+
+    for capture in query_match.captures.iter().copied() {
+        let capture_name = capture_names
+            .get(capture.index as usize)
+            .copied()
+            .unwrap_or("");
+        if capture_name == "name" && name_capture.is_none() {
+            name_capture = Some(capture);
+            continue;
+        }
+        if definition_capture.is_none() && capture_name.starts_with("definition.") {
+            definition_capture = Some(capture);
+        }
+    }
+
+    let name_capture = name_capture?;
+    let definition_capture = definition_capture?;
+    Some((name_capture, definition_capture))
+}
+
+fn map_capture_to_symbol(
+    name_capture: QueryCapture<'_>,
+    definition_capture: QueryCapture<'_>,
     tag_kind: &str,
     source: &str,
-    tree: &tree_sitter::Tree,
     language: &str,
 ) -> Option<ExtractedSymbol> {
-    let name = source.get(tag.name_range.clone())?.to_string();
-    let body = source.get(tag.range.clone()).map(String::from);
+    let name = source.get(name_capture.node.byte_range())?.to_string();
+    let definition_node = definition_capture.node;
+    let definition_range = definition_node.byte_range();
+    let body = source.get(definition_range.clone()).map(String::from);
 
-    // Find the tree-sitter node at this position for enrichment.
-    let node = tree
-        .root_node()
-        .descendant_for_byte_range(tag.range.start, tag.range.end);
-
-    let parent_name = node.and_then(|n| generic_mapper::find_parent_scope(n, source));
+    let parent_name = generic_mapper::find_parent_scope(definition_node, source);
     let has_parent = parent_name.is_some();
-
-    let kind = generic_mapper::map_tag_kind(tag_kind, has_parent, node.map(|n| n.kind()))?;
-    let signature = generic_mapper::extract_signature(kind, source, tag.line_range.clone());
+    let kind = generic_mapper::map_tag_kind(tag_kind, has_parent, Some(definition_node.kind()))?;
+    let signature = generic_mapper::extract_signature(
+        kind,
+        source,
+        range_from_node_or_default(source, definition_range.clone()),
+    );
     let visibility = None;
 
     let qualified_name = match &parent_name {
-        Some(p) => format!(
+        Some(parent) => format!(
             "{}{}{}",
-            p,
+            parent,
             generic_mapper::separator_for_language(language),
             name
         ),
         None => name.clone(),
-    };
-
-    // Prefer AST node range for definition coverage (function body lines, etc.)
-    // and only fall back to tag span when the node cannot be resolved.
-    let (line_start, line_end) = if let Some(n) = node {
-        (
-            n.start_position().row as u32 + 1,
-            n.end_position().row as u32 + 1,
-        )
-    } else {
-        // tag span is already 0-indexed row.
-        (tag.span.start.row as u32 + 1, tag.span.end.row as u32 + 1)
     };
 
     Some(ExtractedSymbol {
@@ -115,12 +224,18 @@ fn map_tag_to_symbol(
         kind,
         language: language.to_string(),
         signature,
-        line_start,
-        line_end,
+        line_start: definition_node.start_position().row as u32 + 1,
+        line_end: definition_node.end_position().row as u32 + 1,
         visibility,
         parent_name,
         body,
     })
+}
+
+fn range_from_node_or_default(source: &str, range: Range<usize>) -> Range<usize> {
+    let start = range.start.min(source.len());
+    let end = range.end.min(source.len()).max(start);
+    start..end
 }
 
 #[cfg(test)]

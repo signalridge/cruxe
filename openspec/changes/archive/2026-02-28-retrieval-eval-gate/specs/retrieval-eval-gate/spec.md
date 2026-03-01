@@ -1,5 +1,9 @@
-## ADDED Requirements
+# retrieval-eval-gate Specification
 
+## Purpose
+Define deterministic retrieval evaluation suites and gate verdict rules so quality and latency regressions are caught consistently before release.
+
+## Requirements
 ### Requirement: Deterministic retrieval evaluation suite
 The system MUST provide a deterministic retrieval evaluation suite format that can be replayed across refs and environments.
 
@@ -46,3 +50,4 @@ Required categories:
 #### Scenario: Report includes categorized failures
 - **WHEN** one or more gate checks fail
 - **THEN** the JSON report MUST include one or more taxonomy categories matching the observed failure patterns
+

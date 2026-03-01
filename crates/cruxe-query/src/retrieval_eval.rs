@@ -623,7 +623,7 @@ fn default_p50_latency_tolerance_ms() -> f64 {
 }
 
 fn default_enforce_degraded_query_rate() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -809,9 +809,8 @@ pub fn compare_against_baseline(
         .quality
         .max_degraded_query_rate
         .min(baseline.metrics.degraded_query_rate + policy.tolerance.degraded_query_rate);
-    // NOTE: `semantic_degraded` in search metadata currently aliases fallback state
-    // in the baseline pipeline. Keep this signal observe-only by default and allow
-    // explicit opt-in policy enforcement when metadata semantics are trusted.
+    // NOTE: `semantic_degraded` in search metadata can be noisy in some environments.
+    // Policy may explicitly disable enforcement to keep this signal observe-only.
     let degraded_signal_is_trustworthy = policy.quality.enforce_degraded_query_rate;
     let degraded_passed = if degraded_signal_is_trustworthy {
         report.metrics.degraded_query_rate <= degraded_cap
@@ -1471,5 +1470,98 @@ mod tests {
         let result = RetrievalResult::new("src/data.rs", Some("load_data"), 1.0);
         assert!(!result_matches_target(&result, "a.rs"));
         assert!(result_matches_target(&result, "data.rs"));
+    }
+
+    #[test]
+    fn degraded_query_rate_breach_emits_semantic_degraded_spike_when_enforced() {
+        let baseline = SuiteBaseline {
+            version: "retrieval-eval-baseline-v1".to_string(),
+            suite_version: "suite-v1".to_string(),
+            metrics: AggregateMetrics {
+                recall_at_k: 1.0,
+                mrr: 1.0,
+                ndcg_at_k: 1.0,
+                zero_result_rate: 0.0,
+                clustering_ratio: 0.1,
+                degraded_query_rate: 0.0,
+                semantic_budget_exhaustion_rate: 0.0,
+                latency_p50_ms: 10.0,
+                latency_p95_ms: 20.0,
+                latency_mean_ms: 15.0,
+            },
+            latency_by_intent: BTreeMap::new(),
+        };
+
+        let report = EvaluationReport {
+            version: "retrieval-eval-report-v1".to_string(),
+            suite_version: "suite-v1".to_string(),
+            total_queries: 1,
+            metrics: AggregateMetrics {
+                degraded_query_rate: 0.9,
+                ..baseline.metrics.clone()
+            },
+            latency_by_intent: BTreeMap::new(),
+            per_query: Vec::new(),
+        };
+
+        let gate = compare_against_baseline(&report, &baseline, &GatePolicy::strict_defaults());
+        assert_eq!(gate.verdict, GateVerdict::Fail);
+        assert!(
+            gate.taxonomy
+                .contains(&"semantic_degraded_spike".to_string())
+        );
+        assert!(
+            !gate
+                .taxonomy
+                .contains(&"semantic_degraded_observe_only".to_string())
+        );
+    }
+
+    #[test]
+    fn degraded_query_rate_breach_is_observe_only_when_enforcement_disabled() {
+        let baseline = SuiteBaseline {
+            version: "retrieval-eval-baseline-v1".to_string(),
+            suite_version: "suite-v1".to_string(),
+            metrics: AggregateMetrics {
+                recall_at_k: 1.0,
+                mrr: 1.0,
+                ndcg_at_k: 1.0,
+                zero_result_rate: 0.0,
+                clustering_ratio: 0.1,
+                degraded_query_rate: 0.0,
+                semantic_budget_exhaustion_rate: 0.0,
+                latency_p50_ms: 10.0,
+                latency_p95_ms: 20.0,
+                latency_mean_ms: 15.0,
+            },
+            latency_by_intent: BTreeMap::new(),
+        };
+
+        let report = EvaluationReport {
+            version: "retrieval-eval-report-v1".to_string(),
+            suite_version: "suite-v1".to_string(),
+            total_queries: 1,
+            metrics: AggregateMetrics {
+                degraded_query_rate: 0.9,
+                ..baseline.metrics.clone()
+            },
+            latency_by_intent: BTreeMap::new(),
+            per_query: Vec::new(),
+        };
+
+        let mut policy = GatePolicy::strict_defaults();
+        policy.quality.enforce_degraded_query_rate = false;
+
+        let gate = compare_against_baseline(&report, &baseline, &policy);
+        assert_eq!(gate.verdict, GateVerdict::Pass);
+        assert!(
+            gate.taxonomy
+                .contains(&"semantic_degraded_observe_only".to_string())
+        );
+        assert!(
+            !gate
+                .taxonomy
+                .contains(&"semantic_degraded_spike".to_string())
+        );
     }
 }

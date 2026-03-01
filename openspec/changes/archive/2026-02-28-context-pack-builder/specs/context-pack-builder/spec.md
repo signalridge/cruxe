@@ -1,5 +1,9 @@
-## ADDED Requirements
+# context-pack-builder Specification
 
+## Purpose
+Define deterministic token-budgeted context-pack assembly with section taxonomy and provenance so coding agents receive minimal-sufficient, auditable context bundles.
+
+## Requirements
 ### Requirement: System MUST provide budgeted context pack assembly
 The system MUST provide a context-pack assembly capability that builds a structured minimal-sufficient context bundle for agent workflows.
 
@@ -51,7 +55,7 @@ Each emitted snippet MUST be assigned to exactly one section using deterministic
 
 Assignment priority:
 1. `definitions` (symbol definition spans)
-2. `usages` (reference/call spans)
+2. `usages` (reference/call spans excluding test-path snippets)
 3. `deps` (imports/includes)
 4. `tests` (test path/content heuristics)
 5. `config` (manifest/config files)
@@ -63,5 +67,6 @@ Assignment priority:
 - **AND** MUST NOT be duplicated across multiple sections
 
 #### Scenario: Test snippet is routed to tests section
-- **WHEN** snippet path matches configured test heuristics and no higher-priority rule matched
+- **WHEN** snippet path matches configured test heuristics, including snippets with usage-like signals
+- **AND** no definition/dependency rule matched
 - **THEN** snippet MUST be assigned to `tests`

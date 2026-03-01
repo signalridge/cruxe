@@ -1,5 +1,9 @@
-## ADDED Requirements
+# policy-aware-retrieval Specification
 
+## Purpose
+Define deterministic retrieval governance modes, policy filtering, and redaction controls so emitted search/context payloads obey safety constraints with auditable outcomes.
+
+## Requirements
 ### Requirement: Retrieval MUST enforce policy profiles deterministically
 Retrieval execution MUST support deterministic policy profiles: `strict`, `balanced`, `off`.
 
@@ -53,3 +57,4 @@ The implementation MUST seed its default rules from established open-source corp
 - **WHEN** no custom redaction rules are configured
 - **THEN** the built-in rule set MUST cover at minimum: PEM headers, AWS/GCP/GitHub/Slack token prefixes, and generic high-entropy strings
 - **AND** rule provenance (source corpus) MUST be documented in configuration defaults
+

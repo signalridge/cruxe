@@ -70,6 +70,22 @@ Additional extension options:
 - `search.policy.redaction.custom_rules`
 - `search.policy.opa.*` prototype hook
 
+## Redaction performance impact
+
+Redaction cost scales with:
+
+- number of active regex rules
+- snippet size
+- result count per request
+
+Operational guidance:
+
+1. Keep custom rules targeted; avoid broad `.*` style patterns.
+2. Prefer category-specific patterns over one catch-all mega-regex.
+3. Start in `audit_only` to measure `policy_redacted_count` before enforcement.
+4. Watch p95 latency in retrieval-eval reports when enabling new rule sets.
+5. If latency regresses, reduce custom rule count first, then revisit entropy thresholds.
+
 ## Troubleshooting false positives / false negatives
 
 ### False positives (too much blocked/redacted)

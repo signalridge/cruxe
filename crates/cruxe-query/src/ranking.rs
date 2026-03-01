@@ -5,6 +5,9 @@ use cruxe_core::types::{
     BasicRankingReasons, RankingPrecedenceAudit, RankingReasons, RankingSignalContribution,
 };
 use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+use tracing::warn;
 
 const SIGNAL_BM25: &str = "bm25_score";
 const SIGNAL_EXACT_MATCH: &str = "exact_match_boost";
@@ -94,14 +97,34 @@ impl BudgetedScoreBreakdown {
 }
 
 pub fn kind_weight(kind: &str) -> f64 {
-    match kind.trim().to_ascii_lowercase().as_str() {
+    let normalized_kind = kind.trim().to_ascii_lowercase();
+    match normalized_kind.as_str() {
         "class" | "interface" | "trait" => 2.0,
         "struct" | "enum" => 1.8,
         "type_alias" | "function" | "method" => 1.5,
         "constant" => 1.0,
         "module" => 0.8,
         "variable" => 0.5,
-        _ => 0.0,
+        _ => {
+            log_unknown_kind_once(&normalized_kind);
+            0.0
+        }
+    }
+}
+
+fn log_unknown_kind_once(kind: &str) {
+    if kind.is_empty() {
+        return;
+    }
+    static SEEN_UNKNOWN_KINDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN_UNKNOWN_KINDS.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut guard) = seen.lock()
+        && guard.insert(kind.to_string())
+    {
+        warn!(
+            kind,
+            "unknown symbol kind encountered during ranking; defaulting kind weight to 0.0"
+        );
     }
 }
 
@@ -141,6 +164,21 @@ pub fn test_file_penalty(path: &str) -> f64 {
     } else {
         0.0
     }
+}
+
+pub(crate) fn semantic_signal_adjustment(
+    kind: Option<&str>,
+    query: &str,
+    path: &str,
+    budgets: &RankingSignalBudgetConfig,
+) -> f64 {
+    let kind_match_raw = kind
+        .map(|kind| kind_weight(kind) + query_intent_boost(query, kind))
+        .unwrap_or(0.0);
+    let test_file_penalty_raw = test_file_penalty(path);
+
+    score_with_budget(kind_match_raw, &budgets.kind_match).effective
+        + score_with_budget(test_file_penalty_raw, &budgets.test_file_penalty).effective
 }
 
 /// Apply rule-based reranking boosts to search results.
@@ -354,8 +392,9 @@ fn budgeted_breakdown(
 
     let exact_match_present = exact_match.effective > SCORE_EPSILON;
     let mut lexical_dominance_applied = false;
-    let mut secondary_cap =
+    let raw_secondary_total =
         positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match);
+    let mut secondary_cap = raw_secondary_total;
 
     if exact_match_present {
         secondary_cap = score_with_budget(
@@ -364,8 +403,7 @@ fn budgeted_breakdown(
         )
         .clamped
         .max(0.0);
-        let raw_secondary =
-            positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match);
+        let raw_secondary = raw_secondary_total;
         if raw_secondary > secondary_cap && raw_secondary > SCORE_EPSILON {
             let scale = secondary_cap / raw_secondary;
             qualified_name.effective = scale_positive(qualified_name.clamped, scale);
@@ -376,8 +414,11 @@ fn budgeted_breakdown(
         }
     }
 
-    let secondary_effective_total =
-        positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match);
+    let secondary_effective_total = if lexical_dominance_applied {
+        positive_secondary_total(qualified_name, path_affinity, definition_boost, kind_match)
+    } else {
+        raw_secondary_total
+    };
     let precedence_audit = RankingPrecedenceAudit {
         lexical_dominance_applied,
         exact_match_present,
@@ -528,6 +569,40 @@ mod tests {
     }
 
     #[test]
+    fn semantic_signal_adjustment_respects_kind_budget_caps() {
+        let mut budgets = RankingSignalBudgetConfig::default();
+        budgets.kind_match.min = 0.0;
+        budgets.kind_match.max = 0.2;
+        budgets.kind_match.default = 0.2;
+        budgets.test_file_penalty.min = 0.0;
+        budgets.test_file_penalty.max = 0.0;
+        budgets.test_file_penalty.default = 0.0;
+
+        let adjustment =
+            semantic_signal_adjustment(Some("class"), "AuthService", "src/auth.rs", &budgets);
+        assert!((adjustment - 0.2).abs() < SCORE_EPSILON);
+    }
+
+    #[test]
+    fn semantic_signal_adjustment_respects_test_penalty_budget_caps() {
+        let mut budgets = RankingSignalBudgetConfig::default();
+        budgets.kind_match.min = 0.0;
+        budgets.kind_match.max = 0.0;
+        budgets.kind_match.default = 0.0;
+        budgets.test_file_penalty.min = -0.1;
+        budgets.test_file_penalty.max = 0.0;
+        budgets.test_file_penalty.default = -0.1;
+
+        let adjustment = semantic_signal_adjustment(
+            Some("function"),
+            "validate_token",
+            "src/auth/user_test.rs",
+            &budgets,
+        );
+        assert!((adjustment + 0.1).abs() < SCORE_EPSILON);
+    }
+
+    #[test]
     fn budget_registry_defaults_are_canonical() {
         let budgets = RankingSignalBudgetConfig::default();
         assert!(budgets.exact_match.min <= budgets.exact_match.default);
@@ -665,6 +740,25 @@ mod tests {
 
         let mut results = vec![search_result(
             "nan-guard",
+            "validate_token",
+            "auth::validate_token",
+            "src/auth.rs",
+            "function",
+            2.0,
+        )];
+        rerank_with_budget(&mut results, "validate_token", &budgets);
+        assert!(results[0].score.is_finite());
+    }
+
+    #[test]
+    fn inf_budget_values_do_not_poison_ranking_scores() {
+        let mut budgets = RankingSignalBudgetConfig::default();
+        budgets.exact_match.default = f64::INFINITY;
+        budgets.qualified_name.max = f64::INFINITY;
+        budgets.path_affinity.min = f64::NEG_INFINITY;
+
+        let mut results = vec![search_result(
+            "inf-guard",
             "validate_token",
             "auth::validate_token",
             "src/auth.rs",

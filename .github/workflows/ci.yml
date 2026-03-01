@@ -62,6 +62,8 @@ jobs:
               - "crates/cruxe-query/**"
               - "crates/cruxe-core/**"
               - "crates/cruxe-cli/**"
+              - "crates/cruxe-indexer/**"
+              - "crates/cruxe-state/**"
               - "benchmarks/retrieval/**"
               - "docs/guides/retrieval-eval-gate.md"
               - "openspec/changes/retrieval-eval-gate/**"

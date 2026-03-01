@@ -26,7 +26,7 @@
       "semantic_runtime_available": false,
       "override_plan": null,
       "expected_selected": "lexical_fast",
-      "expected_selection_reason": "semantic_unavailable_rule"
+      "expected_selection_reason": "semantic_unavailable"
     },
     {
       "id": "router-natural-language-low-confidence",
@@ -53,7 +53,7 @@
       "semantic_runtime_available": false,
       "override_plan": null,
       "expected_selected": "lexical_fast",
-      "expected_selection_reason": "semantic_unavailable_rule"
+      "expected_selection_reason": "semantic_unavailable"
     }
   ]
 }

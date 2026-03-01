@@ -21,17 +21,18 @@ Search responses MUST expose a normalized semantic degradation signal that is de
 
 State fields:
 - `semantic_triggered` (existing)
+- `semantic_succeeded` (**new**, additive)
 - `semantic_skipped_reason` (existing)
 - `semantic_fallback` (existing)
 - `semantic_degraded` (**new**, additive)
 
 Normalization rule:
-- `semantic_degraded = semantic_fallback`
+- `semantic_degraded = semantic_fallback && !semantic_succeeded`
 
 Deterministic interpretation:
-- semantic active: `semantic_triggered=true`, `semantic_fallback=false`, `semantic_degraded=false`
-- semantic intentionally skipped (policy/intent/mode): `semantic_fallback=false`, `semantic_degraded=false`
-- semantic backend failure fallback: `semantic_fallback=true`, `semantic_degraded=true`
+- semantic active: `semantic_triggered=true`, `semantic_succeeded=true`, `semantic_fallback=false`, `semantic_degraded=false`
+- semantic intentionally skipped (policy/intent/mode): `semantic_succeeded=false`, `semantic_fallback=false`, `semantic_degraded=false`
+- semantic backend failure fallback: `semantic_succeeded=false`, `semantic_fallback=true`, `semantic_degraded=true`
 
 #### Scenario: Backend failure sets degraded=true and keeps lexical results
 - **WHEN** embedding generation or vector retrieval fails during semantic execution
@@ -72,6 +73,7 @@ Required metadata fields:
 - **WHEN** semantic candidates hit the effective capped fanout limit
 - **THEN** search MUST still return valid results
 - **AND** metadata MUST set `semantic_budget_exhausted=true`
+- **AND** `semantic_degraded` MUST remain `false` unless fallback occurred
 
 ### Requirement: Deterministic fail-soft reason codes and recovery
 Semantic failure fallback MUST use deterministic reason codes and MUST recover automatically when backend health returns.

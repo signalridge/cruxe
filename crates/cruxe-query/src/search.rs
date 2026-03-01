@@ -4,8 +4,8 @@ use cruxe_core::edge_confidence::{
 };
 use cruxe_core::error::StateError;
 use cruxe_core::types::{
-    PolicyMode, QueryIntent, RankingReasons, RefScope, SourceLayer, SymbolKind, SymbolRecord,
-    SymbolRole,
+    PolicyMode, QueryIntent, RankingReasons, RankingSignalContribution, RefScope, SourceLayer,
+    SymbolKind, SymbolRecord, SymbolRole,
 };
 use cruxe_state::tantivy_index::IndexSet;
 use rusqlite::Connection;
@@ -26,8 +26,7 @@ use crate::overlay_merge;
 use crate::planner::build_plan_with_ref;
 use crate::policy::PolicyRuntime;
 use crate::ranking::{
-    kind_weight, query_intent_boost, rerank_with_budget, rerank_with_reasons_with_budget,
-    test_file_penalty,
+    rerank_with_budget, rerank_with_reasons_with_budget, semantic_signal_adjustment,
 };
 use crate::rerank::{RerankDocument, rerank_documents};
 use crate::scoring::normalize_relevance_score;
@@ -43,6 +42,7 @@ use crate::{
 /// RRF in `hybrid::blend_hybrid_results`.
 pub(crate) const RRF_K: f64 = 60.0;
 const SEARCH_SCORE_TOLERANCE: f64 = 1e-9;
+const SIGNAL_CONFIDENCE_STRUCTURAL: &str = "confidence_structural_boost";
 
 /// A search result from search_code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +123,7 @@ pub struct SearchMetadata {
     pub semantic_enabled: bool,
     pub semantic_ratio_used: f64,
     pub semantic_triggered: bool,
+    pub semantic_succeeded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_skipped_reason: Option<String>,
     pub semantic_fallback: bool,
@@ -451,20 +452,13 @@ pub fn search_code_with_options(
                                 effective_plan_budget.lexical_fanout,
                                 effective_plan_budget.semantic_fanout,
                             );
-                            for result in &mut all_results {
-                                if result.provenance == "semantic" {
-                                    let kind_match = result
-                                        .kind
-                                        .as_deref()
-                                        .map(|kind| {
-                                            kind_weight(kind) + query_intent_boost(query, kind)
-                                        })
-                                        .unwrap_or(0.0);
-                                    let penalty = test_file_penalty(&result.path);
-                                    result.score += (kind_match + penalty) as f32;
-                                }
-                            }
+                            apply_semantic_signal_adjustments(
+                                &mut all_results,
+                                query,
+                                &options.search_config,
+                            );
                             semantic_state.semantic_triggered = true;
+                            semantic_state.semantic_succeeded = true;
                             semantic_state.semantic_skipped_reason = None;
                             if semantic_budget_exhausted
                                 && plan_controller.executed == QueryPlan::SemanticDeep
@@ -619,6 +613,11 @@ pub fn search_code_with_options(
         ranking_reasons.as_mut(),
         &mut response_warnings,
     )?;
+    if let Some(reasons) = ranking_reasons.as_mut() {
+        // Keep reason indexing/final scores aligned with any post-rerank filtering/sorting
+        // even when no structural diagnostics are available.
+        rebuild_ranking_reasons(&all_results, reasons, &HashMap::new());
+    }
     let executed_before_final_guard = plan_controller.executed;
     let elapsed_ms = query_start.elapsed().as_millis() as u64;
     plan_controller.ensure_latency_budget(elapsed_ms, effective_plan_budget);
@@ -664,9 +663,13 @@ pub fn search_code_with_options(
         semantic_enabled: options.search_config.semantic_enabled(),
         semantic_ratio_used: semantic_state.semantic_ratio_used,
         semantic_triggered: semantic_state.semantic_triggered,
+        semantic_succeeded: semantic_state.semantic_succeeded,
         semantic_skipped_reason: semantic_state.semantic_skipped_reason,
         semantic_fallback: semantic_state.semantic_fallback,
-        semantic_degraded: semantic_state.semantic_fallback || semantic_budget_exhausted,
+        semantic_degraded: semantic_degraded(
+            semantic_state.semantic_fallback,
+            semantic_state.semantic_succeeded,
+        ),
         semantic_limit_used: effective_plan_budget.semantic_limit,
         lexical_fanout_used: effective_plan_budget.lexical_fanout,
         semantic_fanout_used: effective_plan_budget.semantic_fanout,
@@ -1240,12 +1243,38 @@ fn rebuild_ranking_reasons(
             reason.structural_raw_centrality = contribution.structural_raw_centrality;
             reason.structural_guardrail_multiplier = contribution.structural_guardrail_multiplier;
             reason.confidence_coverage = contribution.confidence_coverage;
+            upsert_structural_signal_contribution(
+                &mut reason.signal_contributions,
+                contribution.confidence_structural_boost,
+            );
         }
         reason.result_index = index;
         reason.final_score = result.score as f64;
         rebuilt.push(reason);
     }
     *reasons = rebuilt;
+}
+
+fn upsert_structural_signal_contribution(
+    signal_contributions: &mut Vec<RankingSignalContribution>,
+    boost: f64,
+) {
+    if let Some(existing) = signal_contributions
+        .iter_mut()
+        .find(|entry| entry.signal == SIGNAL_CONFIDENCE_STRUCTURAL)
+    {
+        existing.raw_value = boost;
+        existing.clamped_value = boost;
+        existing.effective_value = boost;
+        return;
+    }
+
+    signal_contributions.push(RankingSignalContribution {
+        signal: SIGNAL_CONFIDENCE_STRUCTURAL.to_string(),
+        raw_value: boost,
+        clamped_value: boost,
+        effective_value: boost,
+    });
 }
 
 fn load_symbol_structural_stats(
@@ -1441,6 +1470,25 @@ fn apply_rerank_scores(results: &mut [SearchResult], reranked: &[cruxe_core::typ
     }
 }
 
+fn apply_semantic_signal_adjustments(
+    results: &mut [SearchResult],
+    query: &str,
+    search_config: &CoreSearchConfig,
+) {
+    for result in results {
+        if result.provenance != "semantic" {
+            continue;
+        }
+        let adjustment = semantic_signal_adjustment(
+            result.kind.as_deref(),
+            query,
+            &result.path,
+            &search_config.ranking_signal_budgets,
+        );
+        result.score += adjustment as f32;
+    }
+}
+
 fn default_result_provenance() -> String {
     "lexical".to_string()
 }
@@ -1465,6 +1513,7 @@ fn retain_role_filtered_results(results: &mut Vec<SearchResult>, role: &str) {
 struct SemanticExecutionState {
     semantic_ratio_used: f64,
     semantic_triggered: bool,
+    semantic_succeeded: bool,
     semantic_skipped_reason: Option<String>,
     semantic_fallback: bool,
     external_provider_blocked: bool,
@@ -1512,6 +1561,7 @@ fn semantic_execution_state(
             0.0
         },
         semantic_triggered: false,
+        semantic_succeeded: false,
         semantic_skipped_reason,
         semantic_fallback: false,
         external_provider_blocked: false,
@@ -1532,6 +1582,7 @@ impl SemanticExecutionState {
 
     fn mark_skipped(&mut self, reason: &str) {
         self.semantic_triggered = false;
+        self.semantic_succeeded = false;
         self.semantic_ratio_used = 0.0;
         self.semantic_skipped_reason = Some(reason.to_string());
     }
@@ -1548,6 +1599,10 @@ impl SemanticExecutionState {
             self.mark_skipped("lexical_high_confidence");
         }
     }
+}
+
+fn semantic_degraded(semantic_fallback: bool, semantic_succeeded: bool) -> bool {
+    semantic_fallback && !semantic_succeeded
 }
 
 #[derive(Clone, Copy)]
@@ -2071,6 +2126,7 @@ mod tests {
         let mut state = SemanticExecutionState {
             semantic_ratio_used: 0.5,
             semantic_triggered: false,
+            semantic_succeeded: false,
             semantic_skipped_reason: None,
             semantic_fallback: false,
             external_provider_blocked: false,
@@ -2088,6 +2144,59 @@ mod tests {
             state.semantic_skipped_reason.as_deref(),
             Some("lexical_high_confidence")
         );
+    }
+
+    #[test]
+    fn semantic_signal_adjustment_uses_budget_caps_for_semantic_results() {
+        let mut search_config = CoreSearchConfig::default();
+        search_config.ranking_signal_budgets.kind_match.min = 0.0;
+        search_config.ranking_signal_budgets.kind_match.max = 0.2;
+        search_config.ranking_signal_budgets.kind_match.default = 0.2;
+        search_config.ranking_signal_budgets.test_file_penalty.min = 0.0;
+        search_config.ranking_signal_budgets.test_file_penalty.max = 0.0;
+        search_config
+            .ranking_signal_budgets
+            .test_file_penalty
+            .default = 0.0;
+
+        let mut semantic = make_result(1.0);
+        semantic.provenance = "semantic".to_string();
+        semantic.kind = Some("class".to_string());
+        semantic.path = "src/auth.rs".to_string();
+
+        let mut lexical = make_result(1.0);
+        lexical.provenance = "lexical".to_string();
+        lexical.kind = Some("class".to_string());
+        lexical.path = "src/auth.rs".to_string();
+
+        let mut results = vec![semantic, lexical];
+        apply_semantic_signal_adjustments(&mut results, "AuthService", &search_config);
+
+        assert!((results[0].score - 1.2).abs() < 1e-6);
+        assert!((results[1].score - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn semantic_signal_adjustment_applies_test_penalty_budget_for_semantic_results() {
+        let mut search_config = CoreSearchConfig::default();
+        search_config.ranking_signal_budgets.kind_match.min = 0.0;
+        search_config.ranking_signal_budgets.kind_match.max = 0.0;
+        search_config.ranking_signal_budgets.kind_match.default = 0.0;
+        search_config.ranking_signal_budgets.test_file_penalty.min = -0.1;
+        search_config.ranking_signal_budgets.test_file_penalty.max = 0.0;
+        search_config
+            .ranking_signal_budgets
+            .test_file_penalty
+            .default = -0.1;
+
+        let mut semantic = make_result(1.0);
+        semantic.provenance = "semantic".to_string();
+        semantic.path = "src/auth/user_test.rs".to_string();
+
+        let mut results = vec![semantic];
+        apply_semantic_signal_adjustments(&mut results, "validate_token", &search_config);
+
+        assert!((results[0].score - 0.9).abs() < 1e-6);
     }
 
     #[test]
@@ -2260,6 +2369,82 @@ mod tests {
     }
 
     #[test]
+    fn structural_boost_is_reflected_in_signal_accounting_totals() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        for idx in 0..12 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-nonexact",
+                format!("src/nonexact_{idx}.rs").as_str(),
+                "high",
+                1.0,
+            );
+        }
+
+        let mut results = vec![
+            make_symbol_result("res-exact", "stable_exact", 1.0),
+            make_symbol_result("res-nonexact", "stable-nonexact", 1.0),
+        ];
+        results[0].kind = Some("function".to_string());
+        results[0].name = Some("stable_exact".to_string());
+        results[0].qualified_name = Some("auth::stable_exact".to_string());
+        results[0].path = "src/auth/stable_exact.rs".to_string();
+        results[1].kind = Some("class".to_string());
+        results[1].name = Some("helper".to_string());
+        results[1].qualified_name = Some("auth::helper".to_string());
+        results[1].path = "src/auth/helper.rs".to_string();
+
+        let search_config = CoreSearchConfig::default();
+        let mut reasons = rerank_with_reasons_with_budget(
+            &mut results,
+            "stable_exact",
+            &search_config.ranking_signal_budgets,
+        );
+        let mut warnings = Vec::new();
+
+        apply_confidence_weighted_structural_boost(
+            Some(&conn),
+            "main",
+            "stable_exact",
+            &mut results,
+            Some(&mut reasons),
+            &mut warnings,
+        )
+        .unwrap();
+
+        let nonexact = reasons
+            .iter()
+            .find(|reason| reason.result_id == "res-nonexact")
+            .expect("non-exact reason");
+        let structural = nonexact
+            .signal_contributions
+            .iter()
+            .find(|entry| entry.signal == SIGNAL_CONFIDENCE_STRUCTURAL)
+            .expect("missing structural signal contribution");
+        assert!(
+            structural.effective_value > 0.0,
+            "structural contribution should be positive for central node"
+        );
+        assert!((structural.effective_value - nonexact.confidence_structural_boost).abs() < 1e-9);
+
+        for reason in reasons {
+            let total_effective: f64 = reason
+                .signal_contributions
+                .iter()
+                .map(|entry| entry.effective_value)
+                .sum();
+            assert!(
+                (total_effective - reason.final_score).abs() < 1e-6,
+                "signal accounting total should match final score for {}",
+                reason.result_id
+            );
+        }
+    }
+
+    #[test]
     fn structural_boost_keeps_exact_match_precedence_when_reasons_absent() {
         let dir = tempdir().unwrap();
         let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
@@ -2400,6 +2585,7 @@ mod tests {
             "semantic" | "hybrid"
         ));
         assert!(response.metadata.semantic_triggered);
+        assert!(response.metadata.semantic_succeeded);
         assert!(response.metadata.semantic_ratio_used > 0.0);
         assert!(response.metadata.semantic_skipped_reason.is_none());
     }
@@ -2605,6 +2791,7 @@ mod tests {
         .unwrap();
 
         assert!(response.metadata.semantic_triggered);
+        assert!(response.metadata.semantic_succeeded);
         assert!(response.metadata.external_provider_blocked);
         assert!(!response.results.is_empty());
     }
@@ -2845,12 +3032,21 @@ mod tests {
         .unwrap();
 
         assert!(!response.metadata.semantic_triggered);
+        assert!(!response.metadata.semantic_succeeded);
         assert!(response.metadata.semantic_fallback);
         assert!(response.metadata.semantic_degraded);
         assert_eq!(
             response.metadata.semantic_skipped_reason.as_deref(),
             Some("semantic_backend_error")
         );
+    }
+
+    #[test]
+    fn semantic_degraded_semantics_are_not_budget_alias() {
+        assert!(semantic_degraded(true, false));
+        assert!(!semantic_degraded(false, true));
+        assert!(!semantic_degraded(false, false));
+        assert!(!semantic_degraded(true, true));
     }
 
     #[test]

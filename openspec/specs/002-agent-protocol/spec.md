@@ -84,7 +84,7 @@ When the safety limit is hit:
 
 ### Requirement: Protocol error registry conformance is transport-consistent
 All MCP tool failures MUST emit the canonical error envelope and canonical error
-codes defined by `specs/meta/protocol-error-codes.md`.
+codes defined by `openspec/meta/protocol-error-codes.md`.
 
 For equivalent failure conditions, stdio and HTTP transports MUST emit the same:
 - `error.code`
@@ -126,6 +126,7 @@ Required semantic metadata set for this change:
 - `semantic_enabled` (existing)
 - `semantic_ratio_used` (existing)
 - `semantic_triggered` (existing)
+- `semantic_succeeded` (**new**, additive)
 - `semantic_skipped_reason` (existing)
 - `semantic_fallback` (existing)
 - `semantic_degraded` (**new**, additive)
@@ -141,7 +142,7 @@ Additive compatibility rules:
 
 #### Scenario: Degraded semantic fallback emits normalized metadata
 - **WHEN** semantic execution falls back due to backend failure
-- **THEN** metadata MUST include `semantic_fallback=true` and `semantic_degraded=true`
+- **THEN** metadata MUST include `semantic_fallback=true`, `semantic_succeeded=false`, and `semantic_degraded=true`
 - **AND** MUST include deterministic `semantic_skipped_reason`
 
 #### Scenario: Budget metadata reflects effective runtime values
@@ -497,4 +498,3 @@ Required diagnostics:
 #### Scenario: Insufficient coverage emits next-query hints
 - **WHEN** budget exhaustion prevents desired section coverage
 - **THEN** response MUST include deterministic `suggested_next_queries`
-
