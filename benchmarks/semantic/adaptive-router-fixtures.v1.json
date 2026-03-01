@@ -52,7 +52,7 @@
       "lexical_confidence": 0.22,
       "semantic_runtime_available": false,
       "override_plan": null,
-      "expected_selected": "hybrid_standard",
+      "expected_selected": "lexical_fast",
       "expected_selection_reason": "semantic_unavailable_rule"
     }
   ]
