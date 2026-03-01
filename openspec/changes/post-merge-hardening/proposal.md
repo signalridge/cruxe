@@ -12,6 +12,11 @@ The six retrieval/ranking changes were merged successfully, but follow-up harden
    - Replace ultra-strict `f64::EPSILON` checks in ranking/explain paths with explicit, domain-appropriate tolerance constants.
 4. **Complete archived spec Purpose sections**
    - Replace archive placeholders with concrete Purpose statements for the six newly archived capabilities.
+5. **Close deep-review correctness/security/performance gaps**
+   - Guard ranking against non-finite budget inputs,
+   - harden OPA command execution constraints + stdin lifecycle,
+   - tighten eval target/qrels matching semantics,
+   - reduce context-pack git subprocess amplification with per-call source caching.
 
 ## Capabilities
 
@@ -19,7 +24,10 @@ The six retrieval/ranking changes were merged successfully, but follow-up harden
 - None.
 
 ### Modified Capabilities
-- `retrieval-eval-gate`: CI integration requirement is tightened so retrieval gate must run in enforcement mode (non-dry-run) when the gate job is triggered.
+- `retrieval-eval-gate`: CI integration requirement is tightened so retrieval gate must run in enforcement mode (non-dry-run) when the gate job is triggered; eval matching/parser correctness is hardened.
+- `ranking-signal-budget-contract`: runtime ranking path is hardened against non-finite budget values and deterministic NaN ordering fallback.
+- `policy-aware-retrieval`: OPA command execution constraints, stdin lifecycle, and symbol-kind allowlist behavior are tightened.
+- `context-pack-builder`: context source loading adds per-call caching to reduce repeated git subprocess overhead.
 
 ## Impact
 

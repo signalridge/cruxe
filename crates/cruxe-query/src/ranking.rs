@@ -239,14 +239,11 @@ fn rerank_inner(
 
     let mut sort_order: Vec<usize> = (0..results.len()).collect();
     sort_order.sort_by(|&a, &b| {
+        let score_a = finite_or_default(results[a].score as f64, f64::NEG_INFINITY);
+        let score_b = finite_or_default(results[b].score as f64, f64::NEG_INFINITY);
         exact_match_flags[b]
             .cmp(&exact_match_flags[a])
-            .then_with(|| {
-                results[b]
-                    .score
-                    .partial_cmp(&results[a].score)
-                    .unwrap_or(Ordering::Equal)
-            })
+            .then_with(|| score_b.partial_cmp(&score_a).unwrap_or(Ordering::Equal))
             .then_with(|| results[a].result_id.cmp(&results[b].result_id))
     });
 
@@ -360,10 +357,12 @@ fn budgeted_breakdown(
     let mut secondary_cap = positive_secondary_total(path_affinity, definition_boost, kind_match);
 
     if exact_match_present {
-        secondary_cap = budgets.secondary_cap_when_exact.default.clamp(
-            budgets.secondary_cap_when_exact.min,
-            budgets.secondary_cap_when_exact.max,
-        );
+        secondary_cap = score_with_budget(
+            budgets.secondary_cap_when_exact.default,
+            &budgets.secondary_cap_when_exact,
+        )
+        .clamped
+        .max(0.0);
         let raw_secondary = positive_secondary_total(path_affinity, definition_boost, kind_match);
         if raw_secondary > secondary_cap && raw_secondary > SCORE_EPSILON {
             let scale = secondary_cap / raw_secondary;
@@ -400,7 +399,20 @@ fn budgeted_breakdown(
 }
 
 fn score_with_budget(raw: f64, budget: &RankingSignalBudgetRange) -> SignalScore {
-    let clamped = raw.clamp(budget.min, budget.max);
+    let raw = finite_or_default(raw, 0.0);
+    let min = finite_or_default(budget.min, 0.0);
+    let max = finite_or_default(budget.max, min);
+    let (min, max) = if min <= max {
+        (min, max)
+    } else {
+        tracing::warn!(
+            budget_min = budget.min,
+            budget_max = budget.max,
+            "invalid ranking budget bounds in reranker; coercing to zero-range guard"
+        );
+        (0.0, 0.0)
+    };
+    let clamped = raw.clamp(min, max);
     SignalScore {
         raw,
         clamped,
@@ -409,11 +421,16 @@ fn score_with_budget(raw: f64, budget: &RankingSignalBudgetRange) -> SignalScore
 }
 
 fn score_without_clamp(raw: f64) -> SignalScore {
+    let raw = finite_or_default(raw, 0.0);
     SignalScore {
         raw,
         clamped: raw,
         effective: raw,
     }
+}
+
+fn finite_or_default(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
 }
 
 fn signal_contribution(signal: &str, score: SignalScore) -> RankingSignalContribution {
@@ -626,5 +643,52 @@ mod tests {
         rerank_with_budget(&mut results, "nomatch", &budgets);
         assert_eq!(results[0].result_id, "a-id");
         assert_eq!(results[1].result_id, "b-id");
+    }
+
+    #[test]
+    fn nan_budget_values_do_not_poison_ranking_scores() {
+        let mut budgets = RankingSignalBudgetConfig::default();
+        budgets.exact_match.default = f64::NAN;
+        budgets.path_affinity.min = f64::NAN;
+        budgets.path_affinity.max = f64::NAN;
+
+        let mut results = vec![search_result(
+            "nan-guard",
+            "validate_token",
+            "auth::validate_token",
+            "src/auth.rs",
+            "function",
+            2.0,
+        )];
+        rerank_with_budget(&mut results, "validate_token", &budgets);
+        assert!(results[0].score.is_finite());
+    }
+
+    #[test]
+    fn nan_input_scores_sort_after_finite_scores() {
+        let mut results = vec![
+            search_result(
+                "finite",
+                "validate_token",
+                "auth::validate_token",
+                "src/auth.rs",
+                "function",
+                1.0,
+            ),
+            search_result(
+                "nan",
+                "other",
+                "other::symbol",
+                "src/other.rs",
+                "function",
+                f32::NAN,
+            ),
+        ];
+        rerank_with_budget(
+            &mut results,
+            "validate_token",
+            &RankingSignalBudgetConfig::default(),
+        );
+        assert_eq!(results[0].result_id, "finite");
     }
 }

@@ -923,8 +923,12 @@ pub fn load_beir_queries_and_qrels(
             });
         }
         let query_id = columns[0].to_string();
-        let corpus_id = columns[1].to_string();
-        let score = columns[2].parse::<f64>().unwrap_or(0.0);
+        let (corpus_id, score_raw) = if columns.len() >= 4 {
+            (columns[2].to_string(), columns[3])
+        } else {
+            (columns[1].to_string(), columns[2])
+        };
+        let score = score_raw.parse::<f64>().unwrap_or(0.0);
         if score <= 0.0 {
             continue;
         }
@@ -1161,28 +1165,58 @@ fn looks_like_qrels_header(columns: &[&str]) -> bool {
             | "did"
             | "corpus"
     );
-    first_is_header && second_is_header
+    if first_is_header && second_is_header {
+        return true;
+    }
+    if columns.len() >= 4 {
+        let third = columns[2].trim().to_ascii_lowercase();
+        let fourth = columns[3].trim().to_ascii_lowercase();
+        let third_is_header = matches!(
+            third.as_str(),
+            "doc-id" | "docid" | "document-id" | "document_id" | "corpus-id" | "corpus_id"
+        );
+        let fourth_is_header = matches!(fourth.as_str(), "score" | "relevance" | "rel" | "label");
+        return first_is_header && third_is_header && fourth_is_header;
+    }
+    false
 }
 
 fn result_matches_target(result: &RetrievalResult, target: &str) -> bool {
-    let mut candidates = Vec::new();
-    candidates.push(result.path.to_ascii_lowercase());
-    if let Some(name) = &result.name {
-        candidates.push(name.to_ascii_lowercase());
-    }
-    if let Some(name) = &result.qualified_name {
-        candidates.push(name.to_ascii_lowercase());
-    }
-    if let Some(signature) = &result.signature {
-        candidates.push(signature.to_ascii_lowercase());
-    }
-    if let Some(symbol_id) = &result.symbol_stable_id {
-        candidates.push(symbol_id.to_ascii_lowercase());
+    let target = target.trim().to_ascii_lowercase();
+    if target.is_empty() {
+        return false;
     }
 
-    candidates
-        .iter()
-        .any(|candidate| candidate.contains(target))
+    let path = result.path.to_ascii_lowercase();
+    if path == target
+        || path
+            .rsplit('/')
+            .next()
+            .is_some_and(|filename| filename == target)
+        || path.ends_with(&format!("/{target}"))
+    {
+        return true;
+    }
+
+    if let Some(name) = &result.name {
+        let name = name.to_ascii_lowercase();
+        if name == target {
+            return true;
+        }
+    }
+    if let Some(name) = &result.qualified_name {
+        let qn = name.to_ascii_lowercase();
+        if qn == target || qn.ends_with(&format!("::{target}")) {
+            return true;
+        }
+    }
+    if let Some(symbol_id) = &result.symbol_stable_id
+        && symbol_id.eq_ignore_ascii_case(&target)
+    {
+        return true;
+    }
+
+    false
 }
 
 pub fn percentile(values: &[f64], p: f64) -> f64 {
@@ -1391,5 +1425,31 @@ mod tests {
         assert_eq!(suite.queries.len(), 1);
         assert_eq!(suite.queries[0].id, "query123");
         assert_eq!(suite.queries[0].expected_targets[0].hint, "auth_doc");
+    }
+
+    #[test]
+    fn beir_loader_accepts_trec_four_column_qrels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let queries_path = tmp.path().join("queries.jsonl");
+        let qrels_path = tmp.path().join("qrels.tsv");
+
+        std::fs::write(&queries_path, "{\"_id\":\"q1\",\"text\":\"auth flow\"}\n").unwrap();
+        std::fs::write(&qrels_path, "q1\tQ0\tauth_doc\t1\n").unwrap();
+
+        let suite = load_beir_queries_and_qrels(
+            &queries_path,
+            &qrels_path,
+            RetrievalIntent::NaturalLanguage,
+        )
+        .unwrap();
+        assert_eq!(suite.queries.len(), 1);
+        assert_eq!(suite.queries[0].expected_targets[0].hint, "auth_doc");
+    }
+
+    #[test]
+    fn target_matching_uses_exact_or_suffix_semantics_not_substring() {
+        let result = RetrievalResult::new("src/data.rs", Some("load_data"), 1.0);
+        assert!(!result_matches_target(&result, "a.rs"));
+        assert!(result_matches_target(&result, "data.rs"));
     }
 }

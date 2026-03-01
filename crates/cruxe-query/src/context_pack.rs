@@ -318,6 +318,7 @@ pub fn build_context_pack(
     let probes = probe_queries(query, mode);
     let max_candidates = max_candidates.max(1);
     let per_probe_limit = max_candidates.div_ceil(probes.len()).max(1);
+    let mut source_cache: BTreeMap<(String, String), Option<String>> = BTreeMap::new();
 
     let mut raw_candidates = Vec::new();
     for (probe_rank, (label, probe_query)) in probes.iter().enumerate() {
@@ -339,6 +340,7 @@ pub fn build_context_pack(
                 &result.path,
                 result.line_start,
                 result.line_end,
+                &mut source_cache,
                 result.snippet.as_deref(),
             );
             let content_hash =
@@ -667,12 +669,26 @@ fn resolve_snippet(
     relative_path: &str,
     line_start: u32,
     line_end: u32,
+    source_cache: &mut BTreeMap<(String, String), Option<String>>,
     fallback: Option<&str>,
 ) -> Option<String> {
-    read_source_range_from_git_ref(workspace, ref_name, relative_path, line_start, line_end)
-        .or_else(|| {
-            read_source_range_from_workspace(workspace, relative_path, line_start, line_end)
-        })
+    let cache_key = (ref_name.to_string(), relative_path.to_string());
+    let cached_content = if let Some(content) = source_cache.get(&cache_key) {
+        content.clone()
+    } else {
+        let loaded = if ref_name.eq_ignore_ascii_case("live") {
+            read_source_from_workspace(workspace, relative_path)
+        } else {
+            read_source_from_git_ref(workspace, ref_name, relative_path)
+                .or_else(|| read_source_from_workspace(workspace, relative_path))
+        };
+        source_cache.insert(cache_key, loaded.clone());
+        loaded
+    };
+
+    cached_content
+        .as_deref()
+        .and_then(|content| trim_line_range(content, line_start, line_end))
         .or_else(|| fallback.map(ToOwned::to_owned))
         .and_then(|snippet| {
             let snippet = snippet.trim().to_string();
@@ -684,23 +700,15 @@ fn resolve_snippet(
         })
 }
 
-fn read_source_range_from_workspace(
-    workspace: &Path,
-    relative_path: &str,
-    line_start: u32,
-    line_end: u32,
-) -> Option<String> {
+fn read_source_from_workspace(workspace: &Path, relative_path: &str) -> Option<String> {
     let path = workspace.join(relative_path);
-    let content = std::fs::read_to_string(path).ok()?;
-    trim_line_range(&content, line_start, line_end)
+    std::fs::read_to_string(path).ok()
 }
 
-fn read_source_range_from_git_ref(
+fn read_source_from_git_ref(
     workspace: &Path,
     ref_name: &str,
     relative_path: &str,
-    line_start: u32,
-    line_end: u32,
 ) -> Option<String> {
     if !cruxe_core::vcs::is_git_repo(workspace) {
         return None;
@@ -709,7 +717,8 @@ fn read_source_range_from_git_ref(
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(workspace)
-        .arg("show")
+        .arg("cat-file")
+        .arg("-p")
         .arg("--")
         .arg(object)
         .output()
@@ -718,8 +727,7 @@ fn read_source_range_from_git_ref(
         return None;
     }
 
-    let content = String::from_utf8(output.stdout).ok()?;
-    trim_line_range(&content, line_start, line_end)
+    String::from_utf8(output.stdout).ok()
 }
 
 fn trim_line_range(content: &str, line_start: u32, line_end: u32) -> Option<String> {

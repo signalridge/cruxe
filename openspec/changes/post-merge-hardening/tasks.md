@@ -17,3 +17,11 @@
 - [x] 4.1 Run formatting and compile checks for touched crates/workspace scope.
 - [x] 4.2 Run targeted retrieval/ranking/context-pack tests.
 - [x] 4.3 Validate OpenSpec artifacts for `post-merge-hardening` and strict spec checks.
+
+## 5. Deep-review risk fixes (correctness/security/perf)
+
+- [x] 5.1 Harden ranking budget scoring against non-finite inputs and ensure NaN scores sort deterministically.
+- [x] 5.2 Harden policy OPA execution path validation and stdin lifecycle handling.
+- [x] 5.3 Tighten policy redaction coverage (PEM full block) and symbol-kind allowlist behavior for missing kind.
+- [x] 5.4 Improve retrieval eval target matching semantics and BEIR/TREC qrels parser compatibility.
+- [x] 5.5 Add context-pack source-content caching and use ref-safe git object reads to reduce subprocess churn.

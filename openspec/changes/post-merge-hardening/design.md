@@ -40,6 +40,16 @@ All six retrieval/ranking capabilities were merged and archived into main specs.
 - **Decision:** Replace archive-time placeholder Purpose lines with concise capability intent statements for the six newly archived specs.
 - **Rationale:** Purpose text is used as human and governance index metadata. Placeholder text reduces navigability and review quality.
 
+### D5. Apply deep-review hardening to ranking/policy/eval/context-pack hot paths
+
+- **Decision:** Fold top risk fixes from deep review into this hardening change:
+  - non-finite ranking score guards and deterministic NaN ordering fallback,
+  - OPA command name validation plus explicit stdin close semantics,
+  - stricter symbol-kind allowlist behavior for missing kind and stronger PEM block redaction,
+  - retrieval eval matching/parser correctness (exact/suffix match + BEIR/TREC qrels compatibility),
+  - per-call context source cache to avoid repeated git subprocess reads.
+- **Rationale:** These are high-leverage fixes that improve correctness and operational safety without changing public MCP schema.
+
 ## Risks / Trade-offs
 
 - **[Risk] CI strictness may surface flaky eval behavior** → Mitigation: keep fixture-based deterministic suite and artifact upload for triage.

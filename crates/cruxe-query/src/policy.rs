@@ -8,6 +8,7 @@ use globset::{Glob, GlobMatcher};
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::thread;
@@ -288,7 +289,17 @@ impl PolicyRuntime {
             return Ok(Some("blocked:result_type_allow_miss".to_string()));
         }
 
-        if let Some(kind) = result.kind.as_deref() {
+        let is_symbol_result = result_type == "symbol";
+        if is_symbol_result
+            && !self.allow_symbol_kinds.is_empty()
+            && match result.kind.as_deref() {
+                Some(value) => value.trim().is_empty(),
+                None => true,
+            }
+        {
+            return Ok(Some("blocked:symbol_kind_allow_miss".to_string()));
+        }
+        if is_symbol_result && let Some(kind) = result.kind.as_deref() {
             let kind = kind.to_ascii_lowercase();
             if self.deny_symbol_kinds.contains(kind.as_str()) {
                 return Ok(Some("blocked:symbol_kind_deny".to_string()));
@@ -475,7 +486,7 @@ fn default_seeded_rules(email_masking: bool) -> Vec<(&'static str, &'static str,
     let mut rules = vec![
         (
             "pem_private_key",
-            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+            r"(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
             "[REDACTED:private_key]",
         ),
         (
@@ -528,7 +539,7 @@ fn detect_secrets_plugin_rules(plugin: &str) -> Vec<(&'static str, &'static str,
         )],
         "privatekeydetector" | "privatekey" => vec![(
             "detect_secrets_private_key",
-            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+            r"(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
             "[REDACTED:private_key]",
         )],
         _ => Vec::new(),
@@ -541,6 +552,18 @@ fn build_opa_runtime(
     warnings: &mut Vec<String>,
 ) -> Result<Option<OpaPolicyRuntime>, StateError> {
     if !config.enabled {
+        return Ok(None);
+    }
+    let command = config.command.trim();
+    if !is_allowed_opa_command(command) {
+        if strict {
+            return Err(StateError::policy(format!(
+                "OPA command `{command}` is not allowed; only `opa` executable names are permitted"
+            )));
+        }
+        warnings.push(format!(
+            "OPA command `{command}` is not allowed; continuing without OPA decisions"
+        ));
         return Ok(None);
     }
     let Some(policy_path) = config
@@ -562,10 +585,23 @@ fn build_opa_runtime(
     };
 
     Ok(Some(OpaPolicyRuntime {
-        command: config.command.trim().to_string(),
+        command: command.to_string(),
         query: config.query.trim().to_string(),
         policy_path: policy_path.to_string(),
     }))
+}
+
+fn is_allowed_opa_command(command: &str) -> bool {
+    if command.is_empty() {
+        return false;
+    }
+    if command.contains(char::is_whitespace) {
+        return false;
+    }
+    Path::new(command)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("opa"))
 }
 
 fn evaluate_opa_decision(
@@ -589,7 +625,7 @@ fn evaluate_opa_decision(
     let mut child = command
         .spawn()
         .map_err(|err| StateError::policy(format!("failed to spawn OPA command: {err}")))?;
-    if let Some(stdin) = child.stdin.as_mut() {
+    if let Some(mut stdin) = child.stdin.take() {
         let input = serde_json::json!({
             "path": result.path,
             "result_type": result.result_type,
@@ -933,6 +969,48 @@ mod tests {
                 .redaction_categories
                 .contains_key("detect_secrets_github")
         );
+    }
+
+    #[test]
+    fn allow_symbol_kinds_blocks_symbol_results_with_missing_kind() {
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        config.policy.kind.allow_symbol_kinds = vec!["function".to_string()];
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+
+        let mut result = sample_result("src/lib.rs", "pub fn run() {}");
+        result.result_type = "symbol".to_string();
+        result.kind = None;
+        let applied = runtime.apply(vec![result]).unwrap();
+        assert_eq!(applied.blocked_count, 1);
+        assert!(applied.results.is_empty());
+    }
+
+    #[test]
+    fn strict_mode_rejects_non_opa_command_binary() {
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "strict".to_string();
+        config.policy.opa.enabled = true;
+        config.policy.opa.command = "python3".to_string();
+        config.policy.opa.policy_path = Some("policy.rego".to_string());
+
+        let err = PolicyRuntime::from_search_config(&config, None).unwrap_err();
+        assert!(format!("{err}").contains("not allowed"));
+    }
+
+    #[test]
+    fn pem_private_key_redaction_covers_header_body_and_footer() {
+        let mut config = CoreSearchConfig::default();
+        config.policy.mode = "balanced".to_string();
+        let runtime = PolicyRuntime::from_search_config(&config, None).unwrap();
+        let pem =
+            "-----BEGIN PRIVATE KEY-----\nQUJDREVGR0hJSktMTU5PUA==\n-----END PRIVATE KEY-----";
+        let applied = runtime
+            .apply(vec![sample_result("src/key.pem", pem)])
+            .unwrap();
+        let snippet = applied.results[0].snippet.as_deref().unwrap_or_default();
+        assert!(snippet.contains("[REDACTED:private_key]"));
+        assert!(!snippet.contains("QUJDREVGR0hJSktMTU5PUA=="));
     }
 
     #[cfg(unix)]
